@@ -1,0 +1,135 @@
+@import "tailwindcss";
+@config "../tailwind.config.js";
+
+/* Terra design language. Warm near-white canvas, true-white cards elevated by
+   layered soft shadows (borders disappear except on inputs), a terracotta→amber
+   gradient accent, and Plus Jakarta Sans throughout. Dark mode uses tonal
+   elevation (lighter surfaces) instead of shadow depth. */
+@theme {
+  --color-bg: #f6f1ea;
+  --color-surface: #ffffff;
+  --color-surface-muted: #faf5ef;
+  --color-surface-hover: #efe7dd;
+  --color-text: #241a13;
+  --color-muted: #8a7a6c;
+  --color-faint: #b3a595;
+  --color-border: rgba(70, 45, 25, 0.09);
+
+  --color-accent: #dd5f38;
+  --color-accent-ink: #c14a25;
+  --color-accent-soft: #fbeadf;
+
+  --color-success: #2e9c6d;
+  --color-success-ink: #1e7a52;
+  --color-success-soft: #e2f4ec;
+
+  --color-pending: #c98a1a;
+  --color-pending-soft: #fbeecb;
+
+  --color-danger: #c0492f;
+  --color-danger-soft: rgba(192, 73, 47, 0.1);
+
+  --gradient-accent: linear-gradient(135deg, #e2582f 0%, #ee8438 55%, #f6b24a 100%);
+
+  --shadow-soft: 0 1px 2px rgba(50, 25, 8, 0.05);
+  --shadow-card: 0 1px 2px rgba(50, 25, 8, 0.04), 0 10px 26px rgba(50, 25, 8, 0.07);
+  --shadow-panel: 0 2px 6px rgba(50, 25, 8, 0.05), 0 22px 48px rgba(50, 25, 8, 0.12);
+  --shadow-dock: 0 8px 20px rgba(50, 25, 8, 0.12), 0 20px 44px rgba(50, 25, 8, 0.16);
+  --shadow-glow: 0 6px 18px rgba(221, 95, 56, 0.34);
+
+  --font-sans:
+    var(--font-jakarta), ui-sans-serif, system-ui, -apple-system, "Segoe UI",
+    Roboto, "Helvetica Neue", Arial, sans-serif;
+
+  /* Terra's rounder scale: pills for controls, soft 2xl/3xl for surfaces. */
+  --radius-md: 0.75rem;
+  --radius-lg: 0.875rem;
+  --radius-xl: 1.25rem;
+  --radius-2xl: 1.5rem;
+  --radius-3xl: 1.75rem;
+}
+
+.dark {
+  --color-bg: #161009;
+  --color-surface: #221a12;
+  --color-surface-muted: #2a2018;
+  --color-surface-hover: #33291e;
+  --color-text: #f4ece2;
+  --color-muted: #a9998a;
+  --color-faint: #7a6c5d;
+  --color-border: rgba(255, 225, 190, 0.09);
+
+  --color-accent: #f07a4c;
+  --color-accent-ink: #f4936c;
+  --color-accent-soft: rgba(240, 122, 76, 0.15);
+
+  --color-success: #4fbf8f;
+  --color-success-ink: #63c99b;
+  --color-success-soft: rgba(79, 191, 143, 0.16);
+
+  --color-pending: #e0ab4d;
+  --color-pending-soft: rgba(224, 171, 77, 0.16);
+
+  --color-danger: #e2937c;
+  --color-danger-soft: rgba(232, 138, 114, 0.14);
+
+  /* Tonal elevation: surfaces lift by lightening, so shadows nearly vanish. */
+  --shadow-soft: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.4), 0 12px 28px rgba(0, 0, 0, 0.5);
+  --shadow-panel: 0 2px 6px rgba(0, 0, 0, 0.45), 0 24px 50px rgba(0, 0, 0, 0.6);
+  --shadow-dock: 0 10px 24px rgba(0, 0, 0, 0.55);
+  --shadow-glow: 0 6px 18px rgba(221, 95, 56, 0.32);
+}
+
+html,
+body {
+  background-color: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-sans);
+  font-size: 16px;
+  letter-spacing: -0.006em;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* A very faint sunset glow on the canvas — subtle, fixed, behind everything. */
+body {
+  background-image:
+    radial-gradient(1200px 620px at 100% -5%, rgba(246, 178, 74, 0.14), transparent 60%),
+    radial-gradient(1000px 640px at -5% 0%, rgba(221, 95, 56, 0.08), transparent 55%);
+  background-attachment: fixed;
+}
+.dark body {
+  background-image:
+    radial-gradient(1200px 620px at 100% -5%, rgba(246, 178, 74, 0.08), transparent 60%);
+}
+
+/* Heading style: the sans at a tighter track + heavier weight. Kept as a class
+   so any remaining `.font-heading` reference still reads as a Terra heading. */
+.font-heading {
+  font-weight: 700;
+  letter-spacing: -0.03em;
+}
+
+/* The terracotta→amber accent as a fill (buttons, badges, avatar rings, the
+   wordmark tile, Instant chips). A plain utility so hover/dark variants compose. */
+.bg-gradient-accent {
+  background-image: var(--gradient-accent);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+button {
+  cursor: pointer;
+}
+
+/* Keyboard focus, on theme. The browser default is a blue that belongs to no
+   palette here, and it lands on pills and rounded cards where a square outline
+   sits wrong. `:focus-visible` only, so a mouse click never draws it — the ring
+   is for people navigating by keyboard, and showing it on tap reads as an error
+   state. The offset keeps it clear of the accent fills it most often surrounds. */
+:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
