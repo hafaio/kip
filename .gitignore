@@ -1,0 +1,12 @@
+.DS_Store
+.claude/
+*.un~
+
+# Cloud Functions build output + deps
+functions/lib/
+functions/node_modules/
+
+# Firebase emulator debug logs
+firestore-debug.log
+firebase-debug.log
+firebase-export-*
