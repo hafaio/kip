@@ -1,0 +1,95 @@
+name: Deploy web
+
+on:
+  workflow_dispatch:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  # Gate the deploy on the same lint + tests that run on every push/PR.
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  # Rules and functions go out BEFORE the site, so a release can never publish a
+  # frontend that expects rules or triggers which aren't live yet. If this fails
+  # the Pages deploy never runs and the site stays on the last good version.
+  #
+  # Auth is Workload Identity Federation: GitHub mints a short-lived OIDC token
+  # (hence `id-token: write` above), GCP trades it for impersonation of the
+  # deployer account. No key is stored anywhere, and the provider only accepts
+  # tokens whose `repository` claim is this repo.
+  firebase:
+    needs: ci
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - uses: google-github-actions/auth@v2
+        with:
+          project_id: hafaio-kip-dev
+          workload_identity_provider: projects/230290747847/locations/global/workloadIdentityPools/github/providers/kip-deploy
+          service_account: kip-deployer@hafaio-kip-dev.iam.gserviceaccount.com
+
+      - run: npm ci
+        working-directory: functions
+
+      - run: npm install -g firebase-tools
+
+      # Rules take seconds and are idempotent, so they just run every time.
+      # Functions are slower; deploying them unconditionally is still simpler
+      # than working out whether they changed since the last release.
+      - run: firebase deploy --only firestore:rules,functions --project hafaio-kip-dev --non-interactive
+
+  build:
+    needs: firebase
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+
+      - run: bun install --frozen-lockfile
+
+      - run: bun export
+        env:
+          NEXT_PUBLIC_BASE_PATH: /${{ github.event.repository.name }}
+
+      # `enablement` turns the Pages site on if it isn't already, so the first
+      # release doesn't fail on a setting nobody has clicked yet. It needs the
+      # repo to be eligible for Pages at all — which on a free org plan means
+      # public.
+      - uses: actions/configure-pages@v5
+        with:
+          enablement: true
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: web/out
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
