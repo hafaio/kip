@@ -32,7 +32,7 @@
     "@types/react": "^19.1.12",
     "@types/react-dom": "^19.1.12",
     "autoprefixer": "^10.4.21",
-    "firebase-admin": "^13.10.0",
+    "firebase-admin": "^14.2.0",
     "postcss": "^8.5.6",
     "tailwindcss": "^4.1.13",
     "typescript": "~5.9.2"
