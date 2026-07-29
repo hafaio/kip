@@ -1,0 +1,704 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    // Friendship is bijective and denormalized: when A and B become friends a
+    // doc is written into BOTH users' `friends` subcollections. So "is the
+    // requester a confirmed mutual friend of `ownerId`?" is a single exists().
+    function isFriendOf(ownerId) {
+      return isSignedIn()
+        && exists(/databases/$(database)/documents/users/$(ownerId)/friends/$(request.auth.uid));
+    }
+
+    // A friend edge describing the caller must carry the caller's real name and
+    // handle. Same reasoning as pinning a request's sender: the copy exists
+    // because the two parties may not be able to read each other, which also means
+    // the person holding it can't check it.
+    function edgeMatchesWriter(edge) {
+      let profile = get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+      return edge.get('displayName', '') == profile.get('displayName', '')
+          && edge.get('username', '') == profile.get('username', '')
+          // The photo is pinned for the same reason the name is: it's a copy the
+          // holder can't check, shown next to your name in a list nobody
+          // re-reads. Costs no extra lookup — the profile is already fetched.
+          && edge.get('photoURL', null) == profile.get('photoURL', null);
+    }
+
+    // Does the caller share a stay with `userId`? Same shape as the guest marker
+    // on a listing: a POINTER the reader self-issues, naming the booking that
+    // justifies it, re-read on every use. It grants nothing on its own — the
+    // booking is what's checked — so it goes inert the moment that stay is
+    // cancelled, with nothing to clean up and no cancel path to remember.
+    //
+    // It has to be a pointer rather than a search because a rule can only look up
+    // a path it can construct, and "is there a booking joining these two?" is a
+    // query. The pointer supplies the one name the rules can't derive.
+    function sharesStayWith(userId) {
+      return exists(/databases/$(database)/documents/users/$(userId)/knownBy/$(request.auth.uid))
+        && stayPermitsSight(
+             get(/databases/$(database)/documents/users/$(userId)/knownBy/$(request.auth.uid)).data.get('bookingId', ''),
+             userId,
+             request.auth.uid
+           );
+    }
+
+    function listingOwner(listingId) {
+      return get(/databases/$(database)/documents/listings/$(listingId)).data.ownerId;
+    }
+
+    // Is this caller a confirmed guest of `listingId`? The marker under the
+    // listing is a POINTER at the booking that justifies it, never a standing
+    // grant — so it's re-checked here on every read and goes inert the moment the
+    // booking stops being CONFIRMED. That's the same shape as portal grants:
+    // nothing to revoke, nothing to remember to clean up, and no cancel path can
+    // forget to. Leftovers are garbage, not access.
+    function guestOfListing(listingId) {
+      return request.auth != null
+        && exists(/databases/$(database)/documents/listings/$(listingId)/guests/$(request.auth.uid))
+        && bookingBacksGuest(listingId, get(/databases/$(database)/documents/listings/$(listingId)/guests/$(request.auth.uid)).data.get('bookingId', ''));
+    }
+
+    function bookingBacksGuest(listingId, bookingId) {
+      return exists(/databases/$(database)/documents/bookings/$(bookingId))
+        && get(/databases/$(database)/documents/bookings/$(bookingId)).data.status == 'CONFIRMED'
+        && get(/databases/$(database)/documents/bookings/$(bookingId)).data.guestId == request.auth.uid
+        && get(/databases/$(database)/documents/bookings/$(bookingId)).data.listingId == listingId;
+    }
+
+    // Does the caller hold a live grant for `token`? A share-link visitor proves
+    // they know a token by writing `portals/{token}/grants/{uid}` — naming it in
+    // the PATH is the proof, since the create rule refuses a token that doesn't
+    // resolve to a real link. Reads then compare that grant against whichever
+    // token the document currently sits under, so revoking (clearing the field)
+    // or regenerating (a fresh uuid) kills every old grant instantly, with no
+    // sweep. A read request carries no body, which is why the token has to be
+    // established by a prior write rather than presented inline.
+    function portalGrant(token) {
+      return token != null
+        && request.auth != null
+        // The portal itself must still exist. Belt-and-braces: the pointer being
+        // live is normally enough, but this makes a grant under a deleted link
+        // inert even if a pointer were ever left dangling.
+        && exists(/databases/$(database)/documents/portals/$(token))
+        && exists(/databases/$(database)/documents/portals/$(token)/grants/$(request.auth.uid));
+    }
+
+    // A window a friend may instantly (auto-accept) book: it must auto-accept AND
+    // still be OPEN. The OPEN check is what makes the guest-CONFIRMED booking
+    // branch race-safe — without it a crafted client could mint CONFIRMED bookings
+    // onto an already-BOOKED window (double-book) or without ever flipping it.
+    function windowInstantlyBookable(listingId, windowId) {
+      let window = get(/databases/$(database)/documents/listings/$(listingId)/windows/$(windowId)).data;
+      return window.autoAccept == true && window.status == 'OPEN';
+    }
+
+    // A booking carries its own dates because it OUTLIVES the slot — cancelling a
+    // slot deletes the window outright, and a guest who came through a share link
+    // can't read windows at all. So the dates are pinned to the slot at creation,
+    // and re-checked when the stay is confirmed (see the bookings rules): between
+    // those two moments the window is still OPEN and the owner may edit it, so
+    // without the second check a confirm could shift a stay the guest never agreed
+    // to. Once BOOKED the window's dates are frozen, which closes the loop.
+    // The slot must still be free AND still hold the dates being claimed. Used at
+    // BOTH ends of a stay's life — asking and confirming — which together give the
+    // invariant "you get the nights you asked for, or nothing":
+    //   ask     the dates are pinned to the slot, and a booking's dates are
+    //           immutable for life (the update rule allows only `status`)
+    //   confirm the slot must STILL hold them, since it sat OPEN in between and
+    //           the host could have moved it
+    // The OPEN check is what stops a second stay landing on a slot someone else
+    // already holds: a booked slot's dates are frozen, so date equality alone
+    // would happily match, and confirming would overwrite the first guest's
+    // `bookedBy` and with it their right to release the slot.
+    //
+    // Safe at confirm because rules see COMMITTED state: the batch that flips the
+    // slot to BOOKED still reads it as OPEN here.
+    // Does this write ALSO hand the slot to this guest, in the same commit?
+    // `getAfter` sees the post-commit state, so it can require the slot flip to
+    // travel with the booking. Without it, confirming is a lone booking write the
+    // rules happily accept: the slot stays OPEN, so the next confirm passes the
+    // OPEN check too, and a host can promise one slot to any number of guests.
+    // The transaction in the client only guards honest races.
+    function slotHandedTo(booking, guestId) {
+      let after = getAfter(/databases/$(database)/documents/listings/$(booking.listingId)/windows/$(booking.windowId)).data;
+      return after.status == 'BOOKED' && after.bookedBy == guestId;
+    }
+
+    // The three ways one person may reach another: the recipient is findable by
+    // handle, the sender holds a live link of theirs, or the two of them share a
+    // confirmed stay. Checked on create AND on update — a request already sitting
+    // in someone's inbox must not outlive the route that put it there.
+    //
+    // The stay route exists because a share-link guest is neither searchable nor
+    // someone whose link the host holds, so without it the one pair who
+    // demonstrably know each other could never ask to connect. Named by
+    // `bookingId` because a rule can only look up a path it can construct.
+    function requestRouteOpen(request_) {
+      return get(/databases/$(database)/documents/users/$(request_.to)).data.get('searchable', false) == true
+        || (request_.get('portalId', null) != null
+            && exists(/databases/$(database)/documents/portals/$(request_.portalId))
+            && get(/databases/$(database)/documents/portals/$(request_.portalId)).data.ownerId == request_.to)
+        || bookingJoins(request_.get('bookingId', ''), request_.from, request_.to);
+    }
+
+    // Are these two the host and guest of one confirmed stay? Order-free, because
+    // either party may be the one asking to connect afterwards.
+    function bookingJoins(bookingId, first, second) {
+      return bookingId != ''
+        && exists(/databases/$(database)/documents/bookings/$(bookingId))
+        && get(/databases/$(database)/documents/bookings/$(bookingId)).data.status == 'CONFIRMED'
+        && get(/databases/$(database)/documents/bookings/$(bookingId)).data.ownerId in [first, second]
+        && get(/databases/$(database)/documents/bookings/$(bookingId)).data.guestId in [first, second]
+        && first != second;
+    }
+
+    // How long after checkout the two of you can still look each other up. Long
+    // enough to settle up, return something, or ask to connect properly; not
+    // "forever", which is what a stay with no end state quietly meant before.
+    function staySightDays() { return 60; }
+
+    // The stay behind a `knownBy` pointer, and whether it still justifies one.
+    // Two shapes qualify:
+    //   CONFIRMED  — either party may look the other up, until the stay is 60
+    //                days behind them.
+    //   REQUESTED  — the HOST may look up the GUEST, one direction only. Asking
+    //                to stay is initiating contact, exactly as a connect request
+    //                is, and the host is about to decide on it: confirming a
+    //                stranger called "Someone" is the moment identity matters
+    //                most. The guest gets no matching read, because being asked
+    //                is not consent to be looked up.
+    function stayPermitsSight(bookingId, subjectUid, readerUid) {
+      let stay = get(/databases/$(database)/documents/bookings/$(bookingId)).data;
+      return bookingId != ''
+        && exists(/databases/$(database)/documents/bookings/$(bookingId))
+        && subjectUid != readerUid
+        && (
+          (stay.status == 'CONFIRMED'
+            && stay.ownerId in [subjectUid, readerUid]
+            && stay.guestId in [subjectUid, readerUid]
+            && endedWithin(stay.end, staySightDays()))
+          || (stay.status == 'REQUESTED'
+              && stay.ownerId == readerUid
+              && stay.guestId == subjectUid)
+        );
+    }
+
+    function bookingMatchesOpenSlot(booking) {
+      let window = get(/databases/$(database)/documents/listings/$(booking.listingId)/windows/$(booking.windowId)).data;
+      return window.status == 'OPEN'
+          && window.start == booking.start
+          && window.end == booking.end
+          // And the nights haven't already gone. The client filters expired slots
+          // out of every surface, so an honest one never offers this — but a slot
+          // nobody has touched since it lapsed is still OPEN, and without this a
+          // crafted client could ask for last month, or instant-book it on an
+          // auto-accept slot. Cheap now that `stillCurrent` exists; the note that
+          // this had to stay client-side predates it.
+          && stillCurrent(window.end);
+    }
+
+    // Is an ISO date still current? Used to stop a slot whose dates have already
+    // been and gone from being edited back into the future — availability that
+    // has passed is history, and the only thing left to do with it is clear it.
+    //
+    // The boundary is YESTERDAY, not today, and that slack is deliberate:
+    // `request.time` is UTC while the client's `isExpired` compares against the
+    // user's local date, so anyone west of UTC would otherwise be refused an edit
+    // the UI legitimately offered them. This is a backstop behind that UI, so
+    // erring open at the boundary is the right direction to err.
+    function stillCurrent(iso) {
+      let parts = iso.split('-');
+      return timestamp.date(int(parts[0]), int(parts[1]), int(parts[2]))
+          >= timestamp.date(request.time.year(), request.time.month(), request.time.day()) - duration.value(1, 'd');
+    }
+
+    // Is `iso` no more than `days` old? A stay is the only thing here that ends
+    // without anything writing to it — nothing marks a booking "completed", the
+    // app just compares its `end` to today when rendering. So the pointers that
+    // hang off a stay would otherwise outlive it forever, which is how someone
+    // you hosted once kept reading your profile years later. There is no
+    // transition to hook; the rule reads the date itself.
+    function endedWithin(iso, days) {
+      let parts = iso.split('-');
+      return timestamp.date(int(parts[0]), int(parts[1]), int(parts[2]))
+          >= timestamp.date(request.time.year(), request.time.month(), request.time.day())
+             - duration.value(days, 'd');
+    }
+
+    // Does the caller hold a share-link grant covering this slot? Same three
+    // sources as the window read rule: the slot's own link, its room's, or the
+    // owner's profile link.
+    function portalCoversWindow(listingId, windowId) {
+      return portalGrant(get(/databases/$(database)/documents/listings/$(listingId)/windows/$(windowId)).data.get('publicPortalId', null))
+          || portalGrant(get(/databases/$(database)/documents/listings/$(listingId)).data.get('publicPortalId', null))
+          || portalGrant(get(/databases/$(database)/documents/users/$(listingOwner(listingId))/settings/prefs).data.get('profilePortalId', null));
+    }
+
+    // A profile is readable BY ID (get) by exactly three parties: yourself, your
+    // friends, and — when you've turned searchability on — anyone who already has
+    // your uid. Knowing a uid is therefore NOT enough on its own: a private
+    // account is indistinguishable from one that doesn't exist, even to someone
+    // who kept your uid from a friendship you since ended. LIST/query is denied
+    // so the user table can't be enumerated. Only the owner writes their profile.
+    match /users/{userId} {
+      allow get: if isSignedIn()
+        && (request.auth.uid == userId
+            || resource.data.get('searchable', false) == true
+            || isFriendOf(userId)
+            // Or you two share a stay. Without this a share-link guest and their
+            // host — neither friends nor searchable to each other — could never
+            // read each other at all, which is why their names and photos used to
+            // be COPIED onto every booking and healed on every rename. That copy
+            // was O(bookings) forever; this is one hop instead.
+            || sharesStayWith(userId));
+      allow list: if false;
+      // Only the owner writes their own profile, under two constraints:
+      //
+      // 1. The displayed handle is bound to the registry: `username`, when
+      //    present, must resolve to an entry this user owns — so a profile can't
+      //    display a handle it never claimed (registry uniqueness would otherwise
+      //    guard only discovery, not the shown identity). claimUsername writes the
+      //    registry entry first, so this get() sees it.
+      // 2. `searchable` can only be true with a handle to be searched BY. Being
+      //    findable and having a handle are one decision, enforced here rather
+      //    than left to the client.
+      //
+      // (Email just isn't written here — it stays on the Auth account, and the
+      // notification functions read it from there with the Admin SDK, so it never
+      // lands in Firestore at all.)
+      allow write: if isSignedIn() && request.auth.uid == userId
+        && (!('username' in request.resource.data)
+            || get(/databases/$(database)/documents/usernames/$(request.resource.data.username)).data.uid == userId)
+        && (request.resource.data.get('searchable', false) == false
+            || request.resource.data.get('username', '') != '');
+
+      // Privacy preferences (e.g. shareStaysWithFriends) are private to the owner.
+      match /settings/{doc} {
+        allow read, write: if isSignedIn() && request.auth.uid == userId;
+      }
+
+      // A friend edge. Either party can read it or delete it (unfriend removes
+      // both sides). Creating the edge in someone else's list (userId) is only
+      // allowed to the friend named in the edge, and only when that user sent a
+      // pending request (`${userId}_${friendId}`) — this is the accept step.
+      // Adding to one's own list (request.auth.uid == userId) is unrestricted
+      // but grants no reciprocal access, since access is gated on the OTHER
+      // side's edge.
+      // The pointer behind `sharesStayWith`, self-issued by whoever wants to look
+      // you up. It names a booking, and only a booking that actually joins the two
+      // of you — so it can't be forged into a way to read a stranger, and it stops
+      // working when that stay is cancelled. Deliberately NOT a grant: nothing
+      // reads this document except as a lookup key.
+      match /knownBy/{readerUid} {
+        allow get: if isSignedIn()
+          && (request.auth.uid == readerUid || request.auth.uid == userId);
+        allow list: if false;
+        allow create, update: if isSignedIn()
+          && request.auth.uid == readerUid
+          && request.resource.data.keys().hasOnly(['bookingId'])
+          && stayPermitsSight(request.resource.data.bookingId, userId, readerUid);
+        allow delete: if isSignedIn()
+          && (request.auth.uid == readerUid || request.auth.uid == userId);
+      }
+
+      match /friends/{friendId} {
+        allow read: if isSignedIn()
+          && (request.auth.uid == userId || request.auth.uid == friendId);
+        allow create: if isSignedIn()
+          && (request.auth.uid == userId
+              // Accepting: the accepter (friendId) writes the sender's (userId)
+              // edge when a request `${sender}_${accepter}` exists. One clause
+              // covers both routes in — by handle and by share link — since they
+              // land in the same collection.
+              //
+              // This edge DESCRIBES the accepter, in someone else's list, and it
+              // outlives everything else here — so like a request, its identity is
+              // pinned to their real profile. Unpinned, an accepter could install
+              // themselves under any name, or wearing a handle registered to
+              // someone else, in a list the owner has no reason to re-check.
+              || (request.auth.uid == friendId
+                  && exists(/databases/$(database)/documents/connectRequests/$(userId + '_' + friendId))
+                  && edgeMatchesWriter(request.resource.data)));
+        // You may update the doc that represents YOU in someone else's list. That
+        // heals a rename: nothing else can reach into another user's friends list,
+        // so without this the copy would be stale forever. Kept as a copy rather
+        // than read live so rendering a friends list costs no extra reads.
+        //
+        // Pinned to the profile as well as scoped to two fields — scope alone
+        // would let you heal your name to "kip Support" in every friend's list.
+        // The profile write must therefore LAND FIRST (see updateDisplayName),
+        // since rules read committed state.
+        // `username` is in the allowed set even though a handle is permanent,
+        // because an edge written BEFORE you claimed one holds `''` forever —
+        // and `edgeMatchesWriter` then compares that against the handle you now
+        // have and refuses. Without it, one friendship made too early silently
+        // freezes every heal, name and photo alike, for that friend only. The
+        // value stays pinned to the registry-bound profile, so it can't be
+        // forged; only brought up to date.
+        allow update: if isSignedIn()
+          && request.auth.uid == friendId
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['displayName', 'photoURL', 'username'])
+          && edgeMatchesWriter(request.resource.data);
+        allow delete: if isSignedIn()
+          && (request.auth.uid == userId || request.auth.uid == friendId);
+      }
+    }
+
+    // Username -> uid registry, so a friend can be found by handle WITHOUT the
+    // users table being queryable. Doc id is the normalized handle; resolvable
+    // only by GET (you must already know the exact handle), never enumerable
+    // (no list). The value maps to YOUR uid and carries only that one field.
+    // Uniqueness is structural: claiming a handle someone else holds hits the
+    // `update` path, which only the current owner passes — so a collision is
+    // denied and `claimUsername`'s registry write fails before the profile write.
+    // The format + reserved-name checks live HERE (not just the client) so a
+    // crafted client can't grab `@admin` or a malformed handle. The owner-only
+    // `update` (uid unchanged) makes a re-claim/retry idempotent without ever
+    // letting the handle be stolen.
+    //
+    // There is NO delete: a handle is permanent once claimed. That's what makes
+    // turning searchability off safe — your name can't be released and re-squatted
+    // while you're not looking, so going private is reversible.
+    match /usernames/{handle} {
+      allow get: if isSignedIn();
+      allow list: if false;
+      // Never anonymous. Anonymous sign-in exists for share-link visitors to hold
+      // a grant, and those accounts are auto-deleted after 30 days — but a handle
+      // has NO delete rule, deliberately, so a squatted one would point at a dead
+      // uid forever with no way to reclaim it. One script could take every good
+      // name permanently.
+      allow create: if isSignedIn()
+        && request.auth.token.firebase.sign_in_provider != 'anonymous'
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.keys().hasOnly(['uid'])
+        && handle.matches('^[a-z][a-z0-9_]{2,19}$')
+        && !(handle in ['admin', 'kip', 'support', 'help', 'root', 'system', 'about', 'settings']);
+      allow update: if isSignedIn()
+        && resource.data.uid == request.auth.uid
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.keys().hasOnly(['uid']);
+      allow delete: if false;
+    }
+
+    // "Let's be friends." Only that — asking to STAY is a REQUESTED booking, the
+    // same document a friend creates, so there is one concept for it rather than
+    // two. Doc id is `${from}_${to}`: exactly one pending friendship ask per pair
+    // is correct, and it lets the accept rule above find it deterministically.
+    //
+    // Two ways to be allowed to create one, and nothing else:
+    //   1. The recipient is `searchable` — the handle registry is the only
+    //      legitimate way to have found them, so going private stops inbound
+    //      requests outright, even from someone holding your uid.
+    //   2. The sender names a live share link belonging to the recipient — which
+    //      they could only know by being given it.
+    match /connectRequests/{requestId} {
+      allow read: if isSignedIn()
+        && (request.auth.uid == resource.data.from || request.auth.uid == resource.data.to);
+      // The name and handle shown to the recipient — and put in their email — must
+      // be the sender's REAL ones. Nothing else pins them: these fields are
+      // denormalized because at this point the two parties can't read each other's
+      // profiles, which also means the recipient has no way to check them. Left
+      // free, anyone could ask to connect as "Chase Fraud Alert (@chase_support)",
+      // or simply wear another kip user's handle.
+      allow create: if isSignedIn()
+        && request.auth.uid == request.resource.data.from
+        && requestId == request.resource.data.from + '_' + request.resource.data.to
+        && request.resource.data.fromName
+           == get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('displayName', '')
+        && request.resource.data.fromUsername
+           == get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('username', '')
+        && requestRouteOpen(request.resource.data);
+      // Re-asking overwrites rather than erroring: same doc id, same constraints —
+      // and that has to mean the SAME constraints. Checking only the identity
+      // pins left a pending request rewritable after the link it arrived through
+      // was revoked, `portalId` included, so the recipient's card could claim a
+      // provenance it no longer had. A route you no longer have is not a route.
+      allow update: if isSignedIn()
+        && request.auth.uid == resource.data.from
+        && request.resource.data.from == resource.data.from
+        && request.resource.data.to == resource.data.to
+        && request.resource.data.fromName
+           == get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('displayName', '')
+        && request.resource.data.fromUsername
+           == get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('username', '')
+        && requestRouteOpen(request.resource.data);
+      // Sender withdraws, recipient declines or accepts.
+      allow delete: if isSignedIn()
+        && (request.auth.uid == resource.data.from || request.auth.uid == resource.data.to);
+    }
+
+    // A property a user offers. Visible to the owner, the owner's friends, and
+    // anyone the owner has confirmed as a guest of THIS place (see /guests below).
+    // That third case is what lets a share-link booking work without friendship:
+    // a stranger who books through a link can see the one room they're staying
+    // in, and nothing else the host shares.
+    // Clause ORDER is load-bearing, not style. Rules cap document lookups per
+    // request (20 across a query), `||` short-circuits, and repeated lookups of
+    // the SAME path are counted once — so the checks that pass in bulk go first
+    // and cost one lookup for a whole query, while the per-document ones sit last
+    // where they're only reached by single gets. Putting `isFriendOf` after the
+    // portal checks would blow the cap on a 30-listing friends query.
+    //
+    // Note a SLOT grant is deliberately absent: sharing one set of dates does not
+    // hand over the room. That link carries its own copy of the room's details
+    // instead (see utils/portals.ts).
+    match /listings/{listingId} {
+      allow read: if request.auth.uid == resource.data.ownerId
+        || isFriendOf(resource.data.ownerId)
+        || portalGrant(get(/databases/$(database)/documents/users/$(resource.data.ownerId)/settings/prefs).data.get('profilePortalId', null))
+        || portalGrant(resource.data.get('publicPortalId', null))
+        || guestOfListing(listingId);
+      allow create: if isSignedIn() && request.auth.uid == request.resource.data.ownerId;
+      allow update, delete: if isSignedIn() && request.auth.uid == resource.data.ownerId;
+
+      // A pointer at the booking that entitles this guest to see the listing.
+      // Self-issued: the guest writes it, and it only names a booking that is
+      // theirs, on this listing. It grants nothing on its own — `guestOfListing`
+      // re-reads the booking on every use — so letting the guest write it is safe,
+      // and it's what lets an instant-book guest get access without the owner
+      // being present. Scoped to the listing and deliberately NOT to `windows`: a
+      // guest sees the place they're staying in, not the host's whole calendar.
+      match /guests/{guestUid} {
+        allow read: if isSignedIn()
+          && (request.auth.uid == guestUid || request.auth.uid == listingOwner(listingId));
+        // Update is allowed on exactly the same terms as create, because claiming
+        // is idempotent by design: the client re-runs it off the guest's own trips
+        // whenever they load, so after the first claim every later one is a
+        // rewrite. Without this the pointer works and the console fills with
+        // permission-denied for the rest of the stay, which is how a real failure
+        // would go unnoticed. Safe for the same reason create is — the pointer
+        // grants nothing on its own, and whatever booking it names is re-read on
+        // every use.
+        allow create, update: if isSignedIn()
+          && request.auth.uid == guestUid
+          && request.resource.data.keys().hasOnly(['bookingId'])
+          && bookingBacksGuest(listingId, request.resource.data.bookingId);
+        allow delete: if isSignedIn()
+          && (request.auth.uid == guestUid || request.auth.uid == listingOwner(listingId));
+      }
+
+      // Availability windows inherit the listing's visibility. The owner manages
+      // them freely; a friend may only claim an auto-accept window by flipping it
+      // OPEN -> BOOKED (and nothing else), which powers first-come-first-served
+      // instant booking without the owner online.
+      match /windows/{windowId} {
+        // Owner, the owner's friends, or a share-link visitor holding a grant for
+        // whichever link currently covers this date range — its own (a slot link),
+        // its listing's (a room link), or the owner's profile link. Three separate
+        // checks rather than one, because all three can cover the same window at
+        // once and a rule can only compare against one value at a time.
+        //
+        // Dates are the ONLY thing a link reads live. Everything else it shows —
+        // the owner's name, the room's title and location — is copied into the
+        // portal doc, because the changes that matter here aren't made by the
+        // owner: a friend instant-booking flips a window to BOOKED, and no
+        // write-through could catch that.
+        // Same ordering discipline as the listing rule above: the room-wide and
+        // profile-wide grants are one shared lookup each and cover every window in
+        // a listing query, so they come before the per-window slot grant.
+        allow read: if request.auth.uid == listingOwner(listingId)
+          || isFriendOf(listingOwner(listingId))
+          // Whoever holds this slot can always read it. The slot is the source of
+          // truth for the dates, and a share-link guest's grant expires (or dies
+          // when the host regenerates the link) long before their stay does — so
+          // without this they'd lose sight of a stay already confirmed.
+          || resource.data.get('bookedBy', null) == request.auth.uid
+          || portalGrant(get(/databases/$(database)/documents/listings/$(listingId)).data.get('publicPortalId', null))
+          || portalGrant(get(/databases/$(database)/documents/users/$(listingOwner(listingId))/settings/prefs).data.get('profilePortalId', null))
+          || portalGrant(resource.data.get('publicPortalId', null));
+        // A slot is born free. Without pinning this an owner could create one
+        // already BOOKED naming any uid as `bookedBy`, handing that person a
+        // standing read of the slot they never asked for (see the read rule).
+        allow create: if isSignedIn()
+          && request.auth.uid == listingOwner(listingId)
+          && request.resource.data.status == 'OPEN'
+          && request.resource.data.get('bookedBy', null) == null;
+        allow delete: if isSignedIn() && request.auth.uid == listingOwner(listingId);
+        allow update: if isSignedIn()
+          && ((request.auth.uid == listingOwner(listingId)
+                  // A booked window's DATES are what the guest agreed to, so they
+                  // freeze until the booking is cancelled — otherwise a host could
+                  // silently move a stay out from under someone who'd already had
+                  // it confirmed. Notes stay editable, and the OPEN->BOOKED and
+                  // BOOKED->OPEN transitions still pass (the guard reads the
+                  // EXISTING status, which is OPEN on confirm).
+                  && (resource.data.status != 'BOOKED'
+                      || (request.resource.data.start == resource.data.start
+                          && request.resource.data.end == resource.data.end))
+                  // Dates that have already passed freeze the same way, for a
+                  // different reason: they aren't availability any more, and
+                  // reviving them would resurrect the stale asks still pointing
+                  // at them. Everything else about the slot stays editable, so
+                  // it can still be cleared off the calendar.
+                  && (stillCurrent(resource.data.end)
+                      || (request.resource.data.start == resource.data.start
+                          && request.resource.data.end == resource.data.end)))
+              // A friend claims an auto-accept window: OPEN -> BOOKED, stamping
+              // themselves as bookedBy. `hasOnly(['status','bookedBy'])` pins EVERY
+              // other field (start/end/autoAccept/details AND publicPortalId, plus
+              // any new field) — enumerated equality left those unlisted fields open.
+              || (isFriendOf(listingOwner(listingId))
+                  && resource.data.autoAccept == true
+                  && resource.data.status == 'OPEN'
+                  && request.resource.data.status == 'BOOKED'
+                  && request.resource.data.bookedBy == request.auth.uid
+                  && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'bookedBy']))
+              // The guest who booked releases it on cancel: BOOKED -> OPEN,
+              // clearing bookedBy; every other field pinned the same way.
+              || (resource.data.bookedBy == request.auth.uid
+                  && resource.data.status == 'BOOKED'
+                  && request.resource.data.status == 'OPEN'
+                  && request.resource.data.bookedBy == null
+                  && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'bookedBy'])));
+      }
+    }
+
+    // A booking of a window. Readable/writable by the guest and the owner. A
+    // guest may only create a booking against a friend's place.
+    match /bookings/{bookingId} {
+      allow read: if isSignedIn()
+        && (request.auth.uid == resource.data.guestId || request.auth.uid == resource.data.ownerId);
+      // ONE way a stay is asked for, whoever is asking. A friend and a share-link
+      // visitor both create the booking themselves; the difference is only what
+      // authorises it and whether instant booking is on the table.
+      //
+      // Dates must match the slot named — otherwise a guest could ask for nights
+      // the host never offered, and the host would have to notice before
+      // confirming.
+      allow create: if isSignedIn()
+        && request.auth.uid == request.resource.data.guestId
+        && request.resource.data.ownerId == listingOwner(request.resource.data.listingId)
+        && bookingMatchesOpenSlot(request.resource.data)
+        // No names are copied onto a booking any more, so there is nothing here to
+        // pin. Each side reads the other's profile live through the `knownBy`
+        // pointer instead — see `sharesStayWith`. The copies had to be pinned
+        // BECAUSE they were unverifiable by the person holding them; a live read
+        // is verifiable by construction.
+        // A booking starts life un-cancelled. Without pinning these a guest could
+        // create one pre-stamped as cancelled by the host.
+        && request.resource.data.get('cancelledBy', null) == null
+        && request.resource.data.get('cancelReason', null) == null
+        && (
+          // A friend self-books. REQUESTED goes to the owner for approval; the one
+          // exception is an auto-accept slot, which may be created already
+          // CONFIRMED (in the same transaction that flips OPEN -> BOOKED).
+          (isFriendOf(request.resource.data.ownerId)
+            && (request.resource.data.status == 'REQUESTED'
+                || (request.resource.data.status == 'CONFIRMED'
+                    && windowInstantlyBookable(request.resource.data.listingId, request.resource.data.windowId)
+                    && slotHandedTo(request.resource.data, request.auth.uid))))
+          // Someone holding a share link. ALWAYS needs approval — auto-accept means
+          // first-come-first-served among your friends, and a link is not
+          // friendship, so instant booking is deliberately off the table here even
+          // when the slot allows it.
+          || (request.resource.data.status == 'REQUESTED'
+              && portalCoversWindow(request.resource.data.listingId, request.resource.data.windowId))
+        );
+      // Only `status` may ever change (never the party/link fields), and a guest may
+      // only move their own booking to CANCELLED — confirming is the owner's call, so
+      // a guest can't self-confirm a REQUESTED booking with a direct write.
+      // Cancelling also stamps WHO and WHY. A Firestore trigger can't see who made
+      // a write, and the notification it sends depends entirely on that — "declined"
+      // and "the host moved those dates" read very differently to the person
+      // getting the mail. You may only stamp yourself, so the attribution can't be
+      // forged onto the other party.
+      // The heal rule that used to live here is gone with the copies it maintained.
+      // Leaving it would let either party write arbitrary name and photo fields
+      // onto a booking that nothing reads — a place to put things, guarded by
+      // nothing.
+
+      allow update: if isSignedIn()
+        && (request.auth.uid == resource.data.guestId || request.auth.uid == resource.data.ownerId)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'cancelledBy', 'cancelReason'])
+        // The transition graph, not just the fields. Without this every status
+        // was reachable from every other, and an ordinary race walked straight
+        // into it: a guest withdraws an ask, the host's screen still says
+        // Pending, the host taps Confirm, and the confirm transaction — which
+        // reads only the WINDOW — commits a stay the guest had already taken
+        // back. CANCELLED is an ending; only a live ask can become a stay.
+        && resource.data.status != 'CANCELLED'
+        && (request.resource.data.status != 'CONFIRMED'
+            || resource.data.status == 'REQUESTED')
+        // REQUESTED is a birth state, never a destination. Allowing a host to
+        // push a CONFIRMED stay back to it would revoke the guest's access to
+        // the place mid-stay while the slot stayed BOOKED in their name.
+        && request.resource.data.status != 'REQUESTED'
+        && (request.resource.data.get('cancelledBy', null) == null
+            || request.resource.data.cancelledBy == request.auth.uid)
+        && (request.auth.uid == resource.data.ownerId
+            || request.resource.data.status == 'CANCELLED')
+        // Confirming re-checks the dates against the slot. The window sat OPEN
+        // while the request was pending, so the owner could have edited it since;
+        // without this the confirm would silently move the stay.
+        && (request.resource.data.status != 'CONFIRMED'
+            || (bookingMatchesOpenSlot(resource.data)
+                && slotHandedTo(resource.data, resource.data.guestId)));
+      // Clearing a cancelled booking off your own list. It is a HIDE, not a delete,
+      // because one document is the record for BOTH parties — a delete by the guest
+      // would erase the host's history of a stay that was called off, which is
+      // exactly the record worth keeping. So each party may add ONLY their own uid,
+      // and only once the booking is cancelled; a live stay can't be tidied away.
+      allow update: if isSignedIn()
+        && (request.auth.uid == resource.data.guestId || request.auth.uid == resource.data.ownerId)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['hiddenBy'])
+        && resource.data.status == 'CANCELLED'
+        && request.resource.data.hiddenBy.hasOnly(resource.data.get('hiddenBy', []).concat([request.auth.uid]))
+        && request.resource.data.hiddenBy.hasAll(resource.data.get('hiddenBy', []));
+      // Bookings are TERMINAL, never removed. A guest's access to the listing is
+      // a pointer AT one of these, re-read on every use, so deleting a booking
+      // would strand that pointer. Ending a stay means CANCELLED.
+      allow delete: if false;
+    }
+
+    // A public share link (capability URL). The doc id is an unguessable UUID;
+    // knowing it is the capability, which is why this is world-readable BY ID and
+    // `list` stays denied — links must not be enumerable.
+    //
+    // It carries the owner's name/photo, and for a SLOT link a copy of the room's
+    // details (that copy is what lets a single shared date range show the place it
+    // belongs to). Free dates are NOT in here — those are read live, gated on a
+    // grant, so a link can never offer a slot someone else already took.
+    //
+    // Revoke = delete; regenerate = new uuid + delete the old, which kills every
+    // old link. (The requests rule above still get()s this doc — rules lookups run
+    // with full access regardless of these read rules.)
+    match /portals/{portalId} {
+      allow get: if true;
+      allow list: if false;
+      allow create: if isSignedIn() && request.auth.uid == request.resource.data.ownerId;
+      allow update, delete: if isSignedIn() && request.auth.uid == resource.data.ownerId;
+
+      // A visitor's proof that they hold this link. Writing it is the proof: the
+      // path names the token, and a token that doesn't resolve to a real link is
+      // refused. Self-issued and self-owned — it authorizes nothing on its own,
+      // it's only ever read back by portalGrant() above, which checks it against
+      // the token a document CURRENTLY sits under. So an old grant left behind by
+      // a regenerated link is inert, and cleanup is hygiene (a TTL policy on
+      // `expires`), never security.
+      //
+      // Needs an identity, which is why the share-link page signs visitors in
+      // anonymously: a read request has no body, so there's nowhere to present a
+      // token inline, and a signed-out caller can't own a grant.
+      match /grants/{accountId} {
+        allow get: if isSignedIn() && request.auth.uid == accountId;
+        allow list: if false;
+        allow create, update: if isSignedIn()
+          && request.auth.uid == accountId
+          && exists(/databases/$(database)/documents/portals/$(portalId));
+        allow delete: if isSignedIn() && request.auth.uid == accountId;
+      }
+    }
+
+    // No `mail` collection. Notification email is sent by Cloud Functions watching
+    // the documents that represent the events (see functions/src/index.ts) — a
+    // client can't ask for an email at all, only cause a real state change that
+    // warrants one. An enqueue-from-the-client design could gate WHO you may write
+    // to but never WHAT you write, so it was a harassment channel between any two
+    // people who shared a booking; and it couldn't express a connect request,
+    // which has no booking to authorise against.
+  }
+}
