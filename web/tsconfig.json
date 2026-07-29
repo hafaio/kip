@@ -12,8 +12,16 @@
     "moduleResolution": "bundler",
     "resolveJsonModule": true,
     "isolatedModules": true,
-    "jsx": "preserve",
+    "jsx": "react-jsx",
     "incremental": true,
+    // TypeScript 6 stopped sweeping `node_modules/@types` and pulling in every
+    // package it found, so anything not reached by an explicit reference has to
+    // be named here. Only `bun` is: `next-env.d.ts` already references next,
+    // which reaches react and react-dom, but nothing references bun-types, and
+    // without it the three `bun:test` imports fail to resolve. `node` rides
+    // along as a bun-types dependency; naming it keeps `scripts/seed.ts`'s
+    // `process`/`Buffer` independent of that.
+    "types": ["bun", "node"],
     "plugins": [{ "name": "next" }]
   },
   "include": [
@@ -26,7 +34,8 @@
     "utils/**/*.tsx",
     "scripts/**/*.ts",
     "tests/**/*.ts",
-    ".next/types/**/*.ts"
+    ".next/types/**/*.ts",
+    ".next/dev/types/**/*.ts"
   ],
   "exclude": ["node_modules"]
 }
