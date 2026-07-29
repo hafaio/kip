@@ -15,7 +15,7 @@
     "test:rules": "firebase emulators:exec --config ../firebase.json --only firestore --project demo-kip-rules 'bun test tests/rules.test.ts'"
   },
   "dependencies": {
-    "firebase": "^11.1.0",
+    "firebase": "^12.16.0",
     "geofire-common": "^6.0.0",
     "next": "^15.5.2",
     "next-themes": "^0.4.6",
