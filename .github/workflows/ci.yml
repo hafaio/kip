@@ -1,4 +1,4 @@
-name: CI
+name: build
 
 # Build/test gate. Runs on every push to main and every PR, and is reused by the
 # deploy workflow (workflow_call) so a release can't publish over a red build.
