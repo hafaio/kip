@@ -76,7 +76,7 @@ jobs:
       # release doesn't fail on a setting nobody has clicked yet. It needs the
       # repo to be eligible for Pages at all — which on a free org plan means
       # public.
-      - uses: actions/configure-pages@v5
+      - uses: actions/configure-pages@v6
         with:
           enablement: true
 
