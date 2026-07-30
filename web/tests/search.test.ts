@@ -48,7 +48,7 @@ function slot(
     status: "OPEN",
     autoAccept: false,
     details: "",
-    bookedBy: null,
+    bookingId: null,
     publicPortalId: null,
     createdAt,
   };

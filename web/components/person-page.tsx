@@ -9,11 +9,12 @@ import {
   LuPencil,
   LuX,
 } from "react-icons/lu";
+import { fetchStaysOf } from "../utils/bookings";
 import { isExpired } from "../utils/format";
 import { fetchUserProfile } from "../utils/friends";
 import { sendBookingConnectRequest } from "../utils/requests";
 import { useKip } from "../utils/store";
-import type { Profile } from "../utils/types";
+import type { Booking, Profile } from "../utils/types";
 import {
   isUsernameAvailable,
   normalizeUsername,
@@ -32,6 +33,9 @@ import IconButton from "./ui/icon-button";
 import Input from "./ui/input";
 import { Group, Section } from "./ui/list";
 import Switch from "./ui/switch";
+
+// A glance at what they are up to, not a second Trips screen.
+const ELSEWHERE_PREVIEW = 5;
 
 // The heading itself becomes the field, so there's no form for a Save button to
 // belong to — Enter or blur commits, Escape reverts.
@@ -385,12 +389,32 @@ export default function PersonPage({ uid }: { uid: string }): ReactElement {
   const [profile, setProfile] = useState<Profile | null>(null);
   const [asking, setAsking] = useState(false);
 
+  const [theirStays, setTheirStays] = useState<readonly Booking[]>([]);
+
   useEffect(() => {
     if (isSelf || known) return;
     fetchUserProfile(uid)
       .then(setProfile)
       .catch((error) => console.error("fetchUserProfile", error));
   }, [isSelf, known, uid]);
+
+  // Empty unless they've chosen to share, which the rules decide — the whole
+  // query is refused otherwise, so there's no half-answer to interpret here.
+  useEffect(() => {
+    if (isSelf || !friend) {
+      setTheirStays([]);
+      return;
+    }
+    let live = true;
+    fetchStaysOf(uid)
+      .then((stays) => {
+        if (live) setTheirStays(stays);
+      })
+      .catch((error) => console.error("fetchStaysOf", error));
+    return () => {
+      live = false;
+    };
+  }, [isSelf, friend, uid]);
 
   // Cancelled stays are left to Trips — this is a summary, not a second copy of
   // that screen — but they still count as having met, so they stay in the list.
@@ -405,6 +429,10 @@ export default function PersonPage({ uid }: { uid: string }): ReactElement {
   const pastStays = liveStays
     .filter((stay) => isExpired(stay.end))
     .sort((left, right) => right.start.localeCompare(left.start));
+  // A stay at YOUR place comes back from both sources; "Stays" above already has it.
+  const elsewhere = theirStays.filter(
+    (stay) => !staysBetween.some((shared) => shared.id === stay.id),
+  );
   const incoming = incomingRequests.find((request) => request.from === uid);
   const outgoing = outgoingRequests.find((request) => request.to === uid);
   // The third route into `connectRequests`, and the rule wants it by id.
@@ -568,6 +596,23 @@ export default function PersonPage({ uid }: { uid: string }): ReactElement {
           <Group>
             {upcomingStays.map((stay) => (
               <BookingRow key={stay.id} booking={stay} />
+            ))}
+          </Group>
+        </Section>
+      ) : null}
+
+      {/* Their trips generally, as against "Stays" above, which is only the ones
+          involving you. Capped: this is a glance at what they're up to, and
+          Trips is nobody's second inbox. */}
+      {elsewhere.length > 0 ? (
+        <Section title={`${firstName}'s trips`}>
+          <Group>
+            {elsewhere.slice(0, ELSEWHERE_PREVIEW).map((stay) => (
+              <BookingRow
+                key={stay.id}
+                booking={stay}
+                showCounterpart={false}
+              />
             ))}
           </Group>
         </Section>

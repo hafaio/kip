@@ -21,7 +21,7 @@ connectRequests/{from_to}          { from, to, fromName, fromUsername, fromPhoto
 listings/{listingId}               { ownerId, title, type: "ROOM"|"FLAT"|"HOUSE", description,
                                      location: { label, lat, lng, geohash }, photos[{id,url}], publicPortalId, createdAt }
 listings/{listingId}/windows/{wid} { start, end (ISO dates, end exclusive), status: "OPEN"|"BOOKED",
-                                     autoAccept, details, bookedBy (guest uid while BOOKED), publicPortalId,
+                                     autoAccept, details, bookingId (the stay holding it, or null), publicPortalId,
                                      createdAt }  # when the SLOT was added, not its dates; 0 if written before the field
 bookings/{bookingId}               { listingId, ownerId, guestId, windowId, start, end,
                                      status: "REQUESTED"|"CONFIRMED"|"CANCELLED",
@@ -165,7 +165,7 @@ Rules: [firebase/firestore.rules](./firebase/firestore.rules), [firebase/storage
 
   **The SLOT is the source of truth for the dates.** A booking references it (`windowId`) and the
   slot goes read-only once held — the rule freezes `start`/`end` while `BOOKED`. Whoever holds a
-  slot can always read it (`bookedBy == uid`), independent of any share-link grant, because a grant
+  slot can always read it (its booking names them), independent of any share-link grant, because a grant
   lapses after 30 days or the moment the host regenerates the link, long before a stay does.
 
   The booking *also* carries `start`/`end`, and that copy is not the authority — it's what makes the
@@ -350,8 +350,8 @@ Rules: [firebase/firestore.rules](./firebase/firestore.rules), [firebase/storage
   **A slot holds at most one stay, and is born free.** `bookingMatchesOpenSlot` requires the slot to
   be `OPEN` as well as to hold the claimed dates, at BOTH ends of a stay's life — asking and
   confirming. Without the `OPEN` half, a booked slot's frozen dates would happily match a second
-  ask, and confirming it would overwrite the first guest's `bookedBy` and with it their right to
-  release the slot. Creating a slot pins `status: 'OPEN'` and `bookedBy: null` for the same family of
+  ask, and confirming it would overwrite the first guest's `bookingId` and with it their right to
+  release the slot. Creating a slot pins `status: 'OPEN'` and `bookingId: null` for the same family of
   reason: otherwise an owner could birth one already `BOOKED` naming anyone as the holder, handing
   them a standing read of it.
 
@@ -370,12 +370,52 @@ Rules: [firebase/firestore.rules](./firebase/firestore.rules), [firebase/storage
   a rule can't query sibling documents, and the only person a clash hurts is the owner whose own
   calendar it is, so a crafted client gains nothing by skipping the check. `end` is exclusive, so
   ranges that merely touch are allowed.
+- **A slot says it's taken; the booking says by whom, and that's the guest's to give.** A slot
+  carries `bookingId`, never a guest uid. It used to carry `bookedBy`, and that was a quiet leak:
+  **every friend of the HOST can read the slot** (`isFriendOf(listingOwner)`), so the guest's uid
+  sat in a document a whole social circle could read, and anyone who was also friends with that
+  guest could turn it into a name. Rules are per-DOCUMENT, not per-field — there is no hiding one
+  key from someone allowed to read the row — so the only fix was to move the identity out. Now
+  "who is staying here" is reachable only by reading the booking, and `guestSharesStays` gates
+  that on **being the guest's own friend AND the guest sharing** (`prefs.shareStaysWithFriends`).
+
+  **A private prefs doc is no obstacle, because a rule's `get()` is not a client read.** The same
+  move `sharesStayWith` already makes. Absent prefs counts as sharing, matching the switch Settings
+  draws — a rule quietly disagreeing with the UI would be worse than either answer.
+
+  **CONFIRMED only.** Where someone merely asked to go, or was turned down, stays between the two
+  of them.
+
+  Two surfaces: a friend's held slot appears on the RoomPage (dimmed, chip reads plain **"Booked"**
+  — unattributed, because who it is should be a deliberate second tap), and their next five stays
+  appear on their PersonPage. Tapping through reaches the booking page, which now renders read-only
+  for a non-party: no confirm, no decline, no cancel, no clear. A slot whose booking can't be read
+  **isn't rendered at all** rather than showing an unexplained "Booked".
+
+  **It is one read per taken slot, and it has to be.** If any document in a query result is
+  unreadable, Firestore refuses the whole query — so the misses must be taken one at a time.
+  `fetchBookingIfVisible` swallows `permission-denied` into null, the same shape as
+  `fetchUserProfile`: the refusal IS the answer. The reader's own stays come from `trips` and cost
+  nothing.
+
+  **The stays feed is one query, and it must pin `status`.** `fetchStaysOf` filters on `guestId`
+  AND `status == 'CONFIRMED'` — dropping the second filter gets the query refused outright, however
+  readable every document in it would be. (The guest's own `watchMyTrips` filters on `guestId`
+  alone and is unaffected: the first clause matches before anything unpinned is read.) Both halves
+  are pinned in `rules.test.ts`, since "simplifying" that filter away would empty the feed with
+  nothing else failing.
+
+  Knock-on effects worth knowing: `slotHandedTo` now pins the exact booking rather than its guest
+  (tighter — one guest's second ask can't be answered with a slot promised to their first); the
+  seed derives `bookingId` from `BOOKINGS` instead of declaring a holder, so a fixture has nothing
+  left to contradict itself about; and a friend's stay shows dates but only names the PLACE when
+  the viewer can also read that listing, which is right — the host has a privacy interest here too.
 - **Window status is owner-only; bookings drive it.** A guest can't write a listing's `windows`
   (rules), so requesting a booking only creates the `bookings` doc (`OPEN` stays `OPEN`). The
   owner's **confirm** flips the window to `BOOKED` and the booking to `CONFIRMED` in one batch;
-  owner **decline/cancel** reopens it. A booked window stamps the guest as `bookedBy`, so guest
+  owner **decline/cancel** reopens it. A booked window names the stay as `bookingId`, so guest
   cancel of a `CONFIRMED` stay reopens the window itself in the same batch (`BOOKED -> OPEN`,
-  clear `bookedBy`) — a rule clause lets the booker, and only the booker, do that release. A
+  clear `bookingId`) — a rule clause lets the booker, and only the booker, do that release. A
   pending `REQUESTED` booking left the window `OPEN`, so guest cancel there just marks the booking
   `CANCELLED` (see `utils/bookings.ts`). Windows carry a free-form `details` string (not tags).
 - **Dates that have been and gone stop being availability.** A slot is live while `end >= today`
@@ -426,9 +466,13 @@ Rules: [firebase/firestore.rules](./firebase/firestore.rules), [firebase/storage
   booking — so two friends grabbing the same window contend on the window doc and exactly one
   wins (the loser gets `"unavailable"`). This is the one place a guest may write someone else's
   window, and the rule scopes it hard: a friend's `windows` **update** is allowed only when the
-  existing doc has `autoAccept == true`, it's the `OPEN -> BOOKED` status flip stamping the
-  caller as `bookedBy`, and every other field is unchanged. Owners still write windows freely
-  (`create`/`delete`/`update`). Non-auto
+  existing doc has `autoAccept == true`, it's the `OPEN -> BOOKED` status flip, and every other
+  field is unchanged. It must also name a booking **arriving in the same commit** —
+  `bookingArrivingWith` uses `getAfter` to require a `CONFIRMED` booking for this caller on this
+  slot, the mirror image of `slotHandedTo` checking the same pair from the booking's side. The
+  flip used to stand alone, which let a friend mark any auto-accept slot taken without ever asking
+  for it: no booking, nothing for the host to decline, and the dates gone. Owners still write
+  windows freely (`create`/`delete`/`update`). Non-auto
   windows keep the manual REQUESTED → owner-confirm flow. `setWindowAutoAccept` (owner-only)
   toggles the flag on an existing open window.
 - **Search is client-side.** Each user only sees friends' listings (a small set), so Browse
@@ -841,7 +885,11 @@ CONFIRMED); **slots** (a booked slot's dates are frozen, notes still editable; a
 dates are frozen too — not even by a day — while notes and delete still work, and a slot ending
 TODAY stays editable, which pins the deliberate UTC-vs-local slack); **friend edges**
 (you may heal only the entry describing you); the **usernames registry + profile integrity**; the
-**discovery gate**; **saved searches** (owner-only, not listable, not plantable by anyone else); and
+**discovery gate**; **saved searches** (owner-only, not listable, not plantable by anyone else);
+**shared stays** (a friend of the guest reads the booking, a friend of only the host reads the SLOT
+but not the booking, sharing off closes it and back on reopens it, absent prefs counts as sharing,
+a request or cancellation is never shared, planting a friend edge on your own side proves nothing,
+and the feed's query is refused without its status filter); and
 the **browse lookup budget** (20 distinct friends passes, 25 fails).
 
 Any fixture the expiry rule touches uses `isoIn(days)`, not a date literal — a hard-coded date
@@ -924,27 +972,25 @@ CI (`ci.yml`) is one job, because `bun lint` covers BOTH packages — it ends wi
 does mean `functions/` must have its deps installed (`npm ci` there, which CI does before linting);
 without that, tsc can't resolve the firebase-functions types.
 
-## Before shipping
+## Shipped
 
-Everything here is a decision or an action, not code — the app itself is done.
+kip is live at `https://hafaio.github.io/kip` (the repo is public), released by
+`.github/workflows/web.yml` on 2026-07-30 — the first run of that workflow, which deployed rules and
+all four functions (`onBookingCreated`, `onBookingChanged`, `onConnectRequested`, `unsubscribe`)
+before publishing Pages, exactly as designed. `hafaio.github.io` is an authorized domain in Firebase
+Auth, the Gmail App Password secret is set, and `SITE_ORIGIN` in `functions/src/index.ts` matches
+where Pages actually serves.
 
-- **Decide whether `hafaio-kip-dev` IS production.** `.firebaserc` and the config in
-  `web/utils/firebase.ts` both point at it, and it currently holds a seeded world: 24 fake people,
-  18 places, 41 bookings, 13 share links. Real users would land in a database alongside that. Two
-  honest options — clear the seed (`seed_`-prefixed, so removal is exact) and keep using this
-  project, or stand up `hafaio-kip` properly and repoint. The second means redoing the one-time
-  setup: rules, storage, functions, secrets, WIF, authorized domains.
-- **Push, and decide on public.** Nothing has been pushed; the repo is private. Topics, description
-  and homepage are set but do nothing for discovery until it's public, and going public exposes the
-  Firebase web config and the no-reply address — both fine by design.
-- **Run the release.** `.github/workflows/web.yml` has never executed. It deploys Firebase first and
-  only publishes Pages if that succeeds, so the first run is itself the test.
-- **Check `SITE_ORIGIN`** in `functions/src/index.ts` matches where Pages actually serves the site.
-  Every email link and the unsubscribe endpoint's way back are built from it, and it assumes
-  `https://hafaio.github.io/kip`.
+**`hafaio-kip-dev` IS production**, despite the name — `.firebaserc` and the config in
+`web/utils/firebase.ts` both point at it, and it carries no seed data (the seed script's output was
+never left in it). Standing up a separate `hafaio-kip` would mean redoing the whole one-time setup:
+rules, storage, functions, secrets, WIF, authorized domains.
 
-Already done: `hafaio.github.io` is an authorized domain in Firebase Auth; rules, storage rules and
-functions are deployed; the Gmail App Password secret is set.
+**Nothing has been exercised on production by a second person.** Every state that needs two
+accounts — a friendship, a booking, a notification email actually landing — has only ever been
+tested locally or against the rules emulator. Notification email in particular is now live and has
+never sent from the deployed functions; see the deliverability note under Notifications for what to
+expect when it does.
 
 ## Known limitations / next steps
 
@@ -980,8 +1026,8 @@ functions are deployed; the Gmail App Password secret is set.
   sequential case (`bookingMatchesOpenSlot` requires an OPEN slot), but rules alone couldn't cover
   two commits landing at the same instant — both would evaluate against a slot that was still open.
   Same guarantee instant booking has always had.
-- Privacy toggle (`shareStaysWithFriends`) is stored but there's no friends'-stays feed yet to
-  gate; it's wired for when that feed is built.
+- The friends'-stays feed is capped at five rows on a PersonPage and is not on Home. Where someone
+  is going is a glance, not an inbox — see the design bullet on `shareStaysWithFriends`.
 - Notification email is built (`functions/src/index.ts`) but sends nothing until the Gmail secrets
   are set and the functions deployed — see Notifications above.
 - `firebase/storage.rules` is owner-only and has no emulator suite, but it no longer needs one: it
@@ -1028,4 +1074,4 @@ functions are deployed; the Gmail App Password secret is set.
   lists today, and a month grid might make a host's own year legible in a way rows can't. Noted
   because nothing in the schema blocks it — windows are ISO date ranges, so it would be a rendering
   job rather than a migration — not because it's queued.
-- Native Android/iOS apps and a friends'-upcoming-stays feed are future phases.
+- Native Android/iOS apps are a future phase.

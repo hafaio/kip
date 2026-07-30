@@ -22,9 +22,13 @@ const STATUS: Record<BookingStatus, { label: string; tone: ChipTone }> = {
 export default function BookingRow({
   booking,
   lead = "place",
+  showCounterpart = true,
 }: {
   booking: Booking;
   lead?: "place" | "person";
+  // Off on a list that is already about one person — naming them on every row
+  // says nothing, and on a stay you're only watching there is no "with" to it.
+  showCounterpart?: boolean;
 }): ReactElement {
   const {
     user,
@@ -49,7 +53,7 @@ export default function BookingRow({
   const status = STATUS[booking.status];
   const person = iAmGuest ? `with ${otherName}` : otherName;
   const headline = lead === "person" ? otherName : title;
-  const detail = lead === "person" ? "" : `${person} · `;
+  const detail = lead === "person" || !showCounterpart ? "" : `${person} · `;
 
   return (
     <Row

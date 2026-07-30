@@ -111,7 +111,7 @@ export async function requestBooking(
       if (!snap.exists() || snap.data().status !== "OPEN") {
         throw new Error("unavailable");
       }
-      tx.update(windowRef, { status: "BOOKED", bookedBy: guestId });
+      tx.update(windowRef, { status: "BOOKED", bookingId: bookingRef.id });
       tx.set(bookingRef, {
         ...notice,
         windowId: window.id,
@@ -148,6 +148,45 @@ export async function requestStayViaPortal(
     cancelReason: null,
     createdAt: serverTimestamp(),
   });
+}
+
+// A denial is the answer, not an error, so the caller can ask and act on the
+// silence. Same shape as `fetchUserProfile` reading a private stranger as null.
+export async function fetchBookingIfVisible(
+  bookingId: string,
+): Promise<Booking | null> {
+  const snap = await getDoc(doc(db(), "bookings", bookingId)).catch((error) => {
+    if (error?.code !== "permission-denied") throw error;
+    return null;
+  });
+  if (!snap?.exists()) {
+    return null;
+  } else {
+    return toBooking(snap);
+  }
+}
+
+// Readable only while they share them, and all-or-nothing. The status filter is
+// load-bearing: without it Firestore refuses the query outright.
+export async function fetchStaysOf(guestId: string): Promise<Booking[]> {
+  const snap = await getDocs(
+    query(
+      collection(db(), "bookings"),
+      where("guestId", "==", guestId),
+      where("status", "==", "CONFIRMED"),
+    ),
+  ).catch((error) => {
+    if (error?.code !== "permission-denied") throw error;
+    return null;
+  });
+  if (!snap) {
+    return [];
+  } else {
+    return snap.docs
+      .map(toBooking)
+      .filter((booking) => !isExpired(booking.end))
+      .sort((left, right) => left.start.localeCompare(right.start));
+  }
 }
 
 // So a share-link page can still show "requested" after a reload.
@@ -205,7 +244,7 @@ export async function confirmBooking(
       tx.update(bookingRef, { status: "CONFIRMED" });
       tx.update(windowRef, {
         status: "BOOKED",
-        bookedBy: booking.guestId,
+        bookingId: booking.id,
       });
     });
     return "confirmed";
@@ -254,7 +293,7 @@ export async function cancelBookingAsGuest(booking: Booking): Promise<void> {
   if (booking.status === "CONFIRMED") {
     batch.update(
       doc(db(), "listings", booking.listingId, "windows", booking.windowId),
-      { status: "OPEN", bookedBy: null },
+      { status: "OPEN", bookingId: null },
     );
   }
   await batch.commit();
@@ -273,7 +312,7 @@ export async function cancelBookingAsOwner(booking: Booking): Promise<void> {
   if (booking.status === "CONFIRMED") {
     batch.update(
       doc(db(), "listings", booking.listingId, "windows", booking.windowId),
-      { status: "OPEN", bookedBy: null },
+      { status: "OPEN", bookingId: null },
     );
   }
   await batch.commit();

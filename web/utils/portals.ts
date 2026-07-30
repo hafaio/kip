@@ -4,6 +4,7 @@ import {
   type CollectionReference,
   collection,
   type DocumentData,
+  type DocumentSnapshot,
   doc,
   getDoc,
   getDocs,
@@ -320,19 +321,17 @@ async function readLiveListings(
     });
 }
 
-// Two queries rather than an `or` because each stands on its own clause of the
-// window read rule — mixing them could return a document the rules refuse, which
-// sinks the whole query.
 async function readVisibleWindows(
   listing: PortalListing,
   uid: string,
 ): Promise<PortalWindow[]> {
   const windowsRef = collection(db(), "listings", listing.listingId, "windows");
+  const held = await heldWindowIds(listing.listingId, uid);
   const snaps = listing.windowIds
     ? await Promise.all(
         listing.windowIds.map((id) => getDoc(doc(windowsRef, id))),
       )
-    : await readOpenAndHeld(windowsRef, uid);
+    : await readOpenAndHeld(windowsRef, held);
 
   return (
     snaps
@@ -351,26 +350,52 @@ async function readVisibleWindows(
           details: data.details ?? "",
           autoAccept: data.autoAccept === true,
           booked: (data.status ?? "OPEN") !== "OPEN",
-          bookedByMe: data.bookedBy === uid,
+          bookedByMe: held.has(entry.id),
         };
       })
       .sort((left, right) => left.start.localeCompare(right.start))
   );
 }
 
-// The two results shouldn't overlap, but the rules only pin that on the guest's
-// release and not the owner's edits, so the overlap is dropped rather than
-// assumed away into a duplicate row.
+// Asked of my own bookings rather than of the slots: a slot no longer names the
+// guest holding it, so there is nothing on it left to match against.
+async function heldWindowIds(
+  listingId: string,
+  uid: string,
+): Promise<Set<string>> {
+  const snap = await getDocs(
+    query(
+      collection(db(), "bookings"),
+      where("guestId", "==", uid),
+      where("listingId", "==", listingId),
+    ),
+  );
+  return new Set(
+    snap.docs
+      .filter((entry) => entry.data().status === "CONFIRMED")
+      .map((entry) => entry.data().windowId as string),
+  );
+}
+
+// Two reads rather than an `or` because each stands on its own clause of the
+// window read rule — mixing them could return a document the rules refuse, which
+// sinks the whole query. The held ones are fetched by id, since the only clause
+// admitting them matches one document at a time.
 async function readOpenAndHeld(
   windowsRef: CollectionReference<DocumentData>,
-  uid: string,
-): Promise<QueryDocumentSnapshot<DocumentData>[]> {
-  const [free, held] = await Promise.all([
+  held: ReadonlySet<string>,
+): Promise<DocumentSnapshot<DocumentData>[]> {
+  const [free, mine] = await Promise.all([
     getDocs(query(windowsRef, where("status", "==", "OPEN"))),
-    getDocs(query(windowsRef, where("bookedBy", "==", uid))),
+    Promise.all([...held].map((id) => getDoc(doc(windowsRef, id)))),
   ]);
+  // The two shouldn't overlap, but the rules only pin that on the guest's release
+  // and not the owner's edits, so the overlap is dropped rather than assumed away
+  // into a duplicate row.
   return [
     ...free.docs,
-    ...held.docs.filter((entry) => entry.data().status !== "OPEN"),
+    ...mine.filter(
+      (entry) => entry.exists() && entry.data()?.status !== "OPEN",
+    ),
   ];
 }

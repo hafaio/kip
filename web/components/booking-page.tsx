@@ -1,6 +1,6 @@
 "use client";
 
-import { type ReactElement, type ReactNode, useState } from "react";
+import { type ReactElement, type ReactNode, useEffect, useState } from "react";
 import {
   LuCalendarDays,
   LuCheck,
@@ -9,6 +9,7 @@ import {
   LuMapPin,
   LuX,
 } from "react-icons/lu";
+import { fetchBookingIfVisible } from "../utils/bookings";
 import { formatDateRange, isExpired, nights } from "../utils/format";
 import { listingTypeIcon } from "../utils/listings";
 import { useKip } from "../utils/store";
@@ -73,6 +74,34 @@ export default function BookingPage({ id }: { id: string }): ReactElement {
   const run = useAction();
   const { alert, confirm } = useDialog();
   const [busy, setBusy] = useState(false);
+  // Neither subscription carries a stay you're only a spectator of, so a friend
+  // arriving from a held slot has to fetch it. `looked` keeps the not-available
+  // line from flashing before the answer is back.
+  const [fetchedBooking, setFetchedBooking] = useState<Booking | undefined>(
+    undefined,
+  );
+  const [looked, setLooked] = useState(false);
+  const iAmPartyTo =
+    trips.some((candidate) => candidate.id === id) ||
+    incomingBookings.some((candidate) => candidate.id === id);
+
+  useEffect(() => {
+    if (iAmPartyTo) return;
+    let live = true;
+    setLooked(false);
+    fetchBookingIfVisible(id)
+      .then((found) => {
+        if (!live) return;
+        setFetchedBooking(found ?? undefined);
+      })
+      .catch((error) => console.error("visitBooking", error))
+      .finally(() => {
+        if (live) setLooked(true);
+      });
+    return () => {
+      live = false;
+    };
+  }, [id, iAmPartyTo]);
 
   // The ordinary double-click only; the transaction is the real protection.
   async function confirmStay(): Promise<void> {
@@ -97,9 +126,16 @@ export default function BookingPage({ id }: { id: string }): ReactElement {
 
   const booking: Booking | undefined =
     trips.find((candidate) => candidate.id === id) ??
-    incomingBookings.find((candidate) => candidate.id === id);
+    incomingBookings.find((candidate) => candidate.id === id) ??
+    // Pinned to the id being rendered: the state outlives a move to another
+    // booking, so without this the previous one shows under the new URL.
+    (fetchedBooking?.id === id ? fetchedBooking : undefined);
   if (!booking) {
-    return <p className="text-muted">This booking isn't available.</p>;
+    return (
+      <p className="text-muted">
+        {looked ? "This booking isn't available." : ""}
+      </p>
+    );
   }
 
   const room =
@@ -109,6 +145,11 @@ export default function BookingPage({ id }: { id: string }): ReactElement {
   const title = room?.title || "A place";
   const address = room?.location.label || "Address unavailable";
   const iAmGuest = booking.guestId === user?.uid;
+  const iAmHost = booking.ownerId === user?.uid;
+  // A friend of the guest can be here without being either party — the stay is
+  // theirs to see, none of it is theirs to change.
+  const iAmParty = iAmGuest || iAmHost;
+  // A spectator came for the guest; a guest came for their host.
   const otherUid = iAmGuest ? booking.ownerId : booking.guestId;
   // A pending ask authorises no read, so an unanswered stranger stays "Someone"
   // with the role beneath carrying what is actually known.
@@ -156,7 +197,9 @@ export default function BookingPage({ id }: { id: string }): ReactElement {
           label: "Confirmed",
           note: iAmGuest
             ? "Your stay is all set"
-            : `You're hosting ${otherName}`,
+            : iAmHost
+              ? `You're hosting ${otherName}`
+              : `${otherName} is staying here`,
           circle: "bg-success-soft text-success",
           icon: <LuCheck size={24} />,
         }
@@ -166,7 +209,9 @@ export default function BookingPage({ id }: { id: string }): ReactElement {
             label: "Pending",
             note: iAmGuest
               ? `Waiting on ${otherName} to confirm`
-              : `${otherName} wants to book`,
+              : iAmHost
+                ? `${otherName} wants to book`
+                : `${otherName} has asked to stay here`,
             circle: "bg-pending-soft text-pending",
             icon: <LuClock size={22} />,
           }
@@ -256,14 +301,14 @@ export default function BookingPage({ id }: { id: string }): ReactElement {
               {otherName}
             </span>
             <span className="block text-sm text-muted">
-              {iAmGuest ? "Your host" : "Your guest"}
+              {iAmGuest ? "Your host" : iAmHost ? "Your guest" : "Staying here"}
             </span>
           </div>
           <LuChevronRight className="shrink-0 text-faint" />
         </Row>
       </Group>
 
-      {booking.status !== "CANCELLED" ? (
+      {!iAmParty ? null : booking.status !== "CANCELLED" ? (
         <div className="flex flex-col gap-2">
           {iAmGuest ? (
             <Button

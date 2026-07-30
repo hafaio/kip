@@ -92,7 +92,7 @@ function toWindow(
     status: data.status ?? "OPEN",
     autoAccept: data.autoAccept ?? false,
     details: data.details ?? "",
-    bookedBy: data.bookedBy ?? null,
+    bookingId: data.bookingId ?? null,
     publicPortalId: data.publicPortalId ?? null,
     createdAt: epoch(data.createdAt),
   };

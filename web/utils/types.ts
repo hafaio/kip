@@ -93,7 +93,7 @@ export type AvailabilityWindow = {
   readonly status: WindowStatus;
   readonly autoAccept: boolean;
   readonly details: string;
-  readonly bookedBy: string | null; // guest uid while BOOKED, so they can release it
+  readonly bookingId: string | null; // never a uid: every friend of the HOST reads this
   readonly publicPortalId: string | null;
   // 0 for anything written before this field existed, so it reads as "not new"
   // rather than flooding a saved search that has never seen it.
