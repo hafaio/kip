@@ -41,30 +41,9 @@ export function toConnectRequest(
   };
 }
 
-// Someone asking you for something, and your answer. ONE collection covers every
-// route in, because they only ever differed in how the rules authorise them,
-// never in shape:
-//
-//   by handle     the recipient is `searchable`
-//   by share link the sender names a live link of yours (`portalId`)
-//   by stay       the sender names a confirmed booking of yours (`bookingId`)
-//
-// Doc id is `${from}_${to}`: deterministic, so the rule letting the accepter write
-// into the sender's friends list can find it, and re-asking overwrites instead of
-// piling up.
-//
-// Every route knows who it is addressing, and says so in `toName`/`toPhotoURL` —
-// only the first also has a handle to record. Without it a pending ask names
-// nobody, since the recipient is by construction someone the sender usually can't
-// read: not searchable, not yet a friend.
-//
-// The `to*` copies are deliberately NOT pinned by the rules, unlike the `from*`
-// ones sitting beside them in every literal below. Those are pinned because the
-// RECIPIENT can't check them and they go into a notification email — a free
-// `fromName` is an invitation from "Chase Fraud Alert". A `to*` copy is the
-// sender's own note of who they asked, rendered only in the sender's own pending
-// list, on a document only the two parties can read. There is nobody to mislead.
-
+// One collection for all three routes in — they differ only in how the rules
+// authorise them, never in shape. Doc id is `${from}_${to}` so the accept rule
+// can find it deterministically and re-asking overwrites.
 export function watchIncomingConnectRequests(
   uid: string,
   onChange: (requests: ConnectRequest[]) => void,
@@ -87,10 +66,8 @@ export function watchOutgoingConnectRequests(
   );
 }
 
-// The caller's own pending request with someone, if any — so the share-link page
-// can still show "sent" after a reload. The read rule names `resource.data`, and
-// a document that isn't there has none, so "no pending request" arrives as a
-// permission-denied rather than an empty snapshot; both mean the same thing here.
+// The read rule names `resource.data`, so a missing doc arrives as
+// permission-denied rather than an empty snapshot. Both mean "none" here.
 export async function fetchMyConnectRequest(
   fromUid: string,
   toUid: string,
@@ -121,9 +98,7 @@ export async function sendRequest(me: Profile, target: Profile): Promise<void> {
   });
 }
 
-// Reach out through a share link to connect. `portalId` both authorises the write
-// (the rule checks the link is live and belongs to the recipient) and marks the
-// request as having arrived that way.
+// `portalId` both authorises the write and marks how the request arrived.
 export async function sendPortalConnectRequest(
   portal: Portal,
   sender: Party,
@@ -136,7 +111,6 @@ export async function sendPortalConnectRequest(
       fromName: sender.displayName,
       fromUsername: sender.username,
       fromPhotoURL: sender.photoURL,
-      // The link already carries whose it is — it's what the share page renders.
       toName: portal.ownerName,
       toUsername: "",
       toPhotoURL: portal.ownerPhotoURL,
@@ -146,15 +120,10 @@ export async function sendPortalConnectRequest(
   );
 }
 
-// Ask the other party of a stay you shared to be friends. Neither of the routes
-// above can serve this pair when they met through a share link — the guest isn't
-// searchable and the host holds no link of theirs — yet they're the one pair who
-// demonstrably know each other. `bookingId` is what the rule reads: it must name
-// a CONFIRMED stay whose host and guest are exactly these two, in either order,
-// which is why the recipient is derived from the booking rather than passed in.
-// How they're NAMED does have to be passed: the booking says who they are and
-// nothing about them, and the caller has already read their profile through the
-// very stay that authorises this.
+// The only route open to a share-link guest and their host, who are neither
+// searchable to nor linked by each other. The recipient is derived from the
+// booking because that's what the rule checks; their name has to be passed,
+// since a booking carries none.
 export async function sendBookingConnectRequest(
   me: Party,
   booking: Booking,
@@ -169,8 +138,6 @@ export async function sendBookingConnectRequest(
     fromUsername: me.username,
     fromPhotoURL: me.photoURL,
     toName: target.displayName,
-    // Left blank: a handle is optional, and this copy is only the sender's own
-    // note of who they asked.
     toUsername: "",
     toPhotoURL: target.photoURL,
     portalId: null,
@@ -179,9 +146,8 @@ export async function sendBookingConnectRequest(
   });
 }
 
-// Accept: both friend edges and the request cleared, in one batch so there's no
-// half-formed friendship. Names come off the REQUEST — at this moment the two
-// parties still can't read each other's profiles.
+// One batch, so a half-formed friendship is never persisted. Names come off the
+// request because the two still can't read each other's profiles.
 export async function acceptRequest(
   me: Party,
   request: ConnectRequest,

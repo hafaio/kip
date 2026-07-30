@@ -15,18 +15,12 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # Gate the deploy on the same lint + tests that run on every push/PR.
   ci:
     uses: ./.github/workflows/ci.yml
 
-  # Rules and functions go out BEFORE the site, so a release can never publish a
-  # frontend that expects rules or triggers which aren't live yet. If this fails
-  # the Pages deploy never runs and the site stays on the last good version.
-  #
-  # Auth is Workload Identity Federation: GitHub mints a short-lived OIDC token
-  # (hence `id-token: write` above), GCP trades it for impersonation of the
-  # deployer account. No key is stored anywhere, and the provider only accepts
-  # tokens whose `repository` claim is this repo.
+  # Before the site, so a release can never publish a frontend expecting rules or
+  # triggers that aren't live yet. Auth is Workload Identity Federation, so no key
+  # is stored and only this repo's OIDC tokens are accepted.
   firebase:
     needs: ci
     runs-on: ubuntu-latest
@@ -48,9 +42,7 @@ jobs:
 
       - run: npm install -g firebase-tools
 
-      # Rules take seconds and are idempotent, so they just run every time.
-      # Functions are slower; deploying them unconditionally is still simpler
-      # than working out whether they changed since the last release.
+      # Unconditional: working out what changed is more trouble than redeploying.
       - run: firebase deploy --only firestore:rules,functions --project hafaio-kip-dev --non-interactive
 
   build:
@@ -72,10 +64,9 @@ jobs:
         env:
           NEXT_PUBLIC_BASE_PATH: /${{ github.event.repository.name }}
 
-      # `enablement` turns the Pages site on if it isn't already, so the first
-      # release doesn't fail on a setting nobody has clicked yet. It needs the
-      # repo to be eligible for Pages at all — which on a free org plan means
-      # public.
+      # Turns Pages on if it isn't already, so the first release doesn't fail on
+      # an unclicked setting. Needs the repo to be Pages-eligible: public, on a
+      # free org plan.
       - uses: actions/configure-pages@v6
         with:
           enablement: true

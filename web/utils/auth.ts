@@ -15,15 +15,10 @@ import {
 } from "firebase/auth";
 import { auth } from "./firebase";
 
-// A share-link visitor is already signed in ANONYMOUSLY, so "creating an account"
-// should upgrade that identity rather than mint a new one — otherwise their uid
-// changes underneath them and anything keyed to it (their portal grant) is
-// orphaned. `linkWithPopup`/`linkWithCredential` keep the same uid.
-//
-// Linking fails when the credential already belongs to a real account — i.e. they
-// are signing IN, not up. There's nothing to preserve in that case, so fall back
-// to a normal sign-in and accept the uid change; callers must re-derive anything
-// they'd keyed to the old one.
+// A share-link visitor is already anonymous, so signing up LINKS that identity
+// rather than minting a new uid and orphaning their grant. Linking is impossible
+// when the credential already exists — they're signing in, not up — so that path
+// falls back and the uid does change; callers must re-claim anything keyed to it.
 function anonymousUser(): User | null {
   const current = auth().currentUser;
   return current?.isAnonymous ? current : null;
@@ -38,11 +33,8 @@ function alreadyRegistered(error: unknown): boolean {
   );
 }
 
-// Resolves once Firebase has finished restoring a persisted session — which it
-// does asynchronously, so `auth().currentUser` is null for a beat after load even
-// for someone who IS signed in. Anything that branches on "is anyone signed in?"
-// has to wait for this, or it will act on a false negative. Created once and
-// reused, because the first callback is the only one that answers the question.
+// Firebase restores a persisted session asynchronously, so anything branching on
+// "is anyone signed in?" must await this or act on a false negative.
 let settled: Promise<User | null> | null = null;
 
 export function authSettled(): Promise<User | null> {
@@ -87,26 +79,17 @@ export async function emailSignUp(
         return createUserWithEmailAndPassword(auth(), email.trim(), password);
       })
     : await createUserWithEmailAndPassword(auth(), email.trim(), password);
-  // Fire-and-forget: gives the user a way to verify (so their email can later be
-  // stored + used for notifications). A failed send never blocks sign-up.
+  // Fire-and-forget: a failed send must never block sign-up.
   sendEmailVerification(credential.user).catch((error) =>
     console.error("sendEmailVerification", error),
   );
   return credential;
 }
 
-// One way in, whichever it turns out to be: sign in, and only if that email has
-// no account, create one. Returns whether an account was made, so the caller can
-// say so — an account appearing silently is the one thing a merged flow can get
-// wrong, since a typo'd address would otherwise leave someone standing in a
-// brand-new empty kip wondering where their friends went.
-//
-// The order matters. Firebase masks a failed sign-in as `invalid-credential`
-// whether the account is missing or the password is wrong (that's Identity
-// Platform's improved email privacy), so sign-in alone can't tell the two apart —
-// but sign-UP can: an existing address comes back `email-already-in-use`, which
-// is not maskable, because refusing IS the answer. So a refused create means the
-// account exists and the password was simply wrong.
+// Sign in, then create only if that fails. The order matters: Identity Platform
+// masks a failed sign-in as `invalid-credential` whether the account is missing
+// or the password is wrong, but a create can't be masked — refusing IS the
+// answer — so `email-already-in-use` means the password was simply wrong.
 export async function emailContinue(
   email: string,
   password: string,
@@ -126,8 +109,7 @@ export async function emailContinue(
   }
 }
 
-// A sign-in that didn't work, for either reason. Firebase deliberately doesn't
-// say which.
+// Firebase deliberately won't say which reason.
 function failedSignIn(error: unknown): boolean {
   const code = authErrorCode(error);
   return (
@@ -137,8 +119,7 @@ function failedSignIn(error: unknown): boolean {
   );
 }
 
-// The one case the two calls together CAN distinguish, given its own error so the
-// panel can say "wrong password" instead of Firebase's deliberately vague line.
+// The one case the two calls together can distinguish, so the panel can say it.
 export class WrongPassword extends Error {
   readonly code = "kip/wrong-password";
   constructor() {
@@ -150,16 +131,13 @@ export function passwordReset(email: string): Promise<void> {
   return sendPasswordResetEmail(auth(), email.trim());
 }
 
-// The stable Firebase error code (e.g. "auth/invalid-credential"), or "".
 export function authErrorCode(error: unknown): string {
   return typeof error === "object" && error !== null && "code" in error
     ? String((error as { code: unknown }).code)
     : "";
 }
 
-// Map a Firebase auth error to a message a person can act on. Firebase throws
-// with a stable `code`; anything unmapped falls back to a generic line so we
-// never surface a raw SDK string.
+// Anything unmapped falls back to a generic line, so no raw SDK string is shown.
 export function authErrorMessage(error: unknown): string {
   switch (authErrorCode(error)) {
     case "auth/invalid-email":

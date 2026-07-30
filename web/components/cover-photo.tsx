@@ -15,12 +15,9 @@ import IconButton from "./ui/icon-button";
 // How far a masked rail edge fades.
 const FADE = "1.5rem";
 
-// One photo, sized by the caller: the cover on a card or a list row, and each
-// slide of the gallery below. A place with no photo is the ordinary case, and
-// renders its `fallback` — nothing at all on a card, so the layout is the one the
-// card has always had rather than a permanent grey gap, but the type icon in a
-// list row, where the leading slot exists either way and an empty one would
-// break the row rhythm.
+// No photo is the ordinary case, so `fallback` differs by context: nothing on a
+// card, where a grey gap would be worse, but an icon in a row, which needs its
+// leading slot filled either way.
 export default function CoverPhoto({
   photo,
   fallback = null,
@@ -43,10 +40,8 @@ export default function CoverPhoto({
   );
 }
 
-// A rail wider than its box has to LOOK cut off, or the eight photos a place can
-// hold read as the three and a half that fit at 390px. Masked rather than
-// overlaid with a gradient: the same rail sits on the canvas in one place and on
-// a card in another, and an overlay would have to know which.
+// Masked rather than overlaid with a gradient, because the same rail sits on the
+// canvas in one place and on a card in another, and an overlay would need to know.
 export function useRailFade(count: number): {
   ref: RefObject<HTMLDivElement | null>;
   maskImage: string | undefined;
@@ -58,13 +53,12 @@ export function useRailFade(count: number): {
   useEffect(() => {
     const node = ref.current;
     if (!node) return;
-    // An arrow rather than a declaration: a hoisted one is created before the
-    // guard above, so `node` would still be nullable inside it.
+    // An arrow, not a declaration: a hoisted one predates the guard above, so
+    // `node` would still be nullable inside it.
     const measure = (): void => {
       const before = node.scrollLeft > 1;
       const after = node.scrollWidth - node.clientWidth - node.scrollLeft > 1;
-      // A scroll fires this every frame, so hand back the same object unless
-      // something actually changed.
+      // Fires every frame while scrolling, so identity has to be stable.
       setEdges((current) =>
         current.before === before && current.after === after
           ? current
@@ -72,8 +66,7 @@ export function useRailFade(count: number): {
       );
     };
     measure();
-    // The rail is as wide as the screen, so what fits changes on rotate and on
-    // any layout shift above it — not only when a photo is added.
+    // What fits changes on rotate and any layout shift, not only on add.
     const observer = new ResizeObserver(measure);
     observer.observe(node);
     node.addEventListener("scroll", measure);
@@ -99,15 +92,8 @@ export function useRailFade(count: number): {
   };
 }
 
-// A place's photos, browsable: one at a time in a hero that swipes (scroll-snap,
-// so touch costs no gesture code) or steps with its arrows, over a rail that
-// jumps straight to one.
-//
-// The rail is optional because the OWNER already has one — the editing strip
-// further down their page, where dragging a thumbnail reorders it and the first
-// photo is the cover. Giving those same pictures a second meaning ("show me this
-// one") would put two gestures on one target, so the owner's hero browses with
-// the arrows alone and only the read-only views get the rail.
+// Scroll-snap, so touch costs no gesture code. The rail is optional because the
+// owner already has one that reorders, and one target can't carry two gestures.
 export function PhotoGallery({
   photos,
   thumbnails = true,
@@ -119,15 +105,12 @@ export function PhotoGallery({
 }): ReactElement | null {
   const hero = useRef<HTMLDivElement>(null);
   const [index, setIndex] = useState(0);
-  // Anything not on our own bucket never renders, and a hole in the middle of
-  // the hero would put every arrow press one photo out.
+  // A hole in the middle would put every arrow press one photo out.
   const shown = photos.filter((photo) => photoSrc(photo.url) !== null);
   const { ref: rail, maskImage } = useRailFade(shown.length);
 
-  // Stepping the hero walks the rail along with it, which is also how the
-  // photos past the edge announce themselves. Scrolling the rail itself rather
-  // than the thumbnail into view: the gallery can sit below the fold, and
-  // scrollIntoView would drag the whole page up to it.
+  // Scrolls the rail itself, not the thumbnail into view: the gallery can sit
+  // below the fold, and scrollIntoView would drag the page up to it.
   useEffect(() => {
     const node = rail.current;
     const thumb = node?.querySelector<HTMLElement>(
@@ -154,8 +137,7 @@ export function PhotoGallery({
       <div className={`relative ${heroClassName}`.trim()}>
         <div
           ref={hero}
-          // The scroll position IS which photo is showing — swipe, arrow and
-          // thumbnail all move it, so there's one thing to keep in step.
+          // The scroll position IS which photo shows, so there's one source.
           onScroll={(event) => {
             const node = event.currentTarget;
             const at = Math.round(node.scrollLeft / node.clientWidth);
@@ -219,8 +201,7 @@ export function PhotoGallery({
                   : "opacity-70 hover:opacity-100"
               }`}
             >
-              {/* The same 96px the editing strip uses, so a place's photos are
-                  one size wherever they're shown. */}
+              {/* The same 96px the editing strip uses. */}
               <CoverPhoto photo={photo} className="h-24 w-24" />
             </button>
           ))}
