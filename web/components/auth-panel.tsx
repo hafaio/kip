@@ -10,19 +10,10 @@ import Button from "./ui/button";
 import FieldNote from "./ui/field-note";
 import Input from "./ui/input";
 
-// Every way into kip, in one block: an email and a password, and Google.
-//
-// There is deliberately NO sign-in / sign-up toggle. It asked for the same two
-// fields either way, and made the visitor answer a question kip can answer
-// itself — worse on the share-link page, which had to guess which mode a
-// stranger wanted and always guessed "new". Lives in its own component because there are two places that need it —
-// the sign-in screen behind the app gate, and the public share-link page, where a
-// visitor has to be able to make an account WITHOUT leaving the link they opened.
-// (It was previously inline in the sign-in screen, which is why the portal only
-// ever offered Google — a visitor without a Google account simply couldn't get in.)
-//
-// On success there's nothing to do here: the store's auth listener picks the
-// session up and whatever wraps this decides what happens next.
+// Deliberately no sign-in/sign-up toggle: it asked for the same two fields
+// either way and made the visitor answer a question kip can answer itself. Its
+// own component because the share-link page needs it too — a visitor must be
+// able to make an account without leaving the link they opened.
 export default function AuthPanel(): ReactElement {
   const { configured, signIn, continueWithEmail, resetPassword } = useKip();
   const { alert } = useDialog();
@@ -41,8 +32,7 @@ export default function AuthPanel(): ReactElement {
     return false;
   }
 
-  // Shared scaffolding for the sign-in/up/Google paths: guard config, reset the
-  // notices, run the action, and surface any error.
+  // Shared scaffolding for all three paths.
   async function runAuth(action: () => Promise<unknown>): Promise<void> {
     if (!(await guardConfigured())) return;
     setBusy(true);
@@ -61,9 +51,8 @@ export default function AuthPanel(): ReactElement {
   function doEmail(): Promise<void> {
     return runAuth(async () => {
       const { created } = await continueWithEmail(email, password);
-      // An account appearing without being announced is the one thing a merged
-      // flow can get wrong: a mistyped address would otherwise drop someone into
-      // an empty kip with no idea why nothing of theirs is there.
+      // The one thing a merged flow can get wrong: a mistyped address silently
+      // dropping someone into an empty kip.
       if (created) setNotice(`New account created for ${email.trim()}.`);
     });
   }
@@ -79,8 +68,7 @@ export default function AuthPanel(): ReactElement {
       await resetPassword(email);
     } catch (caught) {
       console.error(caught);
-      // Surface only errors that don't reveal whether an account exists; a
-      // missing account falls through to the neutral notice below.
+      // Only errors that don't reveal whether an account exists.
       const code = authErrorCode(caught);
       if (code === "auth/invalid-email" || code === "auth/too-many-requests") {
         setError(authErrorMessage(caught));

@@ -35,37 +35,25 @@ import { validateDisplayName } from "../../utils/username";
 
 type LoadState = "loading" | "ready" | "missing";
 
-// Stands in for a window id when the ask carries no dates, so one piece of state
-// covers both "requested these dates" and "asked to connect".
+// Stands in for a window id when the ask carries no dates.
 const FRIEND_ONLY = "__friend__";
 
 // What the visitor tapped, held while they make an account. A null window means
 // they asked to connect rather than for specific dates.
 type Ask = { listingId: string | null; window: PortalWindow | null };
 
-// Whatever the visitor already has with this owner. Dates and friendship are two
-// different asks and are tracked separately: one pending friend request used to
-// suppress every Request button on the page, so the dates appeared and then
-// vanished the moment the check resolved.
-//
-// `windowIds` is a set because a visitor may have asked for several ranges —
-// bookings have auto-ids, so nothing stops them. `confirmed` decides the wording:
-// "Sent — they'll get back to you" is wrong once they have.
+// Dates and friendship are tracked separately, or one pending friend request
+// suppresses every Request button on the page. A set, because bookings have
+// auto-ids and nothing stops a visitor asking for several ranges.
 type StandingAsk = {
   windowIds: readonly string[];
   confirmed: boolean;
   connectPending: boolean;
 };
 
-// The public share-link page — the one screen a non-friend can reach, and the
-// only one outside the auth gate. Browsing needs no account: the page signs the
-// visitor in anonymously and reads the place and its live dates straight from
-// Firestore, gated on a grant proving they hold the link.
-//
-// Asking for something needs an account (the request is a document stamped with
-// your user id), but the account comes AFTER the tap: the buttons are live when
-// signed out, and tapping one holds the ask and opens sign-up in place. Nobody is
-// made to create an account before they've seen whether it's worth it.
+// The one screen outside the auth gate. Browsing needs no account; asking does,
+// but the account comes AFTER the tap — the buttons are live signed out, and
+// tapping one holds the ask and opens sign-up in place.
 export default function PortalPage(): ReactElement {
   const { user, profile, profileReady, ensureAnonymous } = useKip();
   const [page, setPage] = useState<PortalContent | null>(null);
@@ -76,14 +64,9 @@ export default function PortalPage(): ReactElement {
   const [failed, setFailed] = useState(false);
   const portal = page?.portal ?? null;
 
-  // Sign the visitor in anonymously before reading. Free dates are read LIVE from
-  // the host's records, and the rule that allows that needs an identity to hang
-  // the visitor's proof-of-token on — a read request has no body to carry the
-  // token inline. It's invisible: no prompt, no account, and if they later sign
-  // in for real the same identity is upgraded rather than replaced.
-  // Pasting a different link while already on this page changes only the
-  // fragment, and a browser treats that as the same document — no reload, no
-  // re-render. Nothing would happen at all without listening for it.
+  // Anonymous sign-in gives the live reads an identity to hang a grant on. The
+  // hashchange listener matters because pasting a different link changes only the
+  // fragment, which the browser treats as the same document — no reload.
   const [token, setToken] = useState("");
   useEffect(() => {
     const read = () => setToken(window.location.hash.slice(1));
@@ -101,8 +84,7 @@ export default function PortalPage(): ReactElement {
     setState("loading");
     setPage(null);
     setStanding(null);
-    // Sign-in is handed over in flight: the portal doc is world-readable by id,
-    // so reading it doesn't have to queue behind auth.
+    // Handed over in flight: the portal doc needs no identity to read.
     fetchPortalPage(token, ensureAnonymous())
       .then((found) => {
         if (!live) return;
@@ -118,9 +100,7 @@ export default function PortalPage(): ReactElement {
     };
   }, [token, ensureAnonymous]);
 
-  // Once signed in, surface what the visitor already has with this owner: which
-  // ranges they've asked for, and whether they've asked to connect. The two are
-  // reported separately so neither can hide the other's affordance.
+  // Reported separately, so neither ask can hide the other's affordance.
   useEffect(() => {
     if (!user || user.isAnonymous || !portal) return;
     Promise.all([
@@ -140,11 +120,9 @@ export default function PortalPage(): ReactElement {
       .catch((error: unknown) => console.error(error));
   }, [user, portal]);
 
-  // Send the held ask as soon as the visitor has both an account and a name to
-  // put on it. Clearing `ask` first means a later dependency change can't fire a
-  // second request. The name comes off the kip profile, never the Auth account:
-  // falling back to `user.email` would write their address into a document the
-  // host can read.
+  // Cleared first, so a later dependency change can't fire a second request. The
+  // name comes off the kip profile, never `user.email` — that would write their
+  // address into a document the host can read.
   useEffect(() => {
     if (!ask || !portal || !user || !profileReady || !profile?.displayName) {
       return;
@@ -160,21 +138,16 @@ export default function PortalPage(): ReactElement {
       photoURL: profile.photoURL,
     };
 
-    // Re-claim the grant as whoever we are NOW. Making an account does NOT
-    // upgrade the anonymous visitor signed in on load — Firebase mints a fresh
-    // uid — so the grant written back then belongs to an identity we just
-    // discarded, and the booking write (which the rules gate on holding a grant)
-    // would be refused. Idempotent, so this costs one write.
+    // Re-claimed as whoever we are NOW: signing in to an existing account mints
+    // a fresh uid, orphaning the grant written on load.
     claimGrant(portal.id, user.uid)
-      // Asking for dates IS a booking request — the same document a friend would
-      // create. Asking to connect is the only thing that needs its own record.
+      // Asking for dates IS a booking — the same document a friend creates.
       .then(() =>
         listingId && slot
           ? requestStayViaPortal(sender.uid, portal.ownerId, listingId, slot)
           : sendPortalConnectRequest(portal, sender),
       )
-      // Never confirmed: a link is not friendship, so a visitor's ask always
-      // waits for the host, even on a slot a friend could have booked instantly.
+      // Never confirmed: a link is not friendship, whatever the slot allows.
       .then(() =>
         setStanding((current) => ({
           windowIds: slot
@@ -191,8 +164,7 @@ export default function PortalPage(): ReactElement {
       .finally(() => setBusy(null));
   }, [ask, portal, user, profileReady, profile]);
 
-  // An anonymous visitor is signed in as far as Firebase is concerned, but has no
-  // account in any sense that matters here — they still need a real one to ask.
+  // Anonymous counts as signed out here — a ticket is not an account.
   const identified = Boolean(user) && user?.isAnonymous === false;
   const needsAccount = ask !== null && !identified;
   const needsName =
@@ -201,10 +173,7 @@ export default function PortalPage(): ReactElement {
   return (
     <div className="flex min-h-dvh flex-col">
       <header className="flex h-14 items-center gap-3 px-4">
-        {/* A share link is often someone's first sight of kip, so the mark is
-            the way in. `basePath` is set on the deployed build, and an anchor
-            rather than a router push because this page sits outside the app's
-            nav stack entirely. */}
+        {/* An anchor, not a router push — this page sits outside the nav stack. */}
         <a
           href={`${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/`}
           aria-label="kip home"
@@ -220,8 +189,7 @@ export default function PortalPage(): ReactElement {
 
       <main className="flex-1 overflow-y-auto p-4">
         {state === "loading" ? (
-          // The same mark the app boots behind, so arriving on a link doesn't
-          // look like a different product mid-load.
+          // The same mark the app boots behind.
           <div className="flex min-h-[60vh] items-center justify-center">
             <span className="bg-gradient-accent grid h-16 w-16 animate-pulse place-items-center rounded-3xl text-3xl font-extrabold text-white shadow-glow">
               k
@@ -278,9 +246,7 @@ export default function PortalPage(): ReactElement {
   );
 }
 
-// Shown right after a visitor makes an account from a share link: the one field
-// kip needs before anything is written, since the host has to see a name rather
-// than a blank. No handle — that's optional and lives in Settings.
+// The host has to see a name rather than a blank. No handle — that's optional.
 function NameForm(): ReactElement {
   const { user, completeOnboarding } = useKip();
   const [name, setName] = useState(user?.displayName ?? "");
@@ -384,10 +350,7 @@ function PortalView({
         ))
       )}
 
-      {/* Connecting without picking dates — the only route when a link has
-          nothing free on it, and the friendlier ask when it does. The button
-          says what it does, so the paragraph that used to explain it was just
-          the same sentence twice. */}
+      {/* The only route when a link has nothing free on it. */}
       {!isOwner && !standing?.connectPending ? (
         <Button
           variant="secondary"
@@ -413,8 +376,7 @@ function PortalView({
         </p>
       ) : null}
 
-      {/* Without this a failure is invisible: the button just reappears and the
-          visitor has no idea whether anything was sent. */}
+      {/* Without this the button just reappears and a failure is invisible. */}
       {failed ? (
         <p className="px-1 text-center text-sm text-danger">
           That didn't go through. Check your connection and try again — the link
@@ -443,11 +405,8 @@ function ListingBlock({
   const TypeIcon = listingTypeIcon(listing.type);
   return (
     <div className="flex flex-col gap-3 rounded-3xl bg-surface p-4 shadow-card">
-      {/* Each photo's URL rides along with the place — copied into a date-range
-          link, read live by the wider ones — and the token in it is what opens
-          the object, so the visitor browses the same photos a friend would. The
-          whole set is already here, so anything less than the gallery would be
-          withholding what was sent. */}
+      {/* The token in each URL is what opens the object, so a link-holder
+          browses the same photos a friend would. */}
       <PhotoGallery photos={listing.photos} heroClassName="h-44 w-full" />
       <div className="flex items-start gap-3">
         <span className="bg-accent-soft grid h-10 w-10 shrink-0 place-items-center rounded-2xl text-accent-ink">
@@ -487,9 +446,8 @@ function ListingBlock({
                   {window.details ? ` · ${window.details}` : ""}
                 </p>
               </div>
-              {/* Before the plain "Booked": a range the visitor holds is only
-                  listed at all because it's theirs, and the same grey chip a
-                  stranger's stay gets would tell them nothing. */}
+              {/* A range the visitor holds is listed only because it's theirs, so a
+                  stranger's grey chip would tell them nothing. */}
               {window.bookedByMe ? (
                 <Chip tone="confirmed">Booked by you</Chip>
               ) : window.booked ? (

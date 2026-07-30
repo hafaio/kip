@@ -23,9 +23,7 @@ import Switch from "./ui/switch";
 const FIELD =
   "h-11 w-full rounded-xl border border-border bg-surface px-3.5 text-base outline-none transition focus:border-accent focus:ring-2 focus:ring-accent/20";
 
-// The single place surface. If it's yours, it's the owner console (details,
-// availability with per-slot sheets, sharing, guests); otherwise it's the
-// host-featured, bookable friend view.
+// The single place surface: owner console, or the bookable friend view.
 export default function RoomPage({ id }: { id: string }): ReactElement {
   const { user, myListings, friendListings, tripListings, friendWindows } =
     useKip();
@@ -35,20 +33,16 @@ export default function RoomPage({ id }: { id: string }): ReactElement {
   } | null>(null);
   const [looked, setLooked] = useState(false);
 
-  // A stay at a non-friend's place makes that one place readable and nothing
-  // else, so its dates come back empty — the room is reachable from the booking
-  // that entitles you to it, not browsable.
+  // A guest pointer opens the place and not its calendar, so dates come back
+  // empty for a stay at a non-friend's.
   const loaded =
     myListings.find((listing) => listing.id === id) ??
     friendListings.find((listing) => listing.id === id) ??
     tripListings.find((listing) => listing.id === id);
   const haveLoaded = loaded !== undefined;
 
-  // Friends' places are fetched, not listened to, and that fetch is keyed on the
-  // friend list, so arriving straight at this screen — a pasted link, a reload —
-  // finds nothing loaded yet. Ask for THIS place rather than every friend's, and
-  // only call it missing once the answer is in; otherwise a deep link reads
-  // "isn't available" for the length of the fetch.
+  // Arriving straight here finds nothing loaded, so ask for THIS place rather
+  // than every friend's — and don't call it missing until the answer is in.
   useEffect(() => {
     if (haveLoaded) return;
     let live = true;
@@ -66,8 +60,7 @@ export default function RoomPage({ id }: { id: string }): ReactElement {
     };
   }, [id, haveLoaded]);
 
-  // Only this room's own fetch counts — the state outlives a move to another
-  // room, and the store's copy is the fresher one wherever it has one.
+  // The state outlives a move to another room, so only this room's fetch counts.
   const local = fetched?.listing.id === id ? fetched : null;
   const room = loaded ?? local?.listing;
   if (!room) {
@@ -89,11 +82,8 @@ export default function RoomPage({ id }: { id: string }): ReactElement {
   );
 }
 
-// The place itself: its photos as a browsable hero, then title + type chip +
-// location + description. Shared by both views, and the `thumbnails` prop is the
-// one difference — the owner's thumbnails are the editing strip further down the
-// page, where dragging one reorders it and the first is the cover, so a rail here
-// would give the same pictures a second meaning. They browse with the arrows.
+// `thumbnails` is the one difference between the views: the owner already has a
+// rail further down that reorders, so a second one would mean two things at once.
 function DetailBlock({
   listing,
   thumbnails,
@@ -136,9 +126,8 @@ function FriendView({
 }): ReactElement {
   const { user, friends, navigate } = useKip();
   const host = friends.find((friend) => friend.uid === listing.ownerId);
-  // Dates someone else has aren't availability, and the window names who has
-  // them — so a taken range isn't listed at all. Yours still is: "Booked by you"
-  // is how you find the stay you hold here.
+  // A taken range isn't availability, but yours still is — "Booked by you" is
+  // how you find the stay you hold here.
   const open = [...windows]
     .filter(
       (window) =>
@@ -207,8 +196,7 @@ function OwnerView({ listing }: { listing: Listing }): ReactElement {
   } = useKip();
   const { confirm } = useDialog();
   const run = useAction();
-  // The slot named by whoever navigated here, if any — see `Screen`. Only the
-  // owner reads it, which is also why the friend view can ignore it entirely.
+  // Owner-only, which is why the friend view can ignore it entirely.
   const focusedWindowId =
     screen.kind === "room" && screen.id === listing.id
       ? (screen.windowId ?? null)
@@ -218,16 +206,14 @@ function OwnerView({ listing }: { listing: Listing }): ReactElement {
   );
   const [addingSlot, setAddingSlot] = useState(false);
 
-  // Arriving at a room already open, pointed at a different slot, still opens
-  // it. This only ever OPENS: closing clears the argument below, so the two
-  // never fight over a sheet the user has just dismissed.
+  // Only ever OPENS — closing clears the argument, so the two never fight over
+  // a sheet the user just dismissed.
   useEffect(() => {
     if (focusedWindowId) setEditingWindowId(focusedWindowId);
   }, [focusedWindowId]);
 
-  // Closing drops the slot from the screen in place. A pushed entry would be a
-  // phantom the user has to walk back through, and browser-back would reopen
-  // the sheet they just closed rather than leaving the room.
+  // In place, not pushed: a pushed entry would make browser-back reopen the
+  // sheet just closed.
   function closeSlotSheet(): void {
     setEditingWindowId(null);
     if (focusedWindowId) replace({ kind: "room", id: listing.id });
@@ -236,12 +222,10 @@ function OwnerView({ listing }: { listing: Listing }): ReactElement {
   const allWindows = [...(myWindows[listing.id] ?? [])].sort((left, right) =>
     left.start.localeCompare(right.start),
   );
-  // Dates that have been and gone are still yours to clear, but they aren't
-  // availability any more — the same split Trips makes between upcoming and past,
-  // so a slot and a stay stop being current on the same day.
+  // The same boundary Trips uses, so a slot and a stay stop being current on the
+  // same day.
   const windows = allWindows.filter((window) => !isExpired(window.end));
-  // Newest first, like past trips: history reads backwards from now, so the
-  // dates you might still recognise aren't buried under last year's.
+  // Newest first, so recent dates aren't buried under last year's.
   const expired = allWindows
     .filter((window) => isExpired(window.end))
     .sort((left, right) => right.start.localeCompare(left.start));
@@ -255,9 +239,7 @@ function OwnerView({ listing }: { listing: Listing }): ReactElement {
   const activeBookings = bookings.filter(
     (booking) => booking.status !== "CANCELLED",
   );
-  // A cancelled ask or stay isn't a guest any more, but this is the only way in
-  // to it — so it sits below the live list in the dimmed treatment past dates
-  // get, newest first, rather than filling the guest list with noise.
+  // Not a guest any more, but this is the only way in to it.
   const cancelledBookings = bookings
     .filter((booking) => booking.status === "CANCELLED")
     .sort((left, right) => right.start.localeCompare(left.start));
@@ -272,8 +254,7 @@ function OwnerView({ listing }: { listing: Listing }): ReactElement {
     if (ok) run(() => deleteListing(listing));
   }
 
-  // Clearing is per-party: these rows go from YOUR list of this place's history,
-  // and the guest's own record of the cancellation is untouched.
+  // Per-party: the guest's own record of the cancellation is untouched.
   async function clearCancelled(): Promise<void> {
     const agreed = await confirm({
       title: "Clear cancelled bookings?",
@@ -284,10 +265,8 @@ function OwnerView({ listing }: { listing: Listing }): ReactElement {
     await hideBookingsById(cancelledBookings.map((booking) => booking.id));
   }
 
-  // A slot that isn't there yet is the same lookup as one that never will be:
-  // the id survives, so a sheet named before the windows listener has caught up
-  // opens as soon as they arrive, and one naming a removed slot simply leaves
-  // the visitor on the room.
+  // The id survives, so a sheet named before the listener catches up opens when
+  // it does, and one naming a removed slot just leaves you on the room.
   const editingWindow = editingWindowId
     ? allWindows.find((window) => window.id === editingWindowId)
     : undefined;
@@ -510,18 +489,15 @@ function SlotSheet({
   const [details, setDetails] = useState(window.details);
 
   const booked = window.status === "BOOKED";
-  // Dates that have gone can only be cleared away. Editing them would mean
-  // dragging a slot nobody could book back into availability, which is a new set
-  // of dates wearing an old slot's history — and its share link, and whatever
-  // was asked of it.
+  // Reviving these would be a new set of dates wearing an old slot's history —
+  // its share link, and whatever was asked of it — so they can only be cleared.
   const expired = isExpired(window.end);
   const guestBooking = incomingBookings.find(
     (booking) =>
       booking.windowId === window.id && booking.status !== "CANCELLED",
   );
-  // A share-link guest isn't a friend, so they're read through the stay itself.
-  // Only shown once the slot is BOOKED, which means the stay is confirmed and
-  // that read works.
+  // Read through the stay itself, which only works once it's confirmed — hence
+  // shown only when the slot is BOOKED.
   const guestName = guestBooking
     ? knownPerson(guestBooking.guestId)?.displayName || "your guest"
     : null;
@@ -534,9 +510,8 @@ function SlotSheet({
   const gone = Boolean(end) && isExpired(end);
   const valid = Boolean(start && end && end > start) && !clash && !gone;
 
-  // Moving dates invalidates anyone who asked for the old ones — their booking
-  // can never be confirmed onto different nights, so it's cancelled. That has to
-  // be stated, not done quietly behind a Save button.
+  // A pending ask can never be confirmed onto different nights, so moving the
+  // dates cancels it — which has to be said, not done quietly behind Save.
   const pending = incomingBookings.filter(
     (booking) =>
       booking.windowId === window.id && booking.status === "REQUESTED",

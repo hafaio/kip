@@ -1,30 +1,16 @@
 rules_version = '2';
 
-// Photo storage: a place's pictures, and a person's profile photo.
-//
-// These rules answer ONE question: is this the owner? Everyone else reads a photo
-// by its download URL, which is an unguessable bearer capability handed out on the
-// listing document, so Firestore's listing-read rule is the actual gate. That rule
-// already expresses all six ways a place becomes visible (owner, friend, confirmed
-// guest, room link, profile link, slot link) inside a 20-lookup budget.
-//
-// It has to work that way. Cross-service Rules allow only TWO Firestore lookups
-// per Cloud Storage request, and the budget is per REQUEST, not per clause — a
-// clause that evaluates false still spends from it. Re-deriving visibility here
-// cost one lookup just to learn the owner from the listing, leaving room for
-// exactly one more document, so guests and every kind of share-link holder got a
-// flat 403 with no diagnostic. Putting the owner's uid in the object path removes
-// the last lookup: this file now makes no cross-service calls at all.
+// Owner-only, with the owner in the object path so this makes no cross-service
+// call at all. It has to: Cloud Storage rules get only TWO Firestore lookups per
+// request, spent whether a clause matches or not, and re-deriving the listing's
+// six-way visibility here 403'd every guest and share-link holder. Everyone else
+// follows the download URL, so the Firestore listing read is the real gate.
 service firebase.storage {
   match /b/{bucket}/o {
     match /listings/{ownerId}/{listingId}/{photoId} {
       allow read, write: if request.auth != null && request.auth.uid == ownerId;
     }
 
-    // A profile photo, one object per person. The owner is the whole path, so
-    // this asks the same single question and still makes no cross-service call:
-    // everyone else follows the download URL copied onto the profile, the friend
-    // edges, the bookings and the share links that describe this person.
     match /avatars/{uid} {
       allow read, write: if request.auth != null && request.auth.uid == uid;
     }

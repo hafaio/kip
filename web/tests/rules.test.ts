@@ -41,19 +41,15 @@ async function seed(fill: (db: Firestore) => Promise<void>): Promise<void> {
   });
 }
 
-// EVERY date in this suite is relative to the day it runs. Now that asking for a
-// slot requires it to still be current, a hard-coded literal doesn't just age —
-// it quietly changes what its test asserts, and then fails on an ordinary morning
-// with nothing having been edited. Five of these were literals, and that is
-// exactly how they went.
+// EVERY date here is relative to the run. A literal doesn't just age — it quietly
+// changes what its test asserts, then fails one morning with nothing edited.
 function isoIn(days: number): string {
   const date = new Date();
   date.setUTCDate(date.getUTCDate() + days);
   return date.toISOString().slice(0, 10);
 }
 
-// A room link: who's sharing, and which room. The room and its free dates are
-// both read live, authorised by a grant.
+// Room and dates are both read live, authorised by a grant.
 const portal = {
   scope: "LISTING",
   ownerId: OWNER,
@@ -63,8 +59,7 @@ const portal = {
   createdAt: 0,
 };
 
-// A date-range link. This is the ONE scope that copies the room in, because a
-// slot grant deliberately doesn't unlock the room document.
+// The one scope that copies the room in, since a slot grant doesn't unlock it.
 const slotPortal = {
   scope: "SLOT",
   ownerId: OWNER,
@@ -84,8 +79,7 @@ const slotPortal = {
   createdAt: 0,
 };
 
-// "Let's be friends", arrived through a share link. Asking to STAY is a REQUESTED
-// booking now, not a request — see the bookings describes below.
+// Arrived through a share link. Asking to STAY is a booking, not one of these.
 const request = {
   from: STRANGER,
   to: OWNER,
@@ -142,15 +136,10 @@ describe("portals", () => {
   });
 });
 
-// A visitor proves they hold a link by writing a grant under its token, and reads
-// of the live dates check that grant against whichever token the date range
-// CURRENTLY sits under. That indirection is what makes revoking and regenerating
-// take effect instantly, with nothing to clean up.
-// Reading a friend's place costs ONE rule lookup (the exists() on their friends
-// edge), and Firestore caps a query at 20 lookups. Repeats of the same path are
-// free, so the ceiling is the number of DISTINCT owners in one query — which is
-// what sets BROWSE_CHUNK in utils/listings.ts. Unchunked, Browse fails outright
-// for anyone with more than ~20 friends sharing places.
+// A grant is checked against whichever token the document CURRENTLY sits under,
+// which is what makes revoke and regenerate instant. Separately: each distinct
+// friend in a query costs one lookup against Firestore's cap of 20, which is
+// what sets BROWSE_CHUNK.
 describe("browse query vs the rules lookup budget", () => {
   const ME = "browser1";
 
@@ -182,8 +171,7 @@ describe("browse query vs the rules lookup budget", () => {
     );
   }
 
-  // BROWSE_CHUNK sits exactly here, so this pair is a tripwire: add a lookup
-  // before or at the friend check and the first case starts failing.
+  // A tripwire: add a lookup at or before the friend check and this fails.
   it("a chunk of 20 friends is exactly within budget", async () => {
     const uids = await seedFriendsWithPlaces(20, 20);
     await assertSucceeds(browse(uids));
@@ -292,8 +280,7 @@ describe("portal grants (live dates)", () => {
     );
   });
 
-  // A date-range link exposes ONE range. Holding it must not reveal the rest of
-  // the host's calendar for that place.
+  // Holding one range must not reveal the rest of the host's calendar.
   it("a date-range link exposes only its own dates", async () => {
     await seed(async (db) => {
       await setDoc(doc(db, "portals", "slot1"), slotPortal);
@@ -328,9 +315,7 @@ describe("portal grants (live dates)", () => {
     await assertSucceeds(getDoc(doc(authed(VISITOR), "listings", "L1")));
   });
 
-  // Sharing one set of dates is a narrower promise than sharing the room, so a
-  // slot grant stops at the slot. The room's details ride along in the link's own
-  // copy instead.
+  // Sharing dates is a narrower promise than sharing the room.
   it("a slot-link grant does NOT unlock the room", async () => {
     await seed(async (db) => {
       await setDoc(doc(db, "portals", "slot1"), slotPortal);
@@ -353,8 +338,7 @@ describe("portal grants (live dates)", () => {
     await assertFails(getDoc(doc(authed(VISITOR), "listings", "L1")));
   });
 
-  // A profile link names no rooms at all — the grant lets the visitor query them,
-  // so a room added after the link was shared just shows up.
+  // Names no rooms, so one added after the link was shared just shows up.
   it("a profile-link grant unlocks every room, queried live", async () => {
     await seed(async (db) => {
       await setDoc(doc(db, "portals", "prof1"), {
@@ -379,9 +363,7 @@ describe("portal grants (live dates)", () => {
     await assertSucceeds(getDoc(doc(authed(VISITOR), "listings", "L2")));
   });
 
-  // The slot is the source of truth for the dates, so whoever holds it must be
-  // able to read it — a share-link guest's grant lapses (30 days, or the moment
-  // the host regenerates) long before their stay does.
+  // A grant lapses long before a stay does, so holding the slot has to be enough.
   it("the guest holding a slot can read it without any grant", async () => {
     await seed((db) =>
       setDoc(
@@ -501,9 +483,8 @@ describe("accept (friend edge)", () => {
     );
   });
 
-  // The edge an accepter writes into the sender's list describes the ACCEPTER and
-  // outlives the request — so, like the request itself, it can't lie about who
-  // they are or wear a handle belonging to someone else.
+  // This edge describes the ACCEPTER and outlives the request, in a list nobody
+  // has reason to re-check.
   it("an accepter cannot install themselves under a false identity", async () => {
     await seed((db) =>
       setDoc(doc(db, "users", OWNER), {
@@ -540,9 +521,8 @@ describe("accept (friend edge)", () => {
   });
 });
 
-// Asking to stay is ONE thing regardless of who's asking: a REQUESTED booking.
-// A friend is authorised by friendship, a share-link visitor by their grant — and
-// the visitor can never skip approval, however the slot is configured.
+// One thing whoever asks; only the authorisation differs, and a link-holder can
+// never skip approval however the slot is configured.
 describe("bookings via a share link", () => {
   const VISITOR = "visitor2";
   const stay = {
@@ -615,9 +595,7 @@ describe("bookings via a share link", () => {
     );
   });
 
-  // The slot auto-accepts, so a FRIEND could self-confirm it. Someone holding a
-  // link cannot: instant booking is first-come-first-served among friends, and a
-  // link is not friendship.
+  // A friend could self-confirm this slot; a link-holder cannot.
   it("a share-link visitor can never skip approval, even on an instant slot", async () => {
     await seed((db) =>
       setDoc(doc(db, "portals", "p1", "grants", VISITOR), {
@@ -647,8 +625,7 @@ describe("bookings via a share link", () => {
     );
   });
 
-  // Between asking and confirming the slot sits OPEN, so the host may still edit
-  // it. Confirming re-checks, rather than silently moving the stay.
+  // The slot sits OPEN in between, so the host may still have moved it.
   it("confirming is refused once the slot's dates have moved", async () => {
     await seed(async (db) => {
       await setDoc(doc(db, "bookings", "bv5"), stay);
@@ -667,10 +644,8 @@ describe("bookings via a share link", () => {
 });
 
 describe("users + usernames (get-not-query privacy)", () => {
-  // A profile is readable by exactly three parties: yourself, your friends, and —
-  // only when you've turned searchability on — anyone holding your uid. Holding a
-  // uid is deliberately NOT sufficient, so an ex-friend who kept it still can't
-  // read a profile that has since gone private.
+  // Holding a uid is deliberately not sufficient, so an ex-friend who kept one
+  // still can't read a profile that has since gone private.
   it("can GET your own profile", async () => {
     await seed((db) => setDoc(doc(db, "users", "u1"), { displayName: "U" }));
     await assertSucceeds(getDoc(doc(authed("u1"), "users", "u1")));
@@ -708,9 +683,7 @@ describe("users + usernames (get-not-query privacy)", () => {
     await assertFails(getDocs(collection(authed("someone"), "users")));
   });
 
-  // Being searchable opens the PROFILE DOC and nothing else. Places, dates,
-  // stays, your friends list and your settings all stay friends-gated, so
-  // becoming findable never turns into becoming readable.
+  // Searchable opens the profile doc and nothing else.
   it("searchable exposes the profile and nothing else", async () => {
     await seed(async (db) => {
       await setDoc(doc(db, "users", "u1"), {
@@ -780,9 +753,8 @@ describe("users + usernames (get-not-query privacy)", () => {
   });
 
   it("cannot steal a handle someone else already holds", async () => {
-    // The doc exists, so a set() takes the update path; the owner-only update rule
-    // (resource.uid must equal the writer) denies a non-owner — this is what makes
-    // a claim collision fail before the profile write.
+    // A set() on an existing doc takes the update path, which is owner-only —
+    // that is what makes a collision fail before the profile write.
     await seed((db) => setDoc(doc(db, "usernames", "taken"), { uid: "owner" }));
     await assertFails(
       setDoc(doc(authed("attacker"), "usernames", "taken"), {
@@ -798,9 +770,8 @@ describe("users + usernames (get-not-query privacy)", () => {
     );
   });
 
-  // Mirrors the denylist in the usernames create rule (and utils/username.ts's
-  // RESERVED). Looping every entry means dropping a name from the rule surfaces
-  // here instead of silently un-reserving it at the security boundary.
+  // Loops the whole denylist, so dropping one from the rule fails here rather
+  // than silently un-reserving it.
   const RESERVED = [
     "admin",
     "kip",
@@ -831,9 +802,7 @@ describe("users + usernames (get-not-query privacy)", () => {
     );
   });
 
-  // A handle is permanent — there's no delete, even for its owner. That's what
-  // makes turning searchability off safe: your name can't be released and then
-  // squatted by someone else while you're private.
+  // Permanent, which is what makes going private reversible.
   it("cannot release a handle, even your own", async () => {
     await seed(async (db) => {
       await setDoc(doc(db, "usernames", "mine"), { uid: "u1" });
@@ -885,13 +854,9 @@ describe("users + usernames (get-not-query privacy)", () => {
   });
 });
 
-// The handle registry is the only legitimate route into this collection, so a
-// request is refused unless the recipient is actually findable by handle. Going
-// private therefore stops inbound requests outright — not just in the UI — even
-// from someone who already knows the uid.
-// The name and handle on a request are what the recipient sees and what goes in
-// their email, and they can't check them — the two parties can't read each other's
-// profiles yet. So they have to be the sender's real ones.
+// Going private stops inbound requests outright, not just in the UI. The sender's
+// name and handle are pinned because the recipient can't check them and they go
+// straight into an email.
 describe("connectRequests cannot spoof an identity", () => {
   beforeEach(async () => {
     await seed(async (db) => {
@@ -1006,9 +971,8 @@ describe("connectRequests (handle route, searchable gate)", () => {
   });
 });
 
-// A guest's sight of a listing is a POINTER at the booking that justifies it,
-// re-read on every use — so it dies with the booking rather than needing a
-// cleanup path that some cancel route could forget.
+// A pointer re-read on every use, so it dies with the booking and no cancel
+// route has to remember it.
 describe("guest access is only as live as its booking", () => {
   const GUEST = "guest9";
   const confirmed = {
@@ -1045,10 +1009,8 @@ describe("guest access is only as live as its booking", () => {
     );
   });
 
-  // The client re-claims off the guest's own trips on every load, so after the
-  // first claim every one of them is a rewrite. Without an update rule the writes
-  // are denied for the rest of the stay — harmless, but a permanent stream of
-  // permission-denied is exactly how a real failure gets missed.
+  // The client re-claims on every load, so all but the first are rewrites — and
+  // a permanent stream of permission-denied is how a real failure gets missed.
   it("re-claiming is idempotent, not denied", async () => {
     await seed((db) =>
       setDoc(doc(db, "listings", "LG", "guests", GUEST), { bookingId: "bg" }),
@@ -1136,10 +1098,8 @@ describe("guest access is only as live as its booking", () => {
   });
 });
 
-// The name and photo a friend sees are copied onto the edge, so rendering a
-// friends list costs no extra reads. That copy is only correctable by the person
-// it describes — nothing else can reach into someone else's friends list — so
-// without this it would be stale forever after a rename.
+// Nothing else can reach into someone else's friends list, so without this the
+// copy is stale forever after a rename.
 describe("friend edges heal on rename", () => {
   beforeEach(async () => {
     await seed(async (db) => {
@@ -1172,9 +1132,8 @@ describe("friend edges heal on rename", () => {
     );
   });
 
-  // Scoping WHICH fields may change is not the same as checking their values —
-  // without this, healing your name to "kip Support" in every friend's list was
-  // permitted by a rule whose test looked like it forbade exactly that.
+  // Scoping WHICH fields may change is not checking their values: without this,
+  // renaming yourself to "kip Support" in every friend's list was permitted.
   it("cannot heal your name to something that isn't yours", async () => {
     await assertFails(
       updateDoc(doc(authed("me"), "users", "them", "friends", "me"), {
@@ -1192,13 +1151,9 @@ describe("friend edges heal on rename", () => {
   });
 });
 
-// A slot may hold at most one stay. A booked slot's dates are frozen, so date
-// equality alone would happily match a second ask — and confirming it would
-// overwrite the first guest's `bookedBy`, taking away their right to release it.
-// Confirming is two writes — the booking and the slot — and the rules require
-// them to travel together. Alone, the booking write leaves the slot OPEN, so the
-// next confirm passes the same check and a host can promise one slot to several
-// guests. The client transaction only guards honest races.
+// A booked slot's dates are frozen, so date equality alone would match a second
+// ask. Confirming is two writes that must travel together — alone, the booking
+// write leaves the slot OPEN and the next confirm passes the same check.
 describe("a confirm must hand over the slot", () => {
   const G1 = "cg1";
   const G2 = "cg2";
@@ -1345,8 +1300,7 @@ describe("mail is not a client-writable collection", () => {
   });
 });
 
-// Cancelling stamps who did it and why: a Firestore trigger can't see the writer,
-// and the notice depends entirely on that. You may only ever stamp yourself.
+// A trigger can't see the writer, so you may only ever stamp yourself.
 describe("cancellation attribution", () => {
   const GUEST = "cg";
   beforeEach(async () => {
@@ -1455,8 +1409,7 @@ describe("bookings (field validation)", () => {
     );
   });
 
-  // Instant booking is two writes as well: the booking and the slot flip must
-  // arrive together, or the slot stays open for the next person to take too.
+  // Two writes here too, or the slot stays open for the next person as well.
   it("a friend CAN instant-book, taking the slot in the same commit", async () => {
     const db = authed(GUEST);
     const batch = writeBatch(db);
@@ -1493,8 +1446,7 @@ describe("bookings (field validation)", () => {
   });
 
   it("cannot set ownerId to someone who doesn't own the listing", async () => {
-    // GUEST is a friend of "victim" too, so the friend check passes — it's the
-    // ownerId-must-be-the-listing-owner check that blocks the injection.
+    // The friend check passes; it's the ownerId check that blocks this.
     await seed((db) => setDoc(doc(db, "users", "victim", "friends", GUEST), { since: 0 }));
     await assertFails(
       setDoc(doc(authed(GUEST), "bookings", "bk4"), {
@@ -1547,8 +1499,7 @@ describe("bookings (field validation)", () => {
   });
 });
 
-// A confirmed stay is an agreement about specific nights. The host can cancel it,
-// but must not be able to quietly move it.
+// The host may cancel a confirmed stay, but not quietly move it.
 describe("windows (a booked slot's dates are frozen)", () => {
   beforeEach(async () => {
     await seed(async (db) => {
@@ -1608,9 +1559,8 @@ describe("windows (a booked slot's dates are frozen)", () => {
   });
 });
 
-// Dates that have been and gone stop being availability. The UI already hides the
-// fields; this is the backstop, and it matters because reviving an old slot would
-// also revive the stale asks still pointing at it.
+// The backstop behind the UI, and it matters because reviving an old slot would
+// revive the stale asks still pointing at it.
 describe("windows (an expired slot's dates are frozen)", () => {
   beforeEach(async () => {
     await seed(async (db) => {
@@ -1644,8 +1594,7 @@ describe("windows (an expired slot's dates are frozen)", () => {
     );
   });
 
-  // Everything that isn't the dates still works, so the slot can be cleared off
-  // the calendar and a stay that already happened stays legible.
+  // Everything but the dates still works, so it can still be cleared away.
   it("the host can still edit an expired slot's notes", async () => {
     await assertSucceeds(
       updateDoc(doc(authed(OWNER), "listings", "LX", "windows", "wpast"), {
@@ -1660,9 +1609,8 @@ describe("windows (an expired slot's dates are frozen)", () => {
     );
   });
 
-  // The rule compares against yesterday in UTC, because `request.time` is UTC
-  // while the client's `isExpired` is local — a slot ending today must stay
-  // editable for someone west of UTC, where "today" hasn't caught up yet.
+  // Yesterday in UTC, because `request.time` is UTC and `isExpired` is local —
+  // a slot ending today must stay editable for someone west of UTC.
   it("a slot ending today is still editable", async () => {
     await seed(async (db) => {
       await setDoc(doc(db, "listings", "LX", "windows", "wtoday"), {
@@ -1720,10 +1668,7 @@ describe("windows (guest field pinning)", () => {
   });
 });
 
-// The two people in a confirmed stay are the one pair who demonstrably know each
-// other — and, if they met through a share link, the one pair the other two routes
-// in can't serve: a link guest is neither searchable nor someone whose link the
-// host holds.
+// The one pair the other two routes can't serve.
 describe("connectRequests (shared-booking route)", () => {
   const HOST = "sbhost";
   const GUEST = "sbguest";
@@ -1803,8 +1748,7 @@ describe("connectRequests (shared-booking route)", () => {
   });
 });
 
-// Clearing a cancelled booking is a HIDE, not a delete: one document is the record
-// for both parties, so a delete by one would erase the other's history.
+// A hide, not a delete: one document is the record for both parties.
 describe("bookings (clearing a cancelled one)", () => {
   const HOST = "hbhost";
   const GUEST = "hbguest";
@@ -1836,8 +1780,7 @@ describe("bookings (clearing a cancelled one)", () => {
     });
   });
 
-  // The second writer must APPEND — replacing the list would clear the first
-  // party's entry, and the rule refuses that. The client uses arrayUnion.
+  // Must append: replacing the list drops the other party, and the rule refuses.
   it("either party can clear it from their own list", async () => {
     await assertSucceeds(
       updateDoc(doc(authed(GUEST), "bookings", "hb"), { hiddenBy: [GUEST] }),
@@ -1895,9 +1838,7 @@ describe("bookings (clearing a cancelled one)", () => {
   });
 });
 
-// A friend edge carries copies of your name, handle and photo so a friends list
-// costs no extra reads. All three are pinned to your real profile, and all three
-// have to stay healable — a copy is only worth having if it can be corrected.
+// All three are pinned to the real profile, and all three must stay healable.
 describe("friend edges (healing every copy of you)", () => {
   const ME = "healer";
   const FRIEND = "healfriend";
@@ -1919,9 +1860,8 @@ describe("friend edges (healing every copy of you)", () => {
     });
   });
 
-  // The case that used to be unfixable: befriend someone, claim a handle later,
-  // and the stored edge's empty username no longer matches the profile — so
-  // EVERY heal was denied for that friend, name and photo alike.
+  // Befriend someone, claim a handle later, and the edge's empty username no
+  // longer matches — which used to deny every heal for that friend.
   it("can bring a pre-handle edge up to date", async () => {
     await assertSucceeds(
       updateDoc(doc(authed(ME), "users", FRIEND, "friends", ME), {
@@ -1942,7 +1882,7 @@ describe("friend edges (healing every copy of you)", () => {
     );
   });
 
-  // The photo is a copy the holder can't check, shown beside your name.
+  // A copy the holder can't check, shown beside your name.
   it("refuses a photo that isn't the one on your profile", async () => {
     await assertFails(
       updateDoc(doc(authed(ME), "users", FRIEND, "friends", ME), {
@@ -1975,9 +1915,8 @@ describe("friend edges (healing every copy of you)", () => {
   });
 });
 
-// A share-link guest and their host are neither friends nor searchable to each
-// other, so neither could read the other at all — which is why their names and
-// photos were copied onto every booking and rewritten on every rename. That copy
+// A share-link guest and their host can't read each other at all, which is why
+// names were once copied onto every booking. That copy
 // was unbounded; this is one hop, gated on the stay itself.
 describe("reading someone you share a stay with", () => {
   const HOST = "hopowner";
@@ -2044,8 +1983,7 @@ describe("reading someone you share a stay with", () => {
     );
   });
 
-  // The pointer is re-read on every use, so it dies with the stay rather than
-  // needing any cancel path to remember to tear it down.
+  // Re-read on every use, so it dies with the stay.
   it("goes inert when the stay is cancelled", async () => {
     await assertSucceeds(point(GUEST, HOST, "bhop"));
     await seed((db) =>
@@ -2060,10 +1998,8 @@ describe("reading someone you share a stay with", () => {
   });
 });
 
-// A stay is the only thing here that ends without anything writing to it —
-// nothing marks a booking completed, the app just compares `end` to today. So
-// the pointers hanging off one have to age out on the date itself, or someone
-// you hosted once reads your profile forever.
+// Nothing marks a booking completed, so a pointer hanging off one has to age out
+// on the date itself, or a single stay grants profile reads forever.
 describe("a stay stops granting sight once it's well past", () => {
   const HOST = "sightowner";
   const GUEST = "sightguest";
@@ -2109,8 +2045,7 @@ describe("a stay stops granting sight once it's well past", () => {
     await assertFails(point(GUEST, HOST, "b_ancient"));
   });
 
-  // The pointer is re-checked on every read, so one issued while the stay was
-  // fresh stops working on its own — no sweep, nothing to remember to revoke.
+  // One issued while the stay was fresh stops matching on its own.
   it("a pointer issued while it was fresh goes inert with age", async () => {
     await assertSucceeds(point(GUEST, HOST, "b_recent"));
     await seed((db) =>
@@ -2170,8 +2105,8 @@ describe("booking transitions", () => {
     });
   });
 
-  // The race that made this reachable without any crafted client: the guest
-  // withdraws, the host's screen still says Pending, the host taps Confirm.
+  // Reachable without a crafted client: the guest withdraws, the host's screen
+  // still says Pending, the host taps Confirm.
   it("a withdrawn ask cannot be confirmed back to life", async () => {
     await assertFails(
       updateDoc(doc(authed(HOST), "bookings", "t_cancelled"), {
@@ -2207,10 +2142,8 @@ describe("booking transitions", () => {
   });
 });
 
-// A request already sitting in someone's inbox must not outlive the route that
-// put it there — otherwise revoking a link stops new asks but not a refresh of
-// the one already pending, and its `portalId` could be rewritten to claim a
-// provenance it no longer has.
+// A pending request must not outlive the route that put it there, or revoking a
+// link stops new asks but not a refresh of the one already sitting in the inbox.
 describe("connectRequests (a route you no longer have)", () => {
   const SENDER = "routesender";
   const OWNER = "routeowner";
@@ -2282,8 +2215,7 @@ describe("connectRequests (a route you no longer have)", () => {
   });
 });
 
-// The client filters expired slots out of every surface, so an honest one never
-// offers this — but an untouched lapsed slot is still OPEN.
+// An untouched lapsed slot is still OPEN, so the rules have to refuse it.
 describe("bookings (dates that have already gone)", () => {
   const HOST = "pastowner";
   const GUEST = "pastguest";

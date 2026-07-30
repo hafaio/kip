@@ -15,8 +15,7 @@ import { db, onSnapshotError } from "./firebase";
 import type { Friend, Profile } from "./types";
 import { normalizeUsername } from "./username";
 
-// serverTimestamp() resolves to a Timestamp once the write lands; until then a
-// local snapshot may surface null. Fall back to 0 so types stay `number`.
+// A pending serverTimestamp() reads as null locally until the write lands.
 function epoch(value: unknown): number {
   return value instanceof Timestamp ? value.toMillis() : 0;
 }
@@ -32,12 +31,8 @@ function toProfile(uid: string, data: DocumentData): Profile {
   };
 }
 
-// Read a single user's public profile by uid. Readable only by the owner, their
-// friends, anyone when the profile is `searchable`, or whoever still shares a
-// live stay with them (rules) — that fourth clause is why this function is on the
-// booking path at all, since a share-link guest and their host are neither
-// friends nor searchable. Anyone else is denied, which surfaces here as null
-// rather than throwing, so a private stranger reads as "not found".
+// A denial surfaces as null rather than throwing, so a private stranger reads
+// as "not found" — which is what the rules intend them to look like.
 export async function fetchUserProfile(uid: string): Promise<Profile | null> {
   const snap = await getDoc(doc(db(), "users", uid)).catch((error) => {
     if (error?.code !== "permission-denied") throw error;
@@ -47,9 +42,7 @@ export async function fetchUserProfile(uid: string): Promise<Profile | null> {
   return toProfile(uid, snap.data());
 }
 
-// Turn discoverability-by-handle on or off. The handle itself is permanent and
-// stays claimed either way, so this is freely reversible. Turning it ON requires
-// a username to already exist (enforced in the rules) — see claimUsername.
+// Freely reversible, because the handle stays claimed either way.
 export async function setSearchable(
   uid: string,
   searchable: boolean,
@@ -57,10 +50,8 @@ export async function setSearchable(
   await setDoc(doc(db(), "users", uid), { searchable }, { merge: true });
 }
 
-// Live-subscribe to the signed-in user's own profile. Unlike the rest of the
-// app the profile now lives in Firestore (username + user-chosen displayName),
-// so own-profile views read it from here rather than deriving it from the Auth
-// user. A missing doc (or one without a username) surfaces as null → onboarding.
+// The profile lives in Firestore, not on the Auth user, so own-profile views
+// read it live. A missing doc surfaces as null, which the gate reads as onboarding.
 export function watchOwnProfile(
   uid: string,
   onChange: (profile: Profile | null) => void,
@@ -70,11 +61,9 @@ export function watchOwnProfile(
   return onSnapshot(
     doc(db(), "users", uid),
     (snap) => {
-      // A local-cache snapshot arrives first, and for a browser that has never
-      // seen this account it says "no such document" — which the gate reads as
-      // "needs onboarding" and shows a returning user a form asking their name.
-      // An ABSENT doc is only believable from the server; an existing one is
-      // fine from cache, since it can only have got there by being real.
+      // An ABSENT doc is only believable from the server — the cache says "no
+      // such document" for a browser that has simply never seen this account,
+      // which would put a returning user through onboarding.
       if (!snap.exists() && snap.metadata.fromCache) return;
       onChange(snap.exists() ? toProfile(uid, snap.data()) : null);
     },
@@ -96,25 +85,16 @@ function toFriend(snap: QueryDocumentSnapshot<DocumentData>): Friend {
   };
 }
 
-// Rewrite how the owner appears — their name, their photo, or both — and heal the
-// copy of it sitting in every friend's list. Each friend holds a denormalized
-// `{displayName, photoURL}` so rendering the list costs no extra reads; the rule
-// lets you rewrite the entry that represents YOU, which is the only way that copy
-// can ever be corrected. Bounded by friend count, and only runs on an edit.
-//
-// Name and photo go together even when only one changed: the edge rule pins the
-// name to the committed profile, so sending both makes a photo-only heal satisfy
-// that check by construction, and a name-only edit repairs a photo copy that some
-// earlier failure left behind.
+// Heals the copy of you in every friend's list — the rule lets you rewrite the
+// entry describing YOU, which is the only way that copy is ever corrected. Name
+// and photo always go together, so a photo-only heal still satisfies the name pin.
 export async function updateProfileIdentity(
   uid: string,
   identity: { displayName: string; photoURL: string | null },
   friendUids: readonly string[],
 ): Promise<void> {
-  // The profile write must land BEFORE the edges: the rule authorising an edge
-  // update compares it against the profile, and rules read committed state, so
-  // doing both in one batch would check the new name against the old one and be
-  // refused. Same ordering constraint as claiming a username.
+  // Before the edges, never in one batch: the edge rule compares against the
+  // COMMITTED profile, so batching checks the new name against the old.
   await setDoc(doc(db(), "users", uid), identity, { merge: true });
   if (friendUids.length === 0) return;
 
@@ -138,8 +118,7 @@ export function watchFriends(
   );
 }
 
-// Resolve a username to a profile via the registry (a GET on the handle), then a
-// GET on the user by uid — no query/enumeration of the users table.
+// Two gets, no query — the users table is never enumerable.
 export async function findUserByUsername(
   username: string,
 ): Promise<Profile | null> {

@@ -107,11 +107,9 @@ type ContextShape = {
   authReady: boolean;
   user: User | null;
   profile: Profile | null;
-  // False until the signed-in user's own profile doc has resolved once, so the
-  // gate can distinguish "still loading" from "loaded, needs onboarding".
+  // Distinguishes "still loading" from "loaded, needs onboarding".
   profileReady: boolean;
-  // Authenticated but no display name yet → show the onboarding screen. A handle
-  // is NOT part of this gate: it's optional and claimed later, from Settings.
+  // Gated on displayName only — a handle is optional and claimed from Settings.
   needsOnboarding: boolean;
   prefs: Prefs;
   friends: Friend[];
@@ -122,22 +120,17 @@ type ContextShape = {
   friendListings: Listing[];
   friendWindows: WindowMap;
   trips: Booking[];
-  // The places my stays are at that neither of the above covers — a stay booked
-  // through a share link is at a non-friend's place, readable only through the
-  // guest pointer. Fetched once each; a place that can't be read is simply absent.
+  // Places a stay points at that aren't a friend's — readable only through the
+  // guest pointer, so nothing else fetches them.
   tripListings: Listing[];
   incomingBookings: Booking[];
-  // The other party of a booking, as anything rendering one should name them:
-  // the friend edge where there is one (already loaded, costing no read), else
-  // the profile resolved through the stay the two of you share. Null when they
-  // can't be read at all — a pending ask from someone who arrived by link, or a
-  // stay that was cancelled, which is what makes the pointer inert again.
+  // The friend edge where there is one (no read), else the profile resolved
+  // through the shared stay. Null when they can't be read at all.
   knownPerson: (uid: string) => Party | null;
   view: View;
   screen: Screen;
   canGoBack: boolean;
-  // Increments on every history back/forward, so a screen change can be told
-  // apart from a return to one.
+  // Increments on back/forward, so arriving can be told from returning.
   popped: number;
   criteria: SearchCriteria;
   setView: (view: View) => void;
@@ -146,30 +139,22 @@ type ContextShape = {
   back: () => void;
   setCriteria: (criteria: SearchCriteria) => void;
   refreshBrowse: () => Promise<void>;
-  // Refetch one friend's room's dates, for after a booking changed them. The
-  // whole-set refresh above is the store's own business — screens don't call it.
   refreshWindows: (listingId: string) => Promise<void>;
   signIn: () => Promise<void>;
-  // One entry point for email: signs in, or makes an account if that address has
-  // none. `created` says which happened, so the caller can tell the person.
+  // Signs in, or makes an account if that address has none.
   continueWithEmail: (
     email: string,
     password: string,
   ) => Promise<{ created: boolean }>;
   resetPassword: (email: string) => Promise<void>;
   signOut: () => Promise<void>;
-  // Resolve to a uid, signing in anonymously if there's no session. Used only by
-  // the public share-link page, whose live reads need an identity to attach a
-  // proof-of-token to. Never replaces a real session.
+  // For the share-link page only, whose live reads need an identity to hang a
+  // grant on. Never replaces a real session.
   ensureAnonymous: () => Promise<string>;
   completeOnboarding: (displayName: string) => Promise<void>;
   updateDisplayName: (displayName: string) => Promise<void>;
-  // Set the profile photo, or drop it (null) back to whatever the sign-in
-  // provider gave us. Either way every copy of it is healed.
+  // Null drops back to the provider's photo. Either way every copy is healed.
   setProfilePhoto: (file: Blob | null) => Promise<void>;
-  // The photo the sign-in provider gave us, if any — what dropping an uploaded
-  // one falls back to, and the reason "Remove" is only offered when there's
-  // something of the user's own to remove.
   providerPhotoURL: string | null;
   claimUsername: (username: string) => Promise<void>;
   setSearchable: (searchable: boolean) => Promise<void>;
@@ -214,7 +199,6 @@ type ContextShape = {
   confirmBooking: (booking: Booking) => Promise<BookingOutcome>;
   cancelTrip: (booking: Booking) => Promise<void>;
   declineBooking: (booking: Booking) => Promise<void>;
-  // Clear a cancelled booking, or every cancelled trip, off this user's list.
   // A hide, not a delete — the other party keeps their copy.
   hideBooking: (bookingId: string) => Promise<void>;
   hideCancelledTrips: () => Promise<void>;
@@ -245,12 +229,8 @@ const EMPTY_BOOKINGS: Booking[] = [];
 const EMPTY_PROFILES: Profile[] = [];
 const EMPTY_WINDOWS: WindowMap = {};
 
-// Drop the bookings this user has cleared off their own list. Clearing is a
-// per-party hide on a document both parties share, so it can only ever be a view
-// filter — the other side must go on seeing theirs. It's applied here, at the two
-// subscriptions, rather than at each list: every surface that renders a booking
-// reads `trips`/`incomingBookings`, so one filter covers all of them and none of
-// them has to remember.
+// Applied at the two subscriptions rather than per list, so every surface
+// honours a hide without each one remembering to.
 function shownTo(
   uid: string,
   onChange: (bookings: Booking[]) => void,
@@ -261,12 +241,10 @@ function shownTo(
 
 const HOME_SCREEN: Screen = { kind: "tab", tab: "home" };
 
-// The listing editor with nothing to edit yet. Its own word, not `room/new`, so
-// no listing id could ever be mistaken for it.
+// Its own word, not `room/new`, so no listing id can be mistaken for it.
 const NEW_PLACE = "new-place";
 
-// The tabs, as a record so adding a `View` without giving it a route fails to
-// compile instead of quietly producing an unaddressable screen.
+// A record, so adding a `View` without a route fails to compile.
 const TAB_ROUTES: Readonly<Record<View, true>> = {
   home: true,
   browse: true,
@@ -280,26 +258,10 @@ function isTab(name: string): name is View {
   return name in TAB_ROUTES;
 }
 
-// Every screen is addressable, so the browser's own back and forward walk the
-// nav stack and any screen can be linked to or reloaded onto:
-//
-//   #/                                   Home ("#/home" is accepted too)
-//   #/browse #/places #/friends #/trips #/settings
-//   #/person/<uid>
-//   #/room/<listingId>
-//   #/room/<listingId>/slot/<windowId>   that room with one slot's sheet open
-//   #/room/<listingId>/edit              the listing editor, on an existing place
-//   #/new-place                          the listing editor, on a new one
-//   #/booking/<bookingId>
-//
-// The ids are Firestore document ids and none of them is a secret: every read
-// they name is gated by firestore.rules, which is the only enforcement anyway.
-// The one id that IS a capability — a share link's token — belongs to /portal/,
-// a different page whose fragment means something else entirely, and the router
-// stays off it (see `routable`).
-//
-// It has to be the fragment rather than a path: the site is a static export, so
-// there is no server to route anything else with.
+// The fragment rather than a path, because the site is a static export with no
+// server to route with. The ids are not secrets — every read they name is gated
+// by the rules. The one id that IS a capability lives on /portal/, which the
+// router stays off entirely (see `routable`).
 function screenHash(screen: Screen): string {
   switch (screen.kind) {
     case "tab":
@@ -321,9 +283,8 @@ function screenHash(screen: Screen): string {
   }
 }
 
-// The inverse. Null for anything unrecognized — a typo, a truncated link, a
-// fragment from some older scheme — which every caller reads as "go home",
-// never as "render nothing".
+// The inverse. Null for anything unrecognized, which callers read as "go home"
+// rather than "render nothing".
 function screenForHash(hash: string): Screen | null {
   let segments: string[];
   try {
@@ -333,8 +294,7 @@ function screenForHash(hash: string): Screen | null {
       .filter(Boolean)
       .map(decodeURIComponent);
   } catch {
-    // A malformed %-escape names no screen either.
-    return null;
+    return null; // a malformed %-escape names no screen either
   }
   const [first, second, third, fourth] = segments;
   switch (segments.length) {
@@ -370,17 +330,15 @@ function screenForHash(hash: string): Screen | null {
   }
 }
 
-// A fragment names one screen; what sits UNDER it is the app's own memory, which
-// a pasted link doesn't carry. So a deep-linked entity gets Home beneath it —
-// otherwise arriving on a room means arriving with no way back into the app.
+// A fragment names only the top screen, so a pasted link gets Home seeded
+// beneath it — otherwise arriving on a room means arriving with no way back.
 function stackForHash(hash: string): Screen[] {
   const screen = screenForHash(hash) ?? HOME_SCREEN;
   return screen.kind === "tab" ? [screen] : [HOME_SCREEN, screen];
 }
 
-// What we park on each history entry: the whole stack, since the fragment only
-// names its top, and how deep into this document's history we are, which is how
-// back() tells "a screen of ours is behind this" from "leaving the site".
+// `kipDepth` is how back() tells "a screen of ours is behind this" from
+// "leaving the site".
 type NavState = {
   readonly kipStack?: readonly Screen[];
   readonly kipDepth?: number;
@@ -391,9 +349,8 @@ function historyDepth(): number {
   return (window.history.state as NavState | null)?.kipDepth ?? 0;
 }
 
-// Merge into the existing history.state rather than replacing it — Next's App
-// Router keeps its routing data there, and clobbering it makes back/forward fall
-// back to a hard page reload.
+// Merged, not replaced: Next's router keeps its own data in history.state, and
+// clobbering it turns back/forward into a hard reload.
 function entryState(
   stack: readonly Screen[],
   depth: number,
@@ -407,16 +364,13 @@ function entryState(
   };
 }
 
-// Where the current entry was scrolled to, so going back can put it there again.
-// Stored per history entry rather than in React state because that's what
-// survives a reload and a forward — the browser already keeps one object per
-// entry, and this is exactly the kind of thing it's for.
+// Per history entry rather than in React state, since that's what survives a
+// reload and a forward.
 export function historyScroll(): number {
   return (window.history.state as NavState | null)?.kipScroll ?? 0;
 }
 
-// Record where we are before navigating away. Called by the page, which is the
-// only place that knows which element actually scrolls.
+// Called by the page, the only place that knows which element scrolls.
 export function rememberScroll(offset: number): void {
   if (!routable()) return;
   const state = window.history.state as NavState | null;
@@ -428,8 +382,8 @@ export function rememberScroll(offset: number): void {
   );
 }
 
-// /portal/ is a separate page whose fragment is a share-link capability token,
-// not a route. Both pages mount this provider, so every history write asks first.
+// /portal/'s fragment is a capability token, not a route, and it mounts this
+// same provider — so every history write asks first.
 function routable(): boolean {
   return !/\/portal\/?$/.test(window.location.pathname);
 }
@@ -456,12 +410,11 @@ export function KipProvider({ children }: { children: ReactNode }) {
   const configured = firebaseConfigured();
 
   const [user, setUser] = useState<User | null>(null);
-  // The own profile now lives in Firestore (username + user-chosen displayName),
-  // not the Auth user, so we subscribe to it rather than derive it.
+  // Lives in Firestore, not on the Auth user, so it's subscribed not derived.
   const [profile, setProfile] = useState<Profile | null>(null);
   const [profileReady, setProfileReady] = useState(false);
-  // False until Firebase resolves the session once, so the gate doesn't flash
-  // the sign-in screen at a user who's actually already signed in.
+  // Firebase restores a session asynchronously, so this stops the gate flashing
+  // the sign-in screen at someone already signed in.
   const [authReady, setAuthReady] = useState(false);
   const [prefs, setPrefsState] = useState<Prefs>(DEFAULT_PREFS);
   const [friends, setFriends] = useState<Friend[]>(EMPTY_FRIENDS);
@@ -479,23 +432,17 @@ export function KipProvider({ children }: { children: ReactNode }) {
   const [incomingBookings, setIncomingBookings] =
     useState<Booking[]>(EMPTY_BOOKINGS);
   const [counterparts, setCounterparts] = useState<Profile[]>(EMPTY_PROFILES);
-  // Client-side nav stack: base is always a tab; drilling into an entity pushes
-  // a screen, back() pops. Switching tabs resets the stack. Home is only the
-  // starting guess — the effect below reads the real one out of the URL, which
-  // can't be done here because this also renders on the export's prerender.
+  // Home is only the starting guess — the effect below reads the real stack out
+  // of the URL, which can't happen here because this also runs at prerender.
   const [stack, setStack] = useState<Screen[]>([HOME_SCREEN]);
-  // Counts backs and forwards. The page watches it to decide whether arriving at
-  // a screen means "opened" (start at the top) or "returned" (put it back).
   const [popped, setPopped] = useState(0);
   const screen = stack[stack.length - 1];
   const baseScreen = stack[0];
   const view: View = baseScreen.kind === "tab" ? baseScreen.tab : "home";
   const canGoBack = stack.length > 1;
 
-  // Each forward move pushes a browser history entry holding the new stack and
-  // the new screen's fragment; back() delegates to history.back() and a popstate
-  // listener restores the stack, so the browser/OS back button and the in-app one
-  // are the same button.
+  // Every forward move pushes a real history entry and back() delegates to
+  // history.back(), so the OS back button and the in-app one are one button.
   const setView = useCallback((tab: View) => {
     const next: Screen[] = [{ kind: "tab", tab }];
     pushEntry(next);
@@ -509,9 +456,8 @@ export function KipProvider({ children }: { children: ReactNode }) {
     },
     [stack],
   );
-  // Swap the top of the stack in place (same history entry) — used after
-  // creating a listing to turn the form screen into the new room page, so back
-  // returns to wherever the form was opened from, not to an empty form.
+  // Same history entry, so after creating a listing back returns to where the
+  // form was opened from rather than to an empty form.
   const replace = useCallback(
     (target: Screen) => {
       const next = [...stack.slice(0, -1), target];
@@ -524,9 +470,8 @@ export function KipProvider({ children }: { children: ReactNode }) {
     if (historyDepth() > 0) {
       window.history.back();
     } else {
-      // Nothing of ours is behind this entry — someone opened a link straight to
-      // this screen. Falling back to the stack's base tab keeps Back meaning
-      // "up a level" instead of "leave the site".
+      // Nothing of ours behind this entry, so Back means "up a level" rather
+      // than "leave the site".
       const base = stack[0];
       const next: Screen[] = [base.kind === "tab" ? base : HOME_SCREEN];
       replaceEntry(next);
@@ -536,26 +481,21 @@ export function KipProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (!routable()) return;
-    // A reload keeps this entry's state, so the whole breadcrumb survives it; a
-    // pasted link carries none and is rebuilt from the fragment alone. The
-    // fragment wins if the two disagree, since it's the half a user can edit.
+    // The fragment wins when the two disagree, being the half a user can edit.
     const saved = (window.history.state as NavState | null)?.kipStack ?? [];
     const restored =
       saved.length > 0 &&
       screenHash(saved[saved.length - 1]) === window.location.hash
         ? [...saved]
         : stackForHash(window.location.hash);
-    // replaceState, never push: the entry the visitor arrived on is ours to
-    // annotate, and pushing here would leave a phantom under the first Back.
-    // It also canonicalizes the fragment, so a nonsense one visibly becomes #/.
+    // Never push: the arrival entry is ours to annotate, and pushing would leave
+    // a phantom under the first Back.
     replaceEntry(restored);
     setStack(restored);
 
     function onPop(event: PopStateEvent): void {
       const stacked = (event.state as NavState | null)?.kipStack;
-      // A pop means "you've been here before", so the page restores the offset
-      // this entry was left at instead of jumping to the top. Bumped so the page
-      // can tell one pop from the next even when the screen is the same.
+      // Bumped so the page can tell one pop from the next even on the same screen.
       setPopped((count) => count + 1);
       setStack(
         stacked && stacked.length > 0
@@ -563,10 +503,8 @@ export function KipProvider({ children }: { children: ReactNode }) {
           : stackForHash(window.location.hash),
       );
     }
-    // The fragment can also change without us: someone edits the URL bar, or
-    // follows a link to another screen on the page they're already on. The
-    // browser has pushed a blank entry by then, so we adopt it in place — a
-    // second write here would be the double entry this whole scheme avoids.
+    // The browser has already pushed a blank entry by the time this fires, so we
+    // adopt it in place — a second write is the double entry this scheme avoids.
     function onHashChange(): void {
       const current = (window.history.state as NavState | null)?.kipStack;
       const showing = current?.[current.length - 1];
@@ -584,8 +522,6 @@ export function KipProvider({ children }: { children: ReactNode }) {
   }, []);
   const [criteria, setCriteria] = useState<SearchCriteria>(EMPTY_CRITERIA);
 
-  // Onboarding gate: the profile has resolved and there's no display name yet.
-  // A handle is deliberately NOT required — see `discovery` in CLAUDE.md.
   const needsOnboarding = Boolean(
     user && profileReady && !profile?.displayName,
   );
@@ -601,11 +537,9 @@ export function KipProvider({ children }: { children: ReactNode }) {
     [profile],
   );
 
-  // Track auth state.
   useEffect(() => {
     if (!configured) {
-      // No project wired up: no session is possible, so the gate can settle
-      // immediately on the sign-in screen.
+      // No project, so no session is possible and the gate can settle at once.
       setAuthReady(true);
       return;
     }
@@ -615,7 +549,6 @@ export function KipProvider({ children }: { children: ReactNode }) {
     });
   }, [configured]);
 
-  // Live-subscribe to the signed-in user's own profile doc.
   useEffect(() => {
     if (!configured || !user) {
       setProfile(null);
@@ -629,8 +562,7 @@ export function KipProvider({ children }: { children: ReactNode }) {
         setProfile(next);
         setProfileReady(true);
       },
-      // Settle the gate even if the listener errors (e.g. a permission-denied
-      // during an auth-token refresh), so the app never hangs on the splash.
+      // Settle even on error, so the app never hangs on the splash.
       () => setProfileReady(true),
     );
   }, [configured, user]);
@@ -669,10 +601,8 @@ export function KipProvider({ children }: { children: ReactNode }) {
       return;
     }
     const unsubs = myListings
-      // Skip a listing whose create isn't server-acknowledged yet (createdAt is
-      // still 0 from the pending serverTimestamp). The windows read rule get()s
-      // the listing, which would race the just-issued write and throw a
-      // transient permission-denied; it attaches once the listing is confirmed.
+      // The windows read rule get()s the listing, so attaching before the
+      // create is server-acknowledged races it into a permission-denied.
       .filter((listing) => listing.createdAt > 0)
       .map((listing) =>
         watchWindows(listing.id, (windows) =>
@@ -684,8 +614,8 @@ export function KipProvider({ children }: { children: ReactNode }) {
     };
   }, [configured, user, myListings]);
 
-  // Friends' listings + their windows are fetched (not live) — the working set
-  // is small, and this sidesteps dynamic multi-collection listeners.
+  // Fetched, not live: the working set is small and this sidesteps dynamic
+  // multi-collection listeners.
   const friendUidsKey = friends.map((friend) => friend.uid).join(",");
   const refreshBrowse = useCallback(async () => {
     if (!configured || !user) {
@@ -711,28 +641,22 @@ export function KipProvider({ children }: { children: ReactNode }) {
     setFriendWindows(windows);
   }, [configured, user, friendUidsKey]);
 
-  // The one automatic trigger. Screens deliberately don't ask on mount: the fetch
-  // is every friend's places plus a windows query each, so a screen that wanted
-  // one room was pulling the whole set — and this already re-runs whenever the
-  // friend list changes, which is the only thing that makes the set stale.
+  // The only automatic trigger — screens don't ask on mount, since one wanting a
+  // single room would pull every friend's places. The friend list changing is
+  // the only thing that makes the set stale, and it re-keys this.
   useEffect(() => {
     refreshBrowse().catch((error) => console.error("refreshBrowse", error));
   }, [refreshBrowse]);
 
-  // One room's dates again, for the screen that just changed them — a slot booked
-  // or lost to someone faster. Friends' windows aren't live, and re-reading every
-  // friend's place to learn about one room is the shape this replaces.
+  // One room's dates, for the screen that just changed them.
   const refreshWindows = useCallback(async (listingId: string) => {
     const windows = await fetchWindows(listingId);
     setFriendWindows((prev) => ({ ...prev, [listingId]: windows }));
   }, []);
 
-  // A stay booked through a share link is at a place Browse never asks for — the
-  // host isn't a friend — so without this the guest holds a confirmed stay against
-  // a place they can't name, which is the exact thing the guest pointer exists to
-  // prevent. Keyed on which listings are still missing, so a place that can't be
-  // read (deleted, or a pointer gone inert with a cancelled stay) stays missing
-  // and the fetch doesn't repeat.
+  // A share-link stay is at a place Browse never asks for, so without this the
+  // guest holds a stay against a place they can't name. Keyed on what's still
+  // missing, so an unreadable place stays missing rather than refetching.
   const knownListingIds = new Set(
     [...myListings, ...friendListings, ...tripListings].map(
       (listing) => listing.id,
@@ -763,18 +687,10 @@ export function KipProvider({ children }: { children: ReactNode }) {
       .catch((error) => console.error("fetchListing", error));
   }, [configured, user, missingListingsKey]);
 
-  // Make sure each confirmed stay has its access pointer. Doing it here rather
-  // than at confirm time covers both routes in — the owner can't write it (rules
-  // read committed state, so the booking is still REQUESTED in that batch) and an
-  // instant-booking guest can't either, for the same reason.
-  //
-  // Keyed on the stays still missing one, NOT on `trips`: that array is a fresh
-  // object on every snapshot, and bookings are terminal, so keying on it wrote a
-  // document for every stay the user had ever had, on every session and every
-  // change to any booking — a list that only ever grows. Each id is remembered as
-  // it's claimed, so a session claims each stay once. A claim that fails is left
-  // to the next load, which is soon enough for a pointer that authorises nothing
-  // until it's used.
+  // Here rather than at confirm time because neither confirm path can write it:
+  // the rules still see the booking as REQUESTED inside both commits. Keyed on
+  // the stays still missing one, NOT on `trips` — that array is fresh on every
+  // snapshot, so keying on it rewrote every stay the user ever had.
   const claimedStays = useRef(new Set<string>());
   const unclaimedStaysKey = trips
     .filter(
@@ -795,19 +711,10 @@ export function KipProvider({ children }: { children: ReactNode }) {
     }
   }, [configured, user, unclaimedStaysKey]);
 
-  // Who the other side of each booking actually is. A booking names two uids and
-  // nothing else about them, and the two may well not be able to read each other
-  // — a share-link guest isn't their host's friend, and neither is searchable to
-  // the other. What makes the read legal is the stay itself: each side writes its
-  // own `knownBy` pointer at a CONFIRMED booking, exactly as a guest points at
-  // the one entitling them to see the listing. The pointer IS the authorisation
-  // for the fetch that follows, so the two happen in order rather than in
-  // parallel.
-  //
-  // Keyed on the counterpart AND the stay backing them, so a request being
-  // confirmed re-runs a resolution that was legitimately refused while it was
-  // still pending. Friends are excluded outright: their edge is already loaded
-  // and needs no read. Someone who can't be read stays missing.
+  // A booking names two uids and nothing else, and the two may not be able to
+  // read each other — the `knownBy` pointer written below IS the authorisation
+  // for the fetch that follows it, which is why they run in order. Keyed on the
+  // stay too, so confirming re-runs a resolution refused while it was pending.
   const knownUids = new Set([
     ...friends.map((friend) => friend.uid),
     ...counterparts.map((person) => person.uid),
@@ -817,8 +724,7 @@ export function KipProvider({ children }: { children: ReactNode }) {
     const otherUid =
       booking.guestId === user?.uid ? booking.ownerId : booking.guestId;
     if (knownUids.has(otherUid)) continue;
-    // A confirmed stay wins over a pending one: it's the only kind the pointer
-    // rule accepts, and any of them will do.
+    // Only a confirmed stay satisfies the pointer rule, and any one will do.
     if (!counterpartStays.get(otherUid)) {
       counterpartStays.set(
         otherUid,
@@ -839,8 +745,6 @@ export function KipProvider({ children }: { children: ReactNode }) {
     Promise.all(
       counterpartsKey.split(",").map(async (entry) => {
         const [otherUid, bookingId] = entry.split(":");
-        // Idempotent, and it grants nothing on its own — the rules re-read the
-        // stay it names on every use — so re-claiming costs a write and no risk.
         if (bookingId) {
           await claimKnownBy(user.uid, otherUid, bookingId).catch((error) =>
             console.error("claimKnownBy", error),
@@ -884,18 +788,9 @@ export function KipProvider({ children }: { children: ReactNode }) {
     await fbSignOut(auth());
   }, []);
 
-  // An anonymous account is a throwaway identity, not a sign-up: it exists purely
-  // so the rules have a uid to key a share-link grant on. Firebase auto-deletes
-  // unused ones after 30 days. Creating a real account LINKS this one (see
-  // utils/auth.ts), keeping the uid — but signing in to an existing account
-  // can't, so callers must still re-derive anything keyed to the old uid.
-  // A share-link visitor needs SOME identity to hang their proof-of-token on —
-  // but only if they don't already have one. `auth().currentUser` is null for a
-  // beat after load while Firebase restores the persisted session, so reading it
-  // directly mistakes a signed-in visitor for a stranger and signs them in
-  // anonymously, silently replacing a real session with an empty one. That's
-  // what happened when you opened a link someone sent you while already signed
-  // in: the app then treated you as a brand-new user and asked for a name.
+  // Awaits `authSettled` rather than reading `currentUser`, which is null for a
+  // beat after load while Firebase restores a persisted session — reading it
+  // directly replaced a real session with an empty anonymous one.
   const ensureAnonymous = useCallback(async () => {
     const restored = await authSettled();
     if (restored) return restored.uid;
@@ -918,8 +813,7 @@ export function KipProvider({ children }: { children: ReactNode }) {
     );
   }, []);
 
-  // Claim a permanent handle and become findable by it. Rejected (permission
-  // -denied) if someone else already holds the handle.
+  // A handle already taken fails on the registry's owner-only update rule.
   const claimUsername = useCallback(async (username: string) => {
     const current = auth().currentUser;
     if (!current) throw new Error("not signed in");
@@ -934,12 +828,9 @@ export function KipProvider({ children }: { children: ReactNode }) {
     [user],
   );
 
-  // How this user appears is copied into two places, and a copy is only worth
-  // having if it stays true — so changing either half of it rewrites both. The
-  // profile and the friend edges go first and together (see updateProfileIdentity:
-  // the edge rule reads the COMMITTED profile), then the links you've shared,
-  // which nobody else could correct for you. Bookings need nothing: the other
-  // party reads this profile through the stay you share.
+  // Profile and friend edges first, since the edge rule reads the COMMITTED
+  // profile; then the links you've shared, which nobody else could fix for you.
+  // Bookings need nothing — they carry no names.
   const spreadIdentity = useCallback(
     async (uid: string, displayName: string, photoURL: string | null) => {
       await updateProfileIdentity(
@@ -955,8 +846,6 @@ export function KipProvider({ children }: { children: ReactNode }) {
     [asParty, friends, prefs.profilePortalId, myListings, myWindows],
   );
 
-  // Renaming yourself also rewrites the copy of your name held by every link
-  // you've shared — otherwise a stranger opening one would see who you used to be.
   const updateDisplayName = useCallback(
     async (displayName: string) => {
       const current = auth().currentUser;
@@ -969,16 +858,13 @@ export function KipProvider({ children }: { children: ReactNode }) {
     [spreadIdentity, profile],
   );
 
-  // The provider's photo is read off `providerData` rather than the Auth user's
-  // own `photoURL`, which is ours to overwrite — this is the original, so it's
-  // still there to fall back to after an upload has been dropped.
+  // Off `providerData`, not the Auth user's `photoURL`, which is ours to
+  // overwrite — this is the original to fall back to.
   const providerPhotoURL =
     user?.providerData.find((entry) => entry.photoURL)?.photoURL ?? null;
 
-  // Upload a profile photo, or drop back to the provider's. The object is
-  // deleted only AFTER the profile stops pointing at it: a failed delete then
-  // leaves an orphan nobody can see, where the other order would leave every copy
-  // of this person pointing at a picture that no longer exists.
+  // The object is deleted only after the profile stops pointing at it, so a
+  // failed delete leaves an invisible orphan rather than broken images.
   const setProfilePhoto = useCallback(
     async (file: Blob | null) => {
       const current = auth().currentUser;
@@ -996,8 +882,7 @@ export function KipProvider({ children }: { children: ReactNode }) {
     [spreadIdentity, profile, providerPhotoURL],
   );
 
-  // Ask by handle. Resolving happens here so the store can report the outcome
-  // (not-found / already-friends / self) without the caller touching Firestore.
+  // Resolved here so the caller gets an outcome without touching Firestore.
   const sendFriendRequest = useCallback(
     async (username: string) => {
       if (!profile) throw new Error("not signed in");
@@ -1036,9 +921,7 @@ export function KipProvider({ children }: { children: ReactNode }) {
     [user],
   );
 
-  // Editing a place rewrites its copy in every link that shows it. Adding or
-  // removing one changes WHICH places the profile link lists, so that list is
-  // rewritten whenever myListings settles (the listener already fires on both).
+  // Rewrites the place's copy in every link that carries one.
   const updateListing = useCallback(
     async (listingId: string, input: ListingInput) => {
       await fbUpdateListing(listingId, input);
@@ -1060,9 +943,6 @@ export function KipProvider({ children }: { children: ReactNode }) {
     [myListings, myWindows],
   );
 
-  // Photos change outside the details form — one upload or delete at a time — so
-  // they need their own write, and it has to reach the copies a date-range link
-  // carries for exactly the reason an edit does.
   const setListingPhotos = useCallback(
     async (listingId: string, photos: readonly ListingPhoto[]) => {
       await fbSetListingPhotos(listingId, photos);
@@ -1086,8 +966,7 @@ export function KipProvider({ children }: { children: ReactNode }) {
     [profile],
   );
 
-  // Deleting a place cancels everything booked or pending against it — the store
-  // holds those live, so the caller doesn't have to gather them.
+  // The store holds the bookings live, so the caller needn't gather them.
   const deleteListing = useCallback(
     (listing: Listing) => fbDeleteListing(listing, incomingBookings),
     [incomingBookings],
@@ -1121,8 +1000,6 @@ export function KipProvider({ children }: { children: ReactNode }) {
     [user],
   );
 
-  // Clearing a set the caller already has in hand — a room's cancelled guests,
-  // say. One batch, no query.
   const hideBookingsById = useCallback(
     (bookingIds: readonly string[]) => {
       if (!user) throw new Error("not signed in");
@@ -1131,8 +1008,7 @@ export function KipProvider({ children }: { children: ReactNode }) {
     [user],
   );
 
-  // `trips` is already filtered to what this user still sees, so everything
-  // cancelled in it is by definition not yet hidden — no query needed.
+  // `trips` is already filtered to what this user sees, so no query is needed.
   const hideCancelledTrips = useCallback(() => {
     if (!user) throw new Error("not signed in");
     return hideBookings(
@@ -1152,9 +1028,6 @@ export function KipProvider({ children }: { children: ReactNode }) {
     [user, prefs],
   );
 
-  // A link copies in the stable half of what it shows — the owner and the place —
-  // so publishing needs both. The dates are read live by the visitor and are
-  // deliberately not passed here.
   const setNotify = useCallback(
     async (key: NotifyKind, on: boolean) => {
       if (!user) throw new Error("not signed in");
@@ -1165,8 +1038,7 @@ export function KipProvider({ children }: { children: ReactNode }) {
     [user, prefs],
   );
 
-  // Notifications only go to a VERIFIED address — otherwise signing up as someone
-  // else's email would deliver mail to a person who never gave it to you.
+  // Mail only ever goes to a verified address, so this is the way out of that.
   const resendVerification = useCallback(async () => {
     const current = auth().currentUser;
     if (!current) throw new Error("not signed in");
