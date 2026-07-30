@@ -115,6 +115,7 @@ export default function Page(): ReactElement {
     authReady,
     listenersLost,
     user,
+    anonymous,
     profileReady,
     needsOnboarding,
     screen,
@@ -189,7 +190,7 @@ export default function Page(): ReactElement {
   // An anonymous session is a share-link visitor's ticket, not an account — it
   // has no profile, so without this the gate would ask a passer-by to name
   // themselves.
-  if (!user || user.isAnonymous) return <SignInScreen />;
+  if (!user || anonymous) return <SignInScreen />;
   if (!profileReady) return <Splash />;
   if (needsOnboarding) return <OnboardingScreen />;
 

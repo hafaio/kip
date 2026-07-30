@@ -109,9 +109,32 @@ Rules: [firebase/firestore.rules](./firebase/firestore.rules), [firebase/storage
      persisted session ASYNCHRONOUSLY, so `auth().currentUser` is null for a beat after load even
      for someone who is signed in; reading it directly mistakes them for a stranger.
   2. **An anonymous session counts as signed out inside the app.** `app/page.tsx` gates on
-     `!user || user.isAnonymous`, because a visitor's ticket is not an account — it has no profile
+     `!user || anonymous`, because a visitor's ticket is not an account — it has no profile
      and can see nothing, so the gate would otherwise read "authenticated, no profile" and put a
      passer-by through onboarding. `AuthMenu` hides itself for the same reason.
+
+  **The store watches `onIdTokenChanged`, not `onAuthStateChanged`, and that is load-bearing.**
+  `onAuthStateChanged` fires only when the **uid** changes — `notifyAuthListeners` in the SDK pushes
+  to `authStateSubscription` inside `if (this.lastNotifiedUid !== currentUid)`. Linking an anonymous
+  account KEEPS the uid, so signing up from a share link fired nothing at all, and Firebase compounds
+  it by mutating the `User` object **in place** (`Object.assign(user, updates)` in
+  `_reloadWithoutSaving`) — so even a `setUser(next)` would hand React the same reference and bail
+  out of the render. The visible bug: a visitor tapped "Ask to be friends", created an account in the
+  sheet, and the sheet stayed sitting over the button, because `identified` was still computing
+  `false`. Reloading the page fixed it, which is why it looked intermittent.
+
+  So the mutable fields the app branches on — `isAnonymous` and `emailVerified` — are **snapshotted
+  into store state** (`anonymous`, `emailVerified`) and read from there, never off `user`. Anything
+  that branches on a field Firebase can change without a uid change belongs in that pair; reading it
+  off `user` at render is the bug, not the exception. Watching the token also fires on hourly
+  refreshes, which is free — the `User` reference is unchanged, so `setUser` bails and no listener
+  effect re-runs.
+
+  `emailVerified` rides along for the same structural reason, but note what that does NOT fix:
+  nothing in `web/` calls `user.reload()`, the proactive token refresh doesn't reload either, and the
+  verification link opens on Firebase's own action origin, so **verifying in another tab and coming
+  back still leaves the Home prompt up until a reload**. Closing that would mean reloading the auth
+  user on focus or visibilitychange; the snapshot is what makes such a fix land on screen at all.
 
   **A uid-keyed capability must survive the visitor getting an account, and there are two halves to
   that.** Creating an account **links** the anonymous one (`linkWithPopup` / `linkWithCredential` in
