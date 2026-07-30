@@ -15,7 +15,8 @@ export function watchPrefs(
       onChange(
         data
           ? {
-              shareStaysWithFriends: data.shareStaysWithFriends ?? true,
+              // A doc written before this field existed carries no consent.
+              shareStaysWithFriends: data.shareStaysWithFriends ?? false,
               profilePortalId: data.profilePortalId ?? null,
               notify: { ...DEFAULT_NOTIFY, ...(data.notify ?? {}) },
             }

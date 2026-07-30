@@ -164,7 +164,8 @@ export type Prefs = {
 };
 
 export const DEFAULT_PREFS: Prefs = {
-  shareStaysWithFriends: true,
+  // Off until asked for; `guestSharesStays` reads an absent doc the same way.
+  shareStaysWithFriends: false,
   profilePortalId: null,
   notify: DEFAULT_NOTIFY,
 };
