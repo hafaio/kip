@@ -28,6 +28,34 @@ export default function RootLayout({
 }): ReactElement {
   return (
     <html lang="en" suppressHydrationWarning className={jakarta.variable}>
+      {/* Every screen's first act is to sign in and read, and each host costs a
+          DNS lookup and a TLS handshake before a byte of that moves. Starting
+          them alongside the bundle download matters most on the share-link page,
+          which a stranger opens cold with nothing warmed by a previous visit.
+
+          `crossOrigin` has to MATCH how the request is eventually made or the
+          socket lands in the wrong pool and is never reused — the hint then
+          costs a connection and saves nothing. The SDK reaches the three API
+          hosts by CORS fetch/XHR with no credentials; photos are plain <img
+          src>, so that one takes no attribute. */}
+      <head>
+        <link
+          rel="preconnect"
+          href="https://firestore.googleapis.com"
+          crossOrigin="anonymous"
+        />
+        <link
+          rel="preconnect"
+          href="https://identitytoolkit.googleapis.com"
+          crossOrigin="anonymous"
+        />
+        <link
+          rel="preconnect"
+          href="https://securetoken.googleapis.com"
+          crossOrigin="anonymous"
+        />
+        <link rel="preconnect" href="https://firebasestorage.googleapis.com" />
+      </head>
       <body>
         <ThemeProvider
           attribute="class"

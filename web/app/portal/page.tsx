@@ -57,12 +57,22 @@ type StandingAsk = {
 export default function PortalPage(): ReactElement {
   const { user, anonymous, profile, profileReady, ensureAnonymous } = useKip();
   const [page, setPage] = useState<PortalContent | null>(null);
+  // The portal doc on its own, a round trip ahead of `page`. A SLOT link carries
+  // its room here too, but only `page` has the DATES, and a room rendered
+  // without them claims "No open dates right now" — so nothing below the host
+  // block is drawn from this. Superseded the moment `page` lands.
+  const [owner, setOwner] = useState<Portal | null>(null);
   const [state, setState] = useState<LoadState>("loading");
   const [standing, setStanding] = useState<StandingAsk | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [ask, setAsk] = useState<Ask | null>(null);
   const [failed, setFailed] = useState(false);
-  const portal = page?.portal ?? null;
+  // The rooms didn't load, but the host block did — a different failure from a
+  // link that never resolved, and it must not overwrite what's already on screen.
+  const [roomsFailed, setRoomsFailed] = useState(false);
+  // Everything that needs the ROOMS reads `page`; everything that needs only the
+  // host reads this, so the header can render while the rest is still arriving.
+  const portal = page?.portal ?? owner;
 
   // Anonymous sign-in gives the live reads an identity to hang a grant on. The
   // hashchange listener matters because pasting a different link changes only the
@@ -81,11 +91,20 @@ export default function PortalPage(): ReactElement {
       return;
     }
     let live = true;
+    // Tracked here rather than off `owner`, which this closure captured as null.
+    let painted = false;
     setState("loading");
     setPage(null);
+    setOwner(null);
+    setRoomsFailed(false);
     setStanding(null);
     // Handed over in flight: the portal doc needs no identity to read.
-    fetchPortalPage(token, ensureAnonymous())
+    fetchPortalPage(token, ensureAnonymous(), (found) => {
+      if (!live) return;
+      painted = true;
+      setOwner(found);
+      setState("ready");
+    })
       .then((found) => {
         if (!live) return;
         setPage(found);
@@ -93,19 +112,28 @@ export default function PortalPage(): ReactElement {
       })
       .catch((error: unknown) => {
         console.error(error);
-        if (live) setState("missing");
+        if (!live) return;
+        // Once the host block is up, the link demonstrably resolved, so
+        // replacing the page with "this link isn't active" would be a lie about
+        // what went wrong — and a jarring one, since they can already see it did.
+        if (painted) setRoomsFailed(true);
+        else setState("missing");
       });
     return () => {
       live = false;
     };
   }, [token, ensureAnonymous]);
 
-  // Reported separately, so neither ask can hide the other's affordance.
+  // Reported separately, so neither ask can hide the other's affordance. Keyed
+  // on the host's uid rather than on `portal`, which is now a DIFFERENT object
+  // each time it improves — first the portal doc, then the fuller one — and
+  // would otherwise run this, and its two reads, twice on every load.
+  const hostId = portal?.ownerId ?? null;
   useEffect(() => {
-    if (!user || anonymous || !portal) return;
+    if (!user || anonymous || !hostId) return;
     Promise.all([
-      fetchMyBookingsWith(user.uid, portal.ownerId),
-      fetchMyConnectRequest(user.uid, portal.ownerId),
+      fetchMyBookingsWith(user.uid, hostId),
+      fetchMyConnectRequest(user.uid, hostId),
     ])
       .then(([bookings, request]) => {
         const live = bookings.filter(
@@ -120,7 +148,7 @@ export default function PortalPage(): ReactElement {
       .catch((error: unknown) => console.error(error));
     // `anonymous` earns its place in the deps: linking keeps the uid, so `user`
     // never changes identity for someone who made their account on this page.
-  }, [user, anonymous, portal]);
+  }, [user, anonymous, hostId]);
 
   // Cleared first, so a later dependency change can't fire a second request. The
   // name comes off the kip profile, never `user.email` — that would write their
@@ -211,6 +239,8 @@ export default function PortalPage(): ReactElement {
           <PortalView
             portal={portal}
             windows={page?.windows ?? {}}
+            roomsPending={page === null}
+            roomsFailed={roomsFailed}
             isOwner={identified && user?.uid === portal.ownerId}
             standing={standing}
             busy={busy}
@@ -305,6 +335,8 @@ function NameForm(): ReactElement {
 function PortalView({
   portal,
   windows,
+  roomsPending,
+  roomsFailed,
   isOwner,
   standing,
   busy,
@@ -313,6 +345,10 @@ function PortalView({
 }: {
   portal: Portal;
   windows: Readonly<Record<string, readonly PortalWindow[]>>;
+  // True while only the portal doc has arrived, so the host block is all that
+  // can be drawn honestly.
+  roomsPending: boolean;
+  roomsFailed: boolean;
   failed: boolean;
   isOwner: boolean;
   standing: StandingAsk | null;
@@ -336,7 +372,19 @@ function PortalView({
         </div>
       </div>
 
-      {portal.listings.length === 0 ? (
+      {roomsFailed ? (
+        <p className="text-sm text-danger">
+          Couldn't load what's shared here. Check your connection and try again.
+        </p>
+      ) : roomsPending ? (
+        // "Nothing shared here right now" is a statement about an empty link,
+        // and saying it to someone whose rooms are in flight is worse than
+        // saying nothing at all.
+        <div aria-hidden className="flex flex-col gap-4">
+          <div className="h-40 animate-pulse rounded-3xl bg-surface shadow-card" />
+          <div className="h-40 animate-pulse rounded-3xl bg-surface shadow-card" />
+        </div>
+      ) : portal.listings.length === 0 ? (
         <p className="text-sm text-muted">Nothing shared here right now.</p>
       ) : (
         portal.listings.map((listing) => (
