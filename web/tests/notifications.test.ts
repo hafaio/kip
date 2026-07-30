@@ -14,7 +14,7 @@ import {
   ONE_CLICK_BODY,
   renderEmail,
   renderNotifySaved,
-  renderUnsubscribeAsk,
+  renderUnsubscribeChoices,
   renderUnsubscribeFailed,
   renderUnsubscribed,
   unsubscribeHeaders,
@@ -511,30 +511,43 @@ describe("the page a link lands on", () => {
   const ACTION = `action="${POST_URL.replaceAll("&", "&amp;")}"`;
   // As stored: this person already turned instant-booking news off.
   const stored = notifyStateFrom({ bookingTaken: false });
-  const ask = renderUnsubscribeAsk("stayCancelled", stored, POST_URL);
+  const ask = renderUnsubscribeChoices("stayCancelled", stored, POST_URL);
 
   const checkedKinds = (page: string): string[] =>
     [...page.matchAll(/name="(\w+)" value="on"( checked)?/g)]
       .filter((row) => row[2])
       .map((row) => row[1]);
 
-  // Link scanners fetch every url in a message, so a GET that acted would
-  // unsubscribe people who never clicked.
-  it("changes nothing, and says so", () => {
-    expect(ask).toContain("Unsubscribe");
-    expect(ask).toContain("Nothing is saved until you press Save");
-    expect(ask).not.toContain("Unsubscribed");
-    expect(ask).not.toContain("won&#39;t email you");
+  // The click is honoured before this renders, so the page reports rather than
+  // proposes. Saying "we've switched it off below" would leave someone who
+  // closes the tab believing nothing had happened.
+  it("says the thing is already done, and doesn't ask", () => {
+    expect(ask).toContain("Unsubscribed");
+    expect(ask).toContain("won&#39;t email you about");
+    expect(ask).not.toContain("Nothing is saved");
+    expect(ask).not.toContain("Are you sure");
   });
 
-  // The scope is shown by the switch rather than carried by wording alone.
-  it("arrives with the kind that email was about already switched off", () => {
-    expect(ask).toContain(`We&#39;ve switched off &quot;${NOTIFY_LABELS.stayCancelled}&quot; below`);
+  // The state is shown by the switch rather than carried by wording alone.
+  it("shows the kind that email was about switched off", () => {
+    expect(ask).toContain(`&quot;${NOTIFY_LABELS.stayCancelled}&quot; any more`);
     expect(checkedKinds(ask)).toEqual([
       "bookingRequested",
       "bookingDecision",
       "connectRequest",
     ]);
+  });
+
+  // Save arrives greyed out and unpressable, which is how the page says "already
+  // done" without a second sentence; moving any switch — re-ticking the row it
+  // came from included, which is the undo — brings it back. A real `disabled`
+  // rather than a CSS impression of one, so it isn't announced as available.
+  it("has nothing for Save to do until a switch is moved", () => {
+    expect(ask).toContain(
+      "save.disabled = !boxes.some((box) => box.checked !== box.hasAttribute(\"checked\"))",
+    );
+    expect(ask).toContain('form.addEventListener("change", sync)');
+    expect(ask).toContain(".save:disabled { background-image:none;");
   });
 
   // Pre-marking is only safe if saving means exactly what it looks like.
@@ -592,50 +605,39 @@ describe("the page a link lands on", () => {
     expect(ask).toContain("prefers-reduced-motion");
   });
 
-  // The mark is the half that has to work: it's still there a minute later, and
-  // under reduced motion it's the only thing left. The animation explains
-  // nothing on its own — it's already over by the time anyone reads the page.
+  // A permanent mark, not a moment. The switch it sits beside is already drawn
+  // off, so nothing here has to be watched to be understood.
   it("marks the row this email came from", () => {
-    expect(ask).toContain('<label class="row origin">');
     expect(ask.match(/class="tag"/g)).toHaveLength(1);
     const originRow = ask
-      .split('<label class="row origin">')[1]
-      .split("</label>")[0];
+      .split("<label")
+      .find((row) => row.includes(">from this email<"));
     expect(originRow).toContain(NOTIFY_LABELS.stayCancelled);
-    expect(originRow).toContain(">from this email<");
     expect(originRow).not.toContain(" checked");
   });
 
-  // Scoped to `:not(:checked)`, so ticking that row mid-flight drops the
-  // animation and the live state takes over. A thumb still sliding off a box the
-  // reader has just switched back on would be showing them something untrue.
-  it("plays the switch off once, and lets a live toggle win", () => {
-    expect(ask).toContain(
-      ".origin input:not(:checked) ~ .track::after { animation:kip-thumb",
-    );
-    expect(ask).toContain(
-      ".origin input:not(:checked) ~ .track::before { animation:kip-fill",
-    );
-    // One shot that holds where it lands, never a loop.
-    expect(ask).toContain(".6s both;");
-    expect(ask).not.toContain("infinite");
-    // Reduced motion leaves the row simply off, wearing its mark — and the
-    // override has to repeat `:not(:checked)`, or it loses on specificity and
-    // the animation plays for precisely the people who asked for none.
-    expect(ask).toContain(
-      ".origin input:not(:checked) ~ .track, .origin input:not(:checked) ~ .track::before, .origin input:not(:checked) ~ .track::after { animation:none; }",
-    );
+  // The row used to animate its switch off on load, and for the .6s the
+  // animation spent in its delay it drew the thumb ON over a box that was
+  // already off — a tap landing there turned the row back on while appearing to
+  // do nothing. There is nothing left to say that the words don't.
+  it("draws every switch where it actually is, at every moment", () => {
+    expect(ask).not.toContain("@keyframes");
+    expect(ask).not.toContain("animation:");
+    expect(ask).not.toContain("origin");
   });
 
-  // Some clients open these in a stripped browser, so nothing here can be a
-  // script — and there is nothing to fetch either way.
-  it("needs no JavaScript, and is self-contained", () => {
-    expect(ask).not.toContain("<script");
+  // Only the greying-out of Save is scripted, and it degrades to an ordinary
+  // working button — so nothing on the page needs the script to have run.
+  it("works without its script, and is self-contained", () => {
+    expect(ask).toContain('<form method="post"');
+    expect(ask).toContain('type="submit" name="action" value="set"');
     expect(ask).not.toContain("onclick");
     expect(ask).not.toContain("<link");
     expect(ask).not.toContain("src=");
-    // The form action and nothing else — no Settings link here, so the only
-    // thing of equal weight beside "turn off all kip email" is the save.
+    // Inline, so a browser that blocks remote script still gets the page — and
+    // the form action is the only url on it, no Settings link to sit at equal
+    // weight beside "turn off all kip email".
+    expect(ask.match(/<script/g)).toHaveLength(1);
     expect(ask.match(/https?:\/\/[^"\s]+/g)).toEqual([
       POST_URL.replaceAll("&", "&amp;"),
     ]);
@@ -721,13 +723,18 @@ describe("the page a POST lands on", () => {
     expect(done).toContain("Everything else is unchanged");
   });
 
-  // Only a POST reports a change; the page a scanner can reach never does.
-  it("is the only page that says it happened", () => {
+  // The provider path has no browser to offer the rest of the switches to, so
+  // this is the same ending with nothing to adjust.
+  it("says it happened, and offers nothing to change", () => {
     expect(done).toContain("Unsubscribed");
     expect(done).not.toContain("<form");
     expect(
-      renderUnsubscribeAsk("stayCancelled", notifyStateFrom({}), "https://x/unsubscribe"),
-    ).not.toContain("Unsubscribed");
+      renderUnsubscribeChoices(
+        "stayCancelled",
+        notifyStateFrom({}),
+        "https://x/unsubscribe",
+      ),
+    ).toContain("<form");
   });
 
   it("offers the way back", () => {
