@@ -23,25 +23,19 @@ import {
 import type { ListingPhoto } from "../utils/types";
 import { useRailFade } from "./cover-photo";
 
-// The strip is a drop target for files AND the place photos are dragged around
-// in, so the two have to be told apart before either handler commits to
-// anything. A drag exposes its `types` but never its data until the drop, so a
-// reorder announces itself with a type of its own; a file drag is the only one
-// carrying "Files".
+// A drag exposes its `types` but not its data until the drop, so a reorder needs
+// a type of its own to be told apart from a file drop.
 const PHOTO_DRAG_TYPE = "application/x-kip-photo";
 
 function isPhotoDrag(event: ReactDragEvent<HTMLElement>): boolean {
   return event.dataTransfer.types.includes(PHOTO_DRAG_TYPE);
 }
 
-// Overlay controls sit on top of a photo, so they carry their own contrast
-// rather than a surface token.
+// On top of a photo, so it carries its own contrast rather than a surface token.
 const OVERLAY_CONTROL =
   "grid h-7 w-7 place-items-center rounded-full bg-black/55 text-white transition hover:bg-black/75 disabled:opacity-50";
 
-// Pull `photoId` out and put it back at `to`, which is what both a drop on a
-// thumbnail and an arrow press mean. Removing first is what makes a rightward
-// move land after its target rather than before it.
+// Removing first is what makes a rightward move land after its target.
 function reordered(
   photos: readonly ListingPhoto[],
   photoId: string,
@@ -52,9 +46,7 @@ function reordered(
   return [...rest.slice(0, to), ...moved, ...rest.slice(to)];
 }
 
-// A listing's photos: read-only for anyone viewing the place, with an add
-// control, per-photo delete and reordering for its owner. Order is user-visible
-// — the first photo is the cover on the room page, browse cards and share links.
+// Order is user-visible: the first photo is the cover everywhere it appears.
 export default function PhotoStrip({
   ownerId,
   listingId,
@@ -70,28 +62,23 @@ export default function PhotoStrip({
 }): ReactElement | null {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // True while a dragged file is over the strip, so the target reads as armed.
   const [dropping, setDropping] = useState(false);
-  // A reorder is shown before it is stored, so the strip moves under the finger
-  // rather than after the round trip; the prop takes over again either way.
+  // Shown before it's stored, so the strip moves under the finger rather than
+  // after the round trip.
   const [pendingOrder, setPendingOrder] = useState<
     readonly ListingPhoto[] | null
   >(null);
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [overId, setOverId] = useState<string | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
-  // A full strip is 8 × 96px, well past a phone's width — the fade is what says
-  // there are more photos to the right rather than a hard edge that reads as
-  // "that's all of them". The add button says so too, right up until the strip
-  // is full and it goes away.
+  // A full strip runs past a phone's width, and a hard edge would read as
+  // "that's all of them".
   const { ref: strip, maskImage } = useRailFade(photos.length);
 
   const order = pendingOrder ?? photos;
 
-  // A file dropped anywhere BUT a drop target navigates the browser to it,
-  // replacing the app with the photo. Cancelling that document-wide is invisible
-  // and costs nothing; the strip's own handlers still see their drop first, since
-  // the event only reaches the window after bubbling past them.
+  // A file dropped outside a drop target navigates the browser to it, replacing
+  // the app. The strip's own handlers still see their drop first, by bubbling.
   useEffect(() => {
     if (!editable) return;
     function swallow(event: DragEvent): void {
@@ -109,13 +96,11 @@ export default function PhotoStrip({
 
   const full = photos.length >= MAX_PHOTOS;
   const accepting = editable && !full && !busy;
-  // Reordering needs something to swap with; a write in flight takes the
-  // affordances out of service without taking them off the screen.
+  // A write in flight takes the affordances out of service, not off the screen.
   const sortable = editable && onChange !== undefined && order.length > 1;
 
-  // Both routes in — the picker and a drop — land here, so the cap and the
-  // image-only filter are applied once. `accept="image/*"` is only a hint: most
-  // file pickers still let you choose anything.
+  // Both the picker and a drop land here, so the cap and the image filter are
+  // applied once — `accept` is only a hint, and pickers let anything through.
   async function add(files: readonly File[]): Promise<void> {
     const images = files.filter((file) => file.type.startsWith("image/"));
     if (images.length === 0 || !onChange) return;
@@ -125,10 +110,8 @@ export default function PhotoStrip({
       const room = MAX_PHOTOS - photos.length;
       const added: ListingPhoto[] = [];
       for (const file of images.slice(0, room)) {
-        // Upload BEFORE recording the photo — the URL only exists once the object
-        // does. A listing pointing at an object that isn't there renders a
-        // permanent gap, whereas an orphaned object is invisible and costs a
-        // fraction of a cent.
+        // Upload first: a listing pointing at a missing object renders a
+        // permanent gap, where an orphaned object is merely invisible.
         added.push(await uploadListingPhoto(ownerId, listingId, file));
       }
       if (added.length > 0) await onChange([...photos, ...added]);

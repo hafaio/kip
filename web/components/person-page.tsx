@@ -33,23 +33,20 @@ import Input from "./ui/input";
 import { Group, Section } from "./ui/list";
 import Switch from "./ui/switch";
 
-// Your display name, edited where it's read: the heading itself becomes the
-// field. Enter or moving focus away commits it, Escape puts it back — there's no
-// Save button because there's no form for one to belong to, and the card that
-// used to hold one only duplicated the heading it sat under.
+// The heading itself becomes the field, so there's no form for a Save button to
+// belong to — Enter or blur commits, Escape reverts.
 function EditableName({ name }: { name: string }): ReactElement {
   const { profile, updateDisplayName } = useKip();
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
   const [saved, setSaved] = useState(false);
   const [failed, setFailed] = useState(false);
-  // Escape has to beat the blur that follows it: the blur handler closes over the
-  // draft as it was BEFORE the key, so without this it would commit the very edit
-  // that was just abandoned.
+  // Escape has to beat the blur that follows it, or the blur commits the very
+  // edit that was just abandoned.
   const reverting = useRef(false);
 
-  // "Saved." is an acknowledgement, not a state. Once the field is a heading
-  // again there's nothing for it to sit beside, so it goes on its own.
+  // An acknowledgement, not a state — once the field is a heading again there's
+  // nothing for it to sit beside.
   useEffect(() => {
     if (!saved) return;
     const timer = setTimeout(() => setSaved(false), 2500);
@@ -57,9 +54,8 @@ function EditableName({ name }: { name: string }): ReactElement {
   }, [saved]);
 
   function open(): void {
-    // The revert flag is only consumed by a blur, and a blur isn't guaranteed to
-    // arrive — clearing it here is what stops a discarded edit from swallowing
-    // the NEXT one's commit.
+    // A blur isn't guaranteed to arrive, so a stale flag would swallow the next
+    // edit's commit.
     reverting.current = false;
     setDraft(profile?.displayName ?? "");
     setSaved(false);
@@ -74,9 +70,7 @@ function EditableName({ name }: { name: string }): ReactElement {
     }
     setEditing(false);
     const trimmed = draft.trim();
-    // An editor with no surface of its own has nowhere to argue, so a name that
-    // can't be saved just reverts — the note under the field already said why
-    // while it was being typed.
+    // Nowhere to argue, so an unsaveable name reverts; the field already said why.
     if (
       !profile ||
       validateDisplayName(draft) ||
@@ -135,17 +129,12 @@ function EditableName({ name }: { name: string }): ReactElement {
   );
 }
 
-// Small circles that sit ON the avatar. They carry their own surface and shadow
-// because what's behind them is a photo — the same reason the listing strip's
-// overlay controls do.
+// Their own surface and shadow, because what's behind them is a photo.
 const PHOTO_CONTROL =
   "grid h-7 w-7 place-items-center rounded-full bg-surface text-text shadow-card transition hover:bg-surface-hover disabled:pointer-events-none disabled:opacity-50";
 
-// Your own avatar, with the two controls it needs sitting on it: choose a photo,
-// and drop the one you chose. They're small circles on the picture rather than a
-// section of their own — the photo IS the control's label, and there is nothing
-// else to say about it. Removing falls back to the photo your sign-in provider
-// gave you, so it only appears when you're wearing one of your own.
+// The photo IS the control's label, so the controls sit on it. Removing falls
+// back to the provider's photo, so it only appears when wearing your own.
 function ProfilePhoto({
   name,
   photoURL,
@@ -172,8 +161,7 @@ function ProfilePhoto({
       );
     } finally {
       setBusy(false);
-      // Choosing the same file twice fires no change event unless the input is
-      // cleared, which is exactly what a failed upload invites you to do.
+      // The same file twice fires no change event unless the input is cleared.
       if (fileInput.current) fileInput.current.value = "";
     }
   }
@@ -219,8 +207,7 @@ function ProfilePhoto({
           accept="image/*"
           hidden
           onChange={(event) => {
-            // Only ever a file here: cancelling the picker fires nothing, and
-            // null on this path would mean "remove", which nobody asked for.
+            // Cancelling the picker fires nothing, so null would mean "remove".
             const chosen = event.target.files?.[0];
             if (chosen) change(chosen);
           }}
@@ -231,10 +218,7 @@ function ProfilePhoto({
   );
 }
 
-// The rest of who you are on kip: the permanent handle, and whether it can find
-// you. One card rather than a settings stack — it belongs to the header above it,
-// not to a screen of unrelated preferences. Self view only; Settings mirrors the
-// switch.
+// Self view only; Settings mirrors the switch.
 function SelfIdentity(): ReactElement | null {
   const { profile, claimUsername, setSearchable } = useKip();
   const { confirm } = useDialog();
@@ -270,8 +254,7 @@ function SelfIdentity(): ReactElement | null {
   const handle = profile.username;
 
   async function toggleSearchable(next: boolean): Promise<void> {
-    // Becoming findable needs something to be found by, so send a handle-less
-    // user through the claim form instead of writing a doomed `searchable: true`.
+    // The rules refuse `searchable: true` without a handle, so claim one first.
     if (next && !handle) {
       setClaiming(true);
       return;
@@ -370,12 +353,8 @@ function SelfIdentity(): ReactElement | null {
   );
 }
 
-// Full page for a person: who they are, everything already between the two of
-// you, and the spaces they share. Works for a friend (their listings, fetched),
-// for yourself (your own listings, live — this is also where you share your whole
-// profile) and for someone you've only hosted or stayed with: a share-link guest
-// is neither searchable nor a friend, so the confirmed stay between you is the
-// only thing that makes either of you readable to the other.
+// Serves a friend, yourself, and someone you've only hosted or stayed with —
+// for that last pair the confirmed stay is the only thing making either readable.
 export default function PersonPage({ uid }: { uid: string }): ReactElement {
   const {
     user,
@@ -401,9 +380,7 @@ export default function PersonPage({ uid }: { uid: string }): ReactElement {
   const run = useAction();
   const isSelf = uid === user?.uid;
   const friend = friends.find((candidate) => candidate.uid === uid);
-  // The friend edge, or the profile the store already resolved through a stay
-  // the two of you share. Either way it's loaded, so the fetch below is only for
-  // a person neither covers — someone searchable, reached from anywhere else.
+  // Already loaded either way, so the fetch below is only for someone searchable.
   const known = knownPerson(uid);
   const [profile, setProfile] = useState<Profile | null>(null);
   const [asking, setAsking] = useState(false);
@@ -415,11 +392,8 @@ export default function PersonPage({ uid }: { uid: string }): ReactElement {
       .catch((error) => console.error("fetchUserProfile", error));
   }, [isSelf, known, uid]);
 
-  // Every stay between the two of you, in both directions, from state the store
-  // already holds live. Listed on the same upcoming/past boundary Trips uses;
-  // cancelled ones are left to Trips, since this is a summary of what's between
-  // you rather than a second copy of that screen — but they still count as
-  // having met, so they stay in `staysBetween` for the identity fallback below.
+  // Cancelled stays are left to Trips — this is a summary, not a second copy of
+  // that screen — but they still count as having met, so they stay in the list.
   const staysBetween = [
     ...trips.filter((trip) => trip.ownerId === uid),
     ...incomingBookings.filter((booking) => booking.guestId === uid),
@@ -433,14 +407,11 @@ export default function PersonPage({ uid }: { uid: string }): ReactElement {
     .sort((left, right) => right.start.localeCompare(left.start));
   const incoming = incomingRequests.find((request) => request.from === uid);
   const outgoing = outgoingRequests.find((request) => request.to === uid);
-  // A confirmed stay is the third route into `connectRequests` — the only one
-  // open to a pair who met through a share link, and the rule wants it by id.
+  // The third route into `connectRequests`, and the rule wants it by id.
   const sharedStay = staysBetween.find((stay) => stay.status === "CONFIRMED");
 
-  // A pending ask in either direction is the last fallback: both sides carry a
-  // copy of the other, and it's the only description of someone who reached you
-  // through a link and hasn't been answered yet — a request authorises no read,
-  // and a stay only does so once it's confirmed.
+  // The last fallback: a request authorises no read, so its own copies are the
+  // only description of someone who reached you by link and isn't answered yet.
   const name = isSelf
     ? (myProfile?.displayName ?? "You")
     : known?.displayName ||
@@ -455,11 +426,10 @@ export default function PersonPage({ uid }: { uid: string }): ReactElement {
       incoming?.fromPhotoURL ??
       outgoing?.toPhotoURL ??
       null);
-  // Email lives only on the Auth account, never on the profile doc. Show your own
-  // (from the Auth user) on your own page; a friend's is simply not available.
+  // Only on the Auth account, so a friend's is simply not available.
   const email = isSelf ? (user?.email ?? undefined) : undefined;
-  // `||` not `??`: a pre-migration friend edge stores username as "" (falsy but
-  // not nullish), and we'd rather fall back to the freshly-fetched profile handle.
+  // `||` not `??`: an old friend edge stores username as "", which is falsy but
+  // not nullish, and the fetched profile's handle is the better answer.
   const username = isSelf
     ? myProfile?.username
     : known?.username ||
@@ -578,8 +548,7 @@ export default function PersonPage({ uid }: { uid: string }): ReactElement {
             </div>
           ) : null}
 
-          {/* A stay you've already shared is the one route in for two people who
-              can't otherwise reach each other — no handle, no link. */}
+          {/* The one route in for two people who met through a link. */}
           {!friend && !incoming && !outgoing && sharedStay ? (
             <Button
               variant="secondary"
@@ -616,9 +585,8 @@ export default function PersonPage({ uid }: { uid: string }): ReactElement {
 
       <Section title={isSelf ? "Your places" : `${firstName}'s places`}>
         {!isSelf && !friend ? (
-          // Not "nothing to show": their places are readable to friends only, so
-          // an empty list here would claim they share nothing when the truth is
-          // that you can't see.
+          // An empty list would claim they share nothing, when the truth is that
+          // you can't see.
           <p className="px-1 text-sm text-muted">
             Only friends can see the places {firstName} shares.
           </p>

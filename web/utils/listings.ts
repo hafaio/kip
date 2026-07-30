@@ -30,7 +30,6 @@ import type {
   ListingType,
 } from "./types";
 
-// The human label for a place tier, Room → Flat → House (increasing autonomy).
 export function listingTypeLabel(type: ListingType): string {
   switch (type) {
     case "ROOM":
@@ -42,7 +41,6 @@ export function listingTypeLabel(type: ListingType): string {
   }
 }
 
-// The lucide glyph for a place tier; call sites render it as `<Icon size={…} />`.
 export function listingTypeIcon(type: ListingType): IconType {
   switch (type) {
     case "ROOM":
@@ -54,9 +52,7 @@ export function listingTypeIcon(type: ListingType): IconType {
   }
 }
 
-// Coerce a raw stored `type` into the current enum: the legacy "WHOLE_PLACE"
-// tier is now "HOUSE", a known tier passes through, and anything else (missing
-// or unrecognized) falls back to "ROOM".
+// "WHOLE_PLACE" is the legacy name for "HOUSE".
 function normalizeType(raw: unknown): ListingType {
   if (raw === "WHOLE_PLACE" || raw === "HOUSE") return "HOUSE";
   else if (raw === "FLAT") return "FLAT";
@@ -100,14 +96,9 @@ function toWindow(
   };
 }
 
-// Two date ranges clash when each starts before the other ends. `end` is the
-// checkout day (exclusive), so touching ranges — one ending the day the next
-// starts — are fine and deliberately allowed.
-//
-// Checked on the client, not in the rules: a rule can't query sibling documents,
-// and the only person a clash hurts is the owner whose own calendar it is, so a
-// crafted client gains nothing by skipping it. Returns the first clashing window,
-// or null. `skipId` excludes the window being edited from its own comparison.
+// Client-side because a rule can't query sibling documents, and the only person
+// a clash hurts is the owner whose calendar it is. `end` is exclusive, so ranges
+// that merely touch are deliberately allowed.
 export function findOverlap(
   windows: readonly AvailabilityWindow[],
   range: { start: string; end: string },
@@ -177,9 +168,8 @@ export async function updateListing(
   });
 }
 
-// Photos are added and removed one at a time, as the owner uploads them, so they
-// get their own write instead of riding along with the details form — a strip
-// edit must land even if the form is never submitted.
+// Its own write, not part of the details form: a strip edit has to land even if
+// the form is never submitted.
 export async function setListingPhotos(
   listingId: string,
   photos: readonly ListingPhoto[],
@@ -189,12 +179,9 @@ export async function setListingPhotos(
   });
 }
 
-// Delete a listing, its windows, every public share-link (portal) they point at,
-// AND every live booking against it, in one batch. Under the capability model "revoke = delete", so a portal
-// left behind would keep serving the owner's name/photo and the place's details
-// to anyone with the old link — and stay requestable — with no way to revoke it
-// once the listing/window docs are gone. Takes the full listing (not just the id)
-// so we have its `publicPortalId`; each window carries its own on the doc.
+// Takes the listing, its windows, their portals and its live bookings, in one
+// batch. A portal left behind would keep serving the place to anyone with the
+// old link, with nothing left to revoke it by.
 export async function deleteListing(
   listing: Listing,
   bookings: readonly Booking[],
@@ -203,15 +190,9 @@ export async function deleteListing(
     collection(db(), "listings", listing.id, "windows"),
   );
   const batch = writeBatch(db());
-  // A slot going away must take its asks and stays with it — otherwise a guest is
-  // left holding a request, or a confirmed stay, against dates that no longer
-  // exist and nobody can cancel. Cancelling a single slot already does this
-  // (cancelWindowAsOwner); deleting the whole place has to as well.
-  //
-  // Only what's still ahead, on the same boundary `isExpired` uses everywhere
-  // else. A stay that already happened is a record, not an obligation: flipping
-  // it to CANCELLED would tell a guest their completed visit was called off, and
-  // stamp the host as having done it.
+  // Future stays only. A stay that already happened is a record, not an
+  // obligation — cancelling it would tell a guest their completed visit was
+  // called off, and stamp the host as having done it.
   for (const booking of bookings) {
     if (
       booking.listingId === listing.id &&
@@ -267,8 +248,6 @@ export async function addWindow(
   });
 }
 
-// Owner-only: flip whether an open window auto-accepts. Guests can't reach this
-// (the rule for guest window writes only permits the OPEN->BOOKED status flip).
 export async function setWindowAutoAccept(
   listingId: string,
   windowId: string,
@@ -279,12 +258,9 @@ export async function setWindowAutoAccept(
   });
 }
 
-// Owner-only: edit an open slot's dates and details in place. A slot with a
-// CONFIRMED stay on it can't be moved at all (the rule freezes its dates), but a
-// slot with PENDING asks is still open and editable — locking on request would
-// let anyone freeze a host's calendar just by asking. So moving the dates cancels
-// those asks instead of silently redefining what was asked for. Same principle as
-// deleting a slot taking its bookings with it.
+// A slot with pending asks stays editable — locking on request would let anyone
+// freeze a host's calendar just by asking — so moving it cancels those asks
+// rather than silently redefining what was asked for.
 export async function updateWindow(
   listingId: string,
   windowId: string,
@@ -305,8 +281,6 @@ export async function updateWindow(
     details: fields.details,
   });
   for (const booking of voided) {
-    // The reason rides on the booking: a trigger can't see who wrote, and "those
-    // dates moved" is a different message from "declined".
     batch.update(doc(db(), "bookings", booking.id), {
       status: "CANCELLED",
       cancelledBy: booking.ownerId,
@@ -316,22 +290,11 @@ export async function updateWindow(
   await batch.commit();
 }
 
-// Chunk size is set by the SECURITY RULES, not by the `in` filter (which allows
-// 30). Reading a friend's listing costs exactly one rule lookup — the `exists()`
-// on their friends edge, which the listings rule reaches as its second clause —
-// and Firestore caps a query at 20 lookups. Repeats of the same path are free, so
-// the ceiling is the number of DISTINCT owners in one query, not the number of
-// places returned: 30 places across 3 friends is fine, 25 across 25 friends is
-// refused outright.
-//
-// 20 is therefore the exact limit, not a guess, and `web/tests/rules.test.ts`
-// pins BOTH sides of it — so if a future rule change adds a lookup before or at
-// the friend check, the test fails instead of Browse silently emptying for
-// whoever has the most friends.
+// Set by the RULES' 20-lookup budget, not the `in` filter's 30: each distinct
+// friend costs one exists() on their edge. The rules tests pin both sides, so
+// adding a lookup fails a test rather than silently emptying Browse.
 const BROWSE_CHUNK = 20;
 
-// Fetch all listings owned by the given friends, chunked so no single query
-// exceeds the rules' lookup budget. Used for the Browse view.
 export async function fetchFriendListings(
   friendUids: readonly string[],
 ): Promise<Listing[]> {
@@ -350,12 +313,9 @@ export async function fetchFriendListings(
   return results.flat();
 }
 
-// One place by id, for a stay whose host isn't a friend: the guest pointer
-// (`listings/{id}/guests/{uid}`) is what makes that listing readable to them, and
-// nothing else fetches it — Browse only ever asks for friends' places. A place
-// that's since been deleted, or one whose pointer has gone inert because the stay
-// was cancelled, reads as null rather than throwing, and the caller falls back to
-// naming it as a place it can't see.
+// For a stay whose host isn't a friend — nothing else fetches those, since
+// Browse only asks for friends' places. A deleted place, or one whose pointer
+// has gone inert, reads as null rather than throwing.
 export async function fetchListing(listingId: string): Promise<Listing | null> {
   const snap = await getDoc(doc(db(), "listings", listingId)).catch((error) => {
     if (error?.code !== "permission-denied") throw error;
@@ -374,14 +334,9 @@ export async function fetchWindows(
   return snap.docs.map((snapshot) => toWindow(listingId, snapshot));
 }
 
-// One place and its dates together, for landing straight on a room — a pasted
-// link, a reload — with nothing loaded yet. The alternative is pulling every
-// friend's place to find the one being looked at.
-//
-// The dates are a second read and can be refused where the place is not: a
-// guest's pointer opens the LISTING they're staying at, deliberately not the
-// host's calendar. So a denial there still yields the room, with no dates —
-// exactly what such a guest saw before, when nothing fetched them at all.
+// For landing straight on a room with nothing loaded. The dates can be refused
+// where the place is not — a guest's pointer opens the listing, deliberately not
+// the host's calendar — so a denial still yields the room.
 export async function fetchRoom(listingId: string): Promise<{
   listing: Listing;
   windows: AvailabilityWindow[];

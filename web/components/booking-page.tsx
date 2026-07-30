@@ -20,12 +20,8 @@ import Button from "./ui/button";
 import Chip, { type ChipTone } from "./ui/chip";
 import { Group, Row } from "./ui/list";
 
-// Who called a booking off, and why, from the reader's side. `cancelledBy` and
-// `cancelReason` are stamped at the cancel precisely so this reads correctly to
-// both parties — and `byMe` is the only axis needed, because the reason and the
-// side always agree: DECLINED, SLOT_MOVED and SLOT_CANCELLED are the host's,
-// WITHDRAWN is the guest's, and STAY_CANCELLED is stamped by whichever of them
-// called the stay off, which is exactly what `byMe` then names.
+// `byMe` is the only axis needed, because the reason and the side always agree —
+// every reason but STAY_CANCELLED belongs to exactly one party.
 function cancelNote(
   reason: CancelReason | null,
   byMe: boolean,
@@ -57,9 +53,7 @@ function cancelNote(
   }
 }
 
-// Full page for a booking — the stay (guest side) or the request (owner side):
-// a status "moment" at the top, the where/when/who card, then the
-// role-appropriate actions.
+// The stay, guest side, or the request, owner side.
 export default function BookingPage({ id }: { id: string }): ReactElement {
   const {
     user,
@@ -80,17 +74,15 @@ export default function BookingPage({ id }: { id: string }): ReactElement {
   const { alert, confirm } = useDialog();
   const [busy, setBusy] = useState(false);
 
-  // Guards the ordinary double-click. The real protection is the transaction in
-  // confirmBooking — this can't help a second tab.
+  // The ordinary double-click only; the transaction is the real protection.
   async function confirmStay(): Promise<void> {
     if (!booking) return;
     setBusy(true);
     try {
       const outcome = await confirmBooking(booking);
       if (outcome === "unavailable") {
-        // Two ways to lose the race, and the transaction can't tell the host
-        // which without saying more than it knows: another stay took the dates,
-        // or the guest took the ask back. Both leave nothing to confirm.
+        // Either another stay took the dates or the ask was withdrawn, and the
+        // transaction can't tell which without claiming more than it knows.
         await alert({
           title: "Too late for this one",
           body: "Either those dates went to another stay or the guest took their request back — either way there's nothing left to confirm. This page will catch up in a moment.",
@@ -118,34 +110,28 @@ export default function BookingPage({ id }: { id: string }): ReactElement {
   const address = room?.location.label || "Address unavailable";
   const iAmGuest = booking.guestId === user?.uid;
   const otherUid = iAmGuest ? booking.ownerId : booking.guestId;
-  // Read live through the stay itself — a guest who came through a share link
-  // isn't a friend of their host, but a confirmed booking between them is what
-  // lets each read the other. A pending ask isn't: it authorises nothing until
-  // it's answered, so the row below says "Someone", with the role underneath it
-  // carrying what's actually known.
+  // A pending ask authorises no read, so an unanswered stranger stays "Someone"
+  // with the role beneath carrying what is actually known.
   const other = knownPerson(otherUid);
   const otherName = other?.displayName || "Someone";
   const otherPhoto = other?.photoURL ?? null;
   const PlaceIcon = room ? listingTypeIcon(room.type) : LuMapPin;
-  // A round 40px crop of a room is barely a picture, and this is a whole screen
-  // about one stay — so the place leads it at full width, uncovered.
+  // A round 40px crop of a room is barely a picture.
   const hero = (
     <CoverPhoto
       photo={room?.photos[0]}
       className="aspect-[16/9] max-h-56 w-full"
     />
   );
-  // The icon stays in the row rather than moving onto the hero: every row in this
-  // card leads with one, and dropping it for the place alone left the title
-  // hanging out of line with the dates and the person below it.
+  // Every row in this card leads with an icon, so dropping it for the place
+  // alone left the title out of line with the rows beneath.
   const placeThumb = (
     <span className="bg-accent-soft grid h-10 w-10 shrink-0 place-items-center rounded-2xl text-accent-ink">
       <PlaceIcon size={18} />
     </span>
   );
 
-  // Clearing hides the booking from this user only, so the page it's on has
-  // nothing left to show — step back out to whichever list they came from.
+  // The page it's on has nothing left to show once hidden.
   async function clearFromList(cleared: Booking): Promise<void> {
     const agreed = await confirm({
       title: "Clear this from your list?",

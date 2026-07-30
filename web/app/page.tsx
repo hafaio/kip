@@ -69,8 +69,7 @@ function Splash(): ReactElement {
   );
 }
 
-// The per-screen page title shown in the header. Detail screens carry a generic
-// label except person, which resolves to a familiar first name (or "You").
+// Person resolves to a first name; every other detail screen has a fixed label.
 function useScreenTitle(screen: Screen): string {
   const { user, friends } = useKip();
   switch (screen.kind) {
@@ -104,8 +103,7 @@ export default function Page(): ReactElement {
   } = useKip();
   const title = useScreenTitle(screen);
   const scroller = useRef<HTMLElement>(null);
-  // Set by the effect below whenever the change came from history rather than a
-  // tap, so the scroll effect knows which of the two things to do.
+  // True when the change came from history rather than a tap.
   const restoring = useRef(false);
   const lastPopped = useRef(popped);
   if (lastPopped.current !== popped) {
@@ -113,21 +111,12 @@ export default function Page(): ReactElement {
     restoring.current = true;
   }
 
-  // Opening a new screen should start at the top of it. Without this the scroll
-  // position simply carries over, so tapping a place from halfway down Browse
-  // lands you halfway down that place — usually past its photo and title. Keyed
-  // on the screen's identity rather than the object, which is rebuilt on render.
-  //
-  // Instant, never smooth: a scroll animation on something that just appeared
-  // reads as the page moving under you rather than as arriving somewhere.
-  // `window` as well as the scroller, because which one actually scrolls depends
-  // on the viewport.
+  // The screen's identity, not the object, which is rebuilt on every render.
   const screenKey = `${screen.kind}:${"id" in screen ? screen.id : ""}:${
     screen.kind === "tab" ? screen.tab : ""
   }:${screen.kind === "room" ? (screen.windowId ?? "") : ""}`;
-  // Keep the current offset on this history entry, so going back can put the page
-  // where it was. Written continuously rather than on the way out, because a
-  // browser Back gives no chance to save anything first.
+  // Written continuously, not on the way out: a browser Back gives no chance to
+  // save anything first.
   useEffect(() => {
     const element = scroller.current;
     if (!element) return;
@@ -148,17 +137,10 @@ export default function Page(): ReactElement {
     };
   }, []);
 
-  // Opening a screen starts at the top of it; RETURNING to one puts it back where
-  // you left it. Without the first, tapping a place from halfway down Browse
-  // lands you halfway down that place, past its photo and title.
-  //
-  // Instant, never smooth: a scroll animation on something that has only just
-  // appeared reads as the page moving under you rather than as arriving.
-  //
-  // The restore is applied twice — now and on the next frame — because a list you
-  // are coming back to may not have its fetched contents yet, and you cannot
-  // scroll to 900px until something is 900px tall. When the content is still
-  // missing it lands short, which is the honest failure: too high, never wrong.
+  // Opening a screen starts at its top; returning puts it back where you left it.
+  // Instant, never smooth — an animation on something that has only just appeared
+  // reads as the page moving under you. Both the scroller and `window`, since
+  // which one actually scrolls depends on the viewport.
   // biome-ignore lint/correctness/useExhaustiveDependencies: the keys ARE the dependencies — the effect reads nothing from them and exists only to fire when they change.
   useEffect(() => {
     const to = restoring.current ? historyScroll() : 0;
@@ -169,11 +151,9 @@ export default function Page(): ReactElement {
       return (scroller.current?.scrollTop ?? window.scrollY) >= to;
     };
     if (apply() || to === 0) return;
-    // The list you're returning to may not have its fetched contents back yet,
-    // and you can't scroll to 900px until something is 900px tall — the browser
-    // silently clamps and you land at the top. So retry briefly while it fills
-    // in, stopping as soon as the offset takes. If it never does, landing short
-    // is the honest failure: too high, never somewhere you've never been.
+    // You can't scroll to 900px until something is 900px tall, and a list you're
+    // returning to may not have refetched yet — so retry while it fills in.
+    // Landing short is the honest failure: too high, never somewhere unvisited.
     const timers = [60, 160, 320, 640].map((delay) =>
       window.setTimeout(apply, delay),
     );
@@ -182,21 +162,16 @@ export default function Page(): ReactElement {
     };
   }, [screenKey, popped]);
 
-  // Friends-only: nothing is public, so an unauthenticated visitor only ever
-  // sees the sign-in screen. Hold on a splash until the session resolves, then
-  // (once signed in) until the profile loads, so we can tell "needs a name"
-  // apart from "still loading" without flashing the onboarding screen.
+  // Two splashes, so "needs a name" is never confused with "still loading".
   if (!authReady) return <Splash />;
-  // An anonymous session is a share-link visitor's ticket, not an account. It
-  // has no profile and can see nothing here, so inside the app it counts as
-  // signed out — otherwise the gate reads "authenticated, no profile" and asks a
-  // passer-by to name themselves.
+  // An anonymous session is a share-link visitor's ticket, not an account — it
+  // has no profile, so without this the gate would ask a passer-by to name
+  // themselves.
   if (!user || user.isAnonymous) return <SignInScreen />;
   if (!profileReady) return <Splash />;
   if (needsOnboarding) return <OnboardingScreen />;
 
-  // The wordmark stands in for the title only when the title IS the app — the
-  // Home tab. Everywhere else the header names the current screen.
+  // The wordmark stands in for the title only where the title IS the app.
   const isHome = screen.kind === "tab" && screen.tab === "home";
 
   return (

@@ -1,12 +1,6 @@
-// What to say, to whom, about which screen — and how it looks — with no Firebase
-// in sight, so every branch can be tested directly. `index.ts` keeps the I/O
-// (resolving an address from Auth, reading preferences, fetching the photo,
-// sending) and calls in here to decide and to render.
-//
-// Splitting it this way is the only reason these branches are testable at all:
-// the triggers themselves need emulators, Auth accounts and an SMTP server, so in
-// practice they'd never be exercised, and the wording of a cancellation is
-// exactly the sort of thing that quietly goes wrong.
+// Pure decisions and rendering, no Firebase. Split out because the triggers need
+// emulators, Auth accounts and SMTP to exercise, so in practice they never are —
+// and the wording of a cancellation is exactly what quietly goes wrong.
 
 export type NotifyKind =
   | "bookingRequested"
@@ -17,8 +11,7 @@ export type NotifyKind =
 
 export type Party = "host" | "guest" | "recipient";
 
-// The OTHER party to whatever happened — never the person being emailed. Their
-// photo is the one the email carries.
+// The OTHER party — never the person being emailed.
 export type Person = {
   name: string;
   photoURL?: string | null;
@@ -29,8 +22,7 @@ export type Notice = {
   kind: NotifyKind;
   subject: string;
   body: string;
-  // The screen this is about, as a fragment path; `renderEmail` joins it to the
-  // site origin, which only `index.ts` knows.
+  // A fragment path; `index.ts` owns the origin it's joined to.
   path: string;
   // Label on the button that follows `path`.
   cta: string;
@@ -60,8 +52,7 @@ export type RequestLike = {
   bookingId?: string | null;
 };
 
-// Friends is where a connect request is answered; every booking event has a page
-// of its own. Both are real fragment routes — see `screenHash` in the web store.
+// Real fragment routes — see `screenHash` in the web store.
 const FRIENDS_PATH = "#/friends";
 export const SETTINGS_PATH = "#/settings";
 
@@ -84,12 +75,8 @@ const MONTHS = [
   "Dec",
 ];
 
-// "Aug 14 – Aug 19", the same shape the app shows, rather than the raw ISO the
-// documents store. Parsed by hand instead of with `Date`, because `new
-// Date("2026-08-14")` is UTC midnight and would render as the 13th anywhere west
-// of Greenwich — the one day people would notice. Anything that isn't an ISO date
-// is passed through untouched: a wrong-looking date is better than a crash in a
-// notification nobody can retry.
+// Parsed by hand, not with `Date`: `new Date("2026-08-14")` is UTC midnight and
+// renders as the 13th west of Greenwich — the one day people would notice.
 export function dateRange(start: string, end: string): string {
   return `${niceDate(start)} – ${niceDate(end)}`;
 }
@@ -105,9 +92,8 @@ export function firstName(name: string | undefined): string {
   return (name ?? "").split(" ")[0] || "Someone";
 }
 
-// A booking appearing. Asking to stay and instant-booking are different events:
-// one wants a decision from the host, the other is already settled and is only
-// news, so they're separately switchable.
+// Asking and instant-booking are separately switchable: one wants a decision,
+// the other is only news.
 export function noticeForNewBooking(
   booking: BookingLike,
   bookingId: string,
@@ -142,9 +128,7 @@ export function noticeForNewBooking(
   };
 }
 
-// A booking changing state. Returns null when there's nothing worth sending —
-// a status that didn't move, or someone taking back their own request, which the
-// other side never knew about in a way that needs closing off.
+// Null when there's nothing worth sending.
 export function noticeForBookingChange(
   before: BookingLike,
   after: BookingLike,
@@ -156,8 +140,7 @@ export function noticeForBookingChange(
   const host = firstName(after.hostName);
   const guest = firstName(after.guestName);
   const path = bookingPath(bookingId);
-  // Every branch below but the last is read by the guest, so the host is the
-  // face on it; the last one flips.
+  // Every branch but the last is read by the guest; the last one flips.
   const theHost: Person = {
     name: after.hostName || "Someone",
     photoURL: after.hostPhotoURL,
@@ -181,7 +164,7 @@ export function noticeForBookingChange(
   const wasPending = before.status === "REQUESTED";
 
   if (wasPending) {
-    // The guest withdrawing their own ask needs no announcement.
+    // Withdrawing your own ask needs no announcement.
     if (!byHost) return null;
     if (after.cancelReason === "SLOT_MOVED") {
       return {
@@ -205,7 +188,7 @@ export function noticeForBookingChange(
     };
   }
 
-  // A confirmed stay called off — tell whichever side didn't do it.
+  // Tell whichever side didn't do it.
   if (byHost) {
     return {
       to: "guest",
@@ -231,10 +214,8 @@ export function noticeForBookingChange(
   };
 }
 
-// How they reached you is the main thing you need in order to answer, since a
-// connect request is often from someone you don't know. There are three routes in
-// and each reads differently — a stranger with your link is not the same as the
-// person you actually hosted last month.
+// How they reached you is the main thing you need in order to answer: a stranger
+// with your link is not the person you hosted last month.
 export function noticeForConnectRequest(request: RequestLike): Notice {
   const who = request.fromName || "Someone";
   const handle = request.fromUsername ? ` (@${request.fromUsername})` : "";
@@ -255,8 +236,7 @@ export function noticeForConnectRequest(request: RequestLike): Notice {
   };
 }
 
-// Terra, as far as an email client can carry it. Light values from the web
-// palette; the dark ones sit in a media query below.
+// Light values from the web palette; the dark ones sit in a media query below.
 const TERRA = {
   canvas: "#f6f1ea",
   surface: "#ffffff",
@@ -268,28 +248,22 @@ const TERRA = {
   gradient: "linear-gradient(135deg,#e2582f 0%,#ee8438 55%,#f6b24a 100%)",
 } as const;
 
-// The Terra typeface is a webfont, and email clients won't load one — so this is
-// the closest native stack rather than a fallback nobody sees.
+// Email clients won't load a webfont, so this is the closest native stack.
 const FONT =
   "-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif";
 
-// Every gradient below is painted over a solid of the same family: Outlook and
-// several webmail clients drop `background-image` entirely, and white text on a
-// dropped background is an invisible button.
+// Every gradient is painted over a solid of the same family, because clients
+// that drop `background-image` would leave white text on nothing.
 const ACCENT_FILL = `background-color:${TERRA.accent};background-image:${TERRA.gradient};`;
 
-// `--shadow-glow` from the app's palette — what an ON switch sits on. Named
-// because the animation has to fade the same value out as it fades the fill.
+// Named because the animation fades this value out alongside the fill.
 const GLOW = "0 6px 18px rgba(221,95,56,.34)";
 
 export type EmailAssets = {
   origin: string;
-  // Content-id of the attached photo, or null when there wasn't one to attach —
-  // the initial-in-a-circle case.
+  // Null falls back to an initial in a circle.
   photoCid: string | null;
-  // The recipient's own unsubscribe url — the same one the List-Unsubscribe
-  // header carries. Required rather than optional: an email that renders without
-  // it would look fine and quietly have no way out.
+  // Required, not optional: an email without one looks fine and has no way out.
   unsubscribeUrl: string;
 };
 
@@ -313,10 +287,8 @@ export function linkTo(origin: string, path: string): string {
   return `${origin.replace(/\/+$/, "")}/${path}`;
 }
 
-// A human name for each event, for the unsubscribe confirmation — the web app
-// has its own in `NOTIFY_EVENTS` and this package can't import across. Typed as
-// a full Record, so a kind added to the union above can't reach the URL without
-// a name to put on the page.
+// A second copy of the web app's `NOTIFY_EVENTS` labels, since this package
+// can't import across. A full Record, so a new kind can't reach the URL nameless.
 export const NOTIFY_LABELS: Record<NotifyKind, string> = {
   bookingRequested: "Someone asks to stay",
   bookingTaken: "Someone books instantly",
@@ -325,24 +297,16 @@ export const NOTIFY_LABELS: Record<NotifyKind, string> = {
   connectRequest: "Someone asks to be friends",
 };
 
-// The kind arrives off an unauthenticated query string, so it is a string until
-// proven otherwise. Anything unrecognised is a null the caller must fail on,
-// never a default — an unsubscribe that turns off the wrong thing, or everything,
-// is worse than one that doesn't work.
-//
-// `hasOwn`, not `in`: `in` walks the prototype, so `?kind=toString` would pass
-// and go on to write a preference key nothing ever reads.
+// Unrecognised is null, never a default — silencing the wrong thing is worse
+// than not working. `hasOwn`, not `in`, or `?kind=toString` would pass.
 export function asNotifyKind(value: unknown): NotifyKind | null {
   return typeof value === "string" && Object.hasOwn(NOTIFY_LABELS, value)
     ? (value as NotifyKind)
     : null;
 }
 
-// One-click unsubscribe (RFC 8058). The mail provider POSTs this URL with no
-// cookies, no session and no user — so the URL has to carry its own authority,
-// which is the same shape a portal has: `key` is an unguessable id minted for
-// this recipient, and knowing it IS the permission. It names ONE kind, because
-// silencing everything on the strength of one email nobody wanted is not what
+// The URL carries its own authority, the same shape a portal has. It names ONE
+// kind: silencing everything on the strength of one unwanted email is not what
 // "unsubscribe from this" means.
 export function unsubscribeLink(
   endpoint: string,
@@ -354,15 +318,12 @@ export function unsubscribeLink(
   return `${endpoint.replace(/\/+$/, "")}?${query}`;
 }
 
-// RFC 8058's body: what a provider POSTs unattended, announced by the header
-// below. The page's own form never sends it — it says what it wants explicitly —
-// so this stays the machine path, and `formIntent` reading it as the narrowest
-// intent is what keeps that path exactly as it was.
+// The machine path: what a provider POSTs unattended. The page's own form always
+// says what it wants explicitly instead.
 export const ONE_CLICK_BODY = "List-Unsubscribe=One-Click";
 
-// Both headers or neither: Gmail ignores `List-Unsubscribe` unless the -Post
-// header sits beside it, and honouring a POST nobody announces would be a
-// feature no client ever uses. Built together here so they can't drift apart.
+// Both or neither — Gmail ignores `List-Unsubscribe` without the -Post header,
+// so they're built together and can't drift apart.
 export function unsubscribeHeaders(link: string): Record<string, string> {
   return {
     "List-Unsubscribe": `<${link}>`,
@@ -378,11 +339,9 @@ export const ALL_OFF: NotifyState = Object.fromEntries(
   KINDS.map((kind) => [kind, false]),
 ) as NotifyState;
 
-// What the sender will actually DO with a stored `notify` map — absence means
-// "not disabled", which is the same test `recipientFor` applies before sending.
-// Deriving it that way rather than keeping a second copy of the web app's
-// defaults is what stops the page showing a tick beside mail that isn't coming,
-// or the reverse.
+// Absence means "not disabled", the same test `recipientFor` applies. Derived
+// rather than copying the web app's defaults, so the page can't lie about what
+// will actually arrive.
 export function notifyStateFrom(stored: unknown): NotifyState {
   const map: Record<string, unknown> =
     typeof stored === "object" && stored
@@ -393,9 +352,8 @@ export function notifyStateFrom(stored: unknown): NotifyState {
   ) as NotifyState;
 }
 
-// The runtime hands a parsed object for a form post, but a client sending an
-// unexpected content type leaves the body raw — read both the same way, so an
-// odd content type can't quietly turn a full set of choices into an empty one.
+// An unexpected content type leaves the body raw, and reading only the parsed
+// form would turn a full set of choices into an empty one.
 function formFields(body: unknown): Map<string, string> {
   if (typeof body === "object" && body !== null) {
     return new Map(
@@ -408,10 +366,8 @@ function formFields(body: unknown): Map<string, string> {
   return new Map(new URLSearchParams(String(body ?? "")));
 }
 
-// What this POST is asking for. Anything unrecognised — including RFC 8058's own
-// body, which is what a provider sends and carries no `action` at all — means the
-// narrowest thing: turn off the one kind named in the url. The wider actions have
-// to be asked for explicitly, so an unfamiliar client can never widen one.
+// Anything unrecognised — RFC 8058's own body included — means the narrowest
+// action, so an unfamiliar client can never widen one.
 export type UnsubscribeIntent = "one" | "all" | "set";
 
 export function formIntent(body: unknown): UnsubscribeIntent {
@@ -419,9 +375,7 @@ export function formIntent(body: unknown): UnsubscribeIntent {
   return action === "all" || action === "set" ? action : "one";
 }
 
-// A ticked box is a kind still worth emailing about; an absent one is off, which
-// is how HTML sends checkboxes and why the form lists every kind rather than only
-// the changed ones.
+// HTML omits unticked checkboxes entirely, which is why the form lists them all.
 export function notifyFromForm(body: unknown): NotifyState {
   const fields = formFields(body);
   return Object.fromEntries(
@@ -429,9 +383,8 @@ export function notifyFromForm(body: unknown): NotifyState {
   ) as NotifyState;
 }
 
-// "A, B and C" — the kinds still switched on, for a page that has just written
-// them. Named in full, because "your choices are saved" tells someone nothing
-// about what they'll now get.
+// Named in full, because "your choices are saved" says nothing about what will
+// now arrive.
 function listKinds(state: NotifyState): string {
   const names = KINDS.filter((kind) => state[kind]).map(
     (kind) => NOTIFY_LABELS[kind],
@@ -440,16 +393,10 @@ function listKinds(state: NotifyState): string {
   return names.length ? `${names.join(", ")} and ${last}` : (last ?? "");
 }
 
-// The same URL is also a link a human can click — plenty of clients render
-// `List-Unsubscribe` that way rather than as a button — so a GET gets a page.
-// Self-contained for the same reason the email is: this is served by a function
-// with no assets, no stylesheet and no webfont to reach for. `action` is the one
-// thing that differs between the three pages: a form, or a way onwards.
-//
-// `no-referrer` because this page's OWN url carries the uid and the key, and
-// following the Settings link would otherwise hand both to the site's host in a
-// Referer header. It's the same instinct that keeps a portal token in the
-// fragment; a fragment can't be used here, since the server has to read the key.
+// Self-contained because a function has no assets to serve. `no-referrer`
+// because this page's own url carries the uid and key, which following the
+// Settings link would otherwise leak — a fragment can't help, since the server
+// has to read the key.
 function unsubscribePage(heading: string, body: string, action: string): string {
   return `<!doctype html>
 <html lang="en">
@@ -525,33 +472,20 @@ ${action}
 </html>`;
 }
 
-// Where the two ending pages point. The asking page deliberately doesn't: it
-// already offers every switch Settings would, and a second link of equal weight
-// beside "turn off all kip email" only makes the destructive one easier to hit
-// by accident.
+// The asking page deliberately has no such link: a second one of equal weight
+// beside "turn off all kip email" makes the destructive one easier to mis-hit.
 function settingsButton(settingsUrl: string): string {
   return `<p class="act"><a class="cta" href="${escapeHtml(settingsUrl)}">Open kip Settings</a></p>`;
 }
 
-// What a GET answers with, and it changes NOTHING — it asks. Mail passes through
-// link scanners and security proxies that fetch every url in a message, so a GET
-// that acted would unsubscribe people who never clicked anything, invisibly to
-// both sides: they'd simply stop getting mail kip has no record of them refusing.
-// `stayCancelled` is the one nobody can afford to lose that way.
-//
-// It shows the whole set, because the key already speaks for exactly these
-// preferences and nothing else, and because someone who wants OUT wants out of
-// all of it — sending them to a sign-in to say so is how "report spam" happens.
-//
-// The kind that email was about arrives ALREADY SWITCHED OFF, and Save is the
-// only loud button on the page. It used to lead with "turn off these emails"
-// above a quiet "turn off all kip email", and the two read almost the same — the
-// difference in scope was carried entirely by the wording, which is the worst
-// place to carry it. Pre-marking moves it into the switches, where it's visible.
-//
-// The cost is that pressing a button no longer IS the action, so the page has to
-// say that in words: somebody who lands here, sees the switch off and closes the
-// tab must not leave believing they've unsubscribed.
+// Changes nothing — it asks. Link scanners fetch every url in a message, so a
+// GET that acted would unsubscribe people who never clicked. Shows the whole set,
+// since someone who wants out usually wants out of all of it, and sending them to
+// a sign-in to say so is how "report spam" happens. The kind this email was about
+// arrives already switched off, so the scope is visible in the switches rather
+// than carried by the wording of two near-identical buttons.
+// Because pressing a button is no longer itself the action, the page has to say
+// so in words, or someone who closes the tab leaves believing they unsubscribed.
 export function renderUnsubscribeAsk(
   kind: NotifyKind,
   state: NotifyState,
@@ -559,23 +493,12 @@ export function renderUnsubscribeAsk(
 ): string {
   const action = `action="${escapeHtml(postUrl)}"`;
   const proposed: NotifyState = { ...state, [kind]: false };
-  // Each row is a real checkbox — it carries the value, the keyboard behaviour
-  // and the role, and the page has to work with no JavaScript — clipped rather
-  // than hidden so it can still take focus, with a track and thumb drawn beside
-  // it off `:checked`. That makes this a hand-made copy of the app's `Switch`
-  // component, which can drift if that one is restyled; the page has no build
-  // step to share it, which is also the reason to keep it this plain.
-  //
-  // The row this email came from carries a chip saying so, and its switch plays
-  // a one-shot slide from on to off. The chip is the load-bearing half: it's
-  // still there a minute later, and it's all that's left under
-  // `prefers-reduced-motion`, where an animation communicates nothing.
-  //
-  // The animation is scoped to `input:not(:checked)`, so switching that row back
-  // on drops it mid-flight and the live state takes over — an animation still
-  // sliding a thumb off a box the reader has just ticked would be a lie. (Turning
-  // it off again replays the gesture, since the selector matches once more. It
-  // ends where the state is, so it reads as a repeat rather than a wrong answer.)
+  // A real checkbox, clipped rather than hidden so it keeps focus and keyboard
+  // behaviour with no JavaScript — a hand-made copy of the app's `Switch`, since
+  // a function has no build step to share one. The chip is the load-bearing half
+  // of "this is the row you came from"; the animation is decoration, and is
+  // scoped to `:not(:checked)` so re-ticking a row drops it mid-flight rather
+  // than sliding a thumb off a box the reader has just turned on.
   const boxes = KINDS.map((each) => {
     const origin = each === kind;
     const tag = origin ? '<span class="tag">from this email</span>' : "";
@@ -594,9 +517,7 @@ ${boxes}
   );
 }
 
-// Answers a POST that wrote the whole set — the checkboxes, or the all-off
-// button, which is the same write with nothing ticked. Names what's left on,
-// since "saved" on its own tells someone nothing about what they'll now get.
+// Names what's left on, since "saved" says nothing about what will now arrive.
 export function renderNotifySaved(
   state: NotifyState,
   settingsUrl: string,

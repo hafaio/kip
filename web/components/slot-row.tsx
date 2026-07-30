@@ -10,12 +10,8 @@ import Button from "./ui/button";
 import Chip from "./ui/chip";
 import { Row } from "./ui/list";
 
-// One availability slot in a friend's room page, as a grouped-list row: the
-// dates + a nights/details meta line on the left, and on the right either an
-// Instant chip + the single Book/Request action, or a passive status chip.
-// Booked-by-you and pending rows tap through to the booking page, where cancel
-// lives. A range someone else has isn't listed here at all, so the only booked
-// rows are the reader's own.
+// A range someone else holds isn't listed at all, so the only booked rows here
+// are the reader's own.
 export default function SlotRow({
   listing,
   window,
@@ -37,9 +33,8 @@ export default function SlotRow({
     setNote(null);
     try {
       const outcome = await requestBooking(listing, window);
-      // A slot that was taken — by this booking or by whoever got there first —
-      // now reads BOOKED, and friends' dates aren't live, so this row would go on
-      // offering it. Only this room's dates changed, so only they are refetched.
+      // Friends' dates aren't live, so without this the row goes on offering a
+      // slot that has just been taken.
       if (outcome === "unavailable") {
         setNote("Just taken by someone else.");
         await refreshWindows(listing.id);
@@ -54,11 +49,8 @@ export default function SlotRow({
     }
   }
 
-  // "Booked by you" means I actually HOLD this window (booked + stamped with my
-  // uid) — not merely that I have some non-cancelled booking on it. Two friends
-  // can both hold REQUESTED bookings on one non-auto window; when the owner
-  // confirms the other, this flips to BOOKED by them, and the losing requester
-  // (still REQUESTED) must not see a green "Booked by you".
+  // Holding the window, not merely having a booking on it: two friends can both
+  // have REQUESTED one, and the loser must not see "Booked by you".
   const iHoldWindow = window.bookedBy != null && window.bookedBy === user?.uid;
   const pendingRequest = myBooking?.status === "REQUESTED";
   const showInstant = window.autoAccept && window.status === "OPEN";
@@ -74,10 +66,7 @@ export default function SlotRow({
       {window.details ? ` · ${window.details}` : ""}
     </span>
   );
-  // The place these dates belong to. Every row in one list is the same room, so
-  // this repeats — but a date range with no picture beside it reads as an
-  // abstraction, and the picture is most of what makes it a place worth asking
-  // for. It renders nothing when the room has no photos.
+  // Repeats down a list, but a date range with no picture reads as an abstraction.
   const thumb = (
     <CoverPhoto photo={listing.photos[0]} className="h-10 w-10 shrink-0" />
   );
@@ -101,10 +90,8 @@ export default function SlotRow({
     );
   }
 
-  // Booked, with my own booking not in hand yet: the room page only lists a
-  // taken range when I'm the one holding it, so this is the moment before
-  // `trips` arrives rather than someone else's stay. Passive and dimmed until it
-  // resolves — never a Book button on dates that are gone.
+  // A taken range is only listed when it's mine, so this is the moment before
+  // `trips` arrives rather than someone else's stay.
   if (window.status === "BOOKED") {
     return (
       <div className="flex min-h-14 items-center gap-3 px-4 py-3 opacity-60">

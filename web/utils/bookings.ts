@@ -73,12 +73,9 @@ export function watchIncomingBookings(
 
 export type BookingOutcome = "requested" | "confirmed" | "unavailable";
 
-// Guest books a window. For a normal window we just record a REQUESTED booking
-// and leave the window OPEN — only the owner can flip it (rules), so it goes
-// BOOKED on confirm. For an auto-accept window it's first come, first served: a
-// transaction re-reads the window and, if still OPEN, atomically marks it BOOKED
-// and writes a CONFIRMED booking. Concurrent grabs contend on the window doc, so
-// exactly one wins and the rest get "unavailable".
+// A normal slot stays OPEN — only the owner may flip it. An auto-accept slot is
+// first come, first served: concurrent grabs contend on the window doc inside a
+// transaction, so exactly one wins and the rest get "unavailable".
 export async function requestBooking(
   guestId: string,
   listing: Listing,
@@ -90,8 +87,7 @@ export async function requestBooking(
     guestId,
     start: window.start,
     end: window.end,
-    // A stay starts life un-cancelled, and the rules pin both to null so one
-    // can't be lodged pre-stamped as called off by the host.
+    // Pinned null by the rules, so one can't be lodged pre-stamped as cancelled.
     cancelledBy: null,
     cancelReason: null,
   };
@@ -107,8 +103,7 @@ export async function requestBooking(
   }
 
   const windowRef = doc(db(), "listings", listing.id, "windows", window.id);
-  // Pre-allocate the booking ref so its id is known for the notification after
-  // the transaction commits.
+  // Pre-allocated so the id is known for the notification after the commit.
   const bookingRef = doc(collection(db(), "bookings"));
   try {
     await runTransaction(db(), async (tx) => {
@@ -133,11 +128,8 @@ export async function requestBooking(
   }
 }
 
-// Ask to stay through a share link. This is the SAME document a friend creates —
-// a REQUESTED booking — so there's one concept for "someone wants these dates"
-// rather than a parallel request type. What differs is only the authorisation
-// (a share-link grant instead of friendship) and that instant booking is never
-// on the table here, however the slot is configured.
+// The same document a friend creates; only the authorisation differs, and
+// instant booking is never on the table however the slot is configured.
 export async function requestStayViaPortal(
   guestId: string,
   ownerId: string,
@@ -158,8 +150,7 @@ export async function requestStayViaPortal(
   });
 }
 
-// The guest's own bookings with one host — so a share-link page can still show
-// "requested" after a reload.
+// So a share-link page can still show "requested" after a reload.
 export async function fetchMyBookingsWith(
   guestId: string,
   ownerId: string,
@@ -174,13 +165,9 @@ export async function fetchMyBookingsWith(
   return snap.docs.map(toBooking);
 }
 
-// Owner confirms: mark the booking CONFIRMED and the slot BOOKED together,
-// stamping the guest as bookedBy so they can release it if they cancel.
-//
-// Sight of the LISTING is not granted here — the guest issues that pointer
-// themselves (see claimGuestAccess). It can't be written in this batch anyway:
-// rules evaluate against committed state, so the booking is still REQUESTED as
-// far as they're concerned.
+// Sight of the listing isn't granted here — the guest self-issues that pointer,
+// and it couldn't be written in this commit anyway, since the rules still see
+// the booking as REQUESTED.
 export async function confirmBooking(
   booking: Booking,
 ): Promise<BookingOutcome> {
@@ -198,20 +185,15 @@ export async function confirmBooking(
         tx.get(bookingRef),
         tx.get(windowRef),
       ]);
-      // The ask itself can go while the host is looking at it — the guest takes
-      // it back, or the slot is cancelled out from under it. CANCELLED is
-      // terminal in the rules, so without this read the write is refused and the
-      // host gets a raw error where the honest answer is the one the slot race
-      // already gives: this can't be confirmed any more.
+      // The ask can be withdrawn while the host is looking at it. Without this
+      // read the rules refuse the write and the host sees a raw error instead of
+      // "no longer available".
       if (!current.exists() || current.data().status !== "REQUESTED") {
         throw new Error("unavailable");
       }
-      // Two people can ask for the same slot. Confirming both one after the other
-      // is already refused by the rules (they require an OPEN slot), but two
-      // confirms landing at the same instant would BOTH evaluate against a slot
-      // that was still open, and both commit. A transaction re-reads inside the
-      // commit and aborts if anything touched the slot meanwhile, so exactly one
-      // wins — the same guarantee instant booking has always had.
+      // The rules refuse two sequential confirms, but two landing at the same
+      // instant would both evaluate against a still-open slot. Re-reading inside
+      // the commit is what makes exactly one win.
       if (
         !snap.exists() ||
         snap.data().status !== "OPEN" ||
@@ -235,17 +217,9 @@ export async function confirmBooking(
   }
 }
 
-// Point the other party of a stay at the booking that lets this user read their
-// profile. The same shape as the guest marker below, and self-issued for the same
-// reason — the reader writes it, naming the stay that justifies it, and the rules
-// re-read that stay on every use. So it grants nothing on its own, goes inert the
-// moment the stay is cancelled, and no cancel path has to tear it down.
-//
-// This is what replaces the two parties' names being copied onto every booking:
-// that copy could only be kept true by rewriting every booking a person had ever
-// been party to on each rename, which is unbounded and would eventually blow the
-// 500-operation batch limit. Each side claims its own pointer, so the two
-// directions are independent.
+// Self-issued by the reader, naming the stay that justifies it. Grants nothing
+// on its own, so it goes inert when that stay is cancelled and no cancel path
+// has to tear it down.
 export async function claimKnownBy(
   readerUid: string,
   otherUid: string,
@@ -256,12 +230,8 @@ export async function claimKnownBy(
   });
 }
 
-// Point a listing at the booking that entitles this guest to see it. Idempotent,
-// and safe to call whenever a confirmed stay is noticed — the pointer grants
-// nothing by itself; the rules re-read the booking every time it's used, so it
-// goes inert the moment the stay is cancelled. That's why no cancel path has to
-// remember to tear it down. Takes the three ids rather than the booking, like
-// claimKnownBy above, so the caller can name a stay without holding it.
+// Same pointer shape as claimKnownBy, and idempotent, so it's safe to re-run
+// whenever a confirmed stay is noticed.
 export async function claimGuestAccess(
   listingId: string,
   guestUid: string,
@@ -272,10 +242,7 @@ export async function claimGuestAccess(
   });
 }
 
-// Guest cancels their own request/stay. A pending REQUESTED booking left the
-// window OPEN, so there's nothing to reopen. A CONFIRMED one (auto-accept or
-// owner-confirmed) holds the window BOOKED with the guest as bookedBy, so the
-// guest releases it back to OPEN in the same batch (rules permit the booker).
+// A pending ask left the window OPEN, so only a CONFIRMED stay has one to release.
 export async function cancelBookingAsGuest(booking: Booking): Promise<void> {
   const batch = writeBatch(db());
   batch.update(doc(db(), "bookings", booking.id), {
@@ -293,11 +260,8 @@ export async function cancelBookingAsGuest(booking: Booking): Promise<void> {
   await batch.commit();
 }
 
-// Owner declines or cancels a single booking: mark it CANCELLED, and reopen the
-// window ONLY if this booking actually holds it (a CONFIRMED stay). A non-auto
-// window stays OPEN while multiple friends hold REQUESTED bookings, so declining
-// one pending request must not reopen — and thereby silently un-hold — a DIFFERENT
-// guest's already-confirmed booking on the same window. Mirrors cancelBookingAsGuest.
+// Reopens the window only for a CONFIRMED stay: several guests can hold pending
+// asks on one slot, so declining one must not un-hold another's confirmed stay.
 export async function cancelBookingAsOwner(booking: Booking): Promise<void> {
   const batch = writeBatch(db());
   batch.update(doc(db(), "bookings", booking.id), {
@@ -315,31 +279,22 @@ export async function cancelBookingAsOwner(booking: Booking): Promise<void> {
   await batch.commit();
 }
 
-// Owner cancels an entire slot: cancel every FUTURE booking on it (those guests
-// are notified) and delete the slot itself, in one batch. A stay that has already
-// happened is left CONFIRMED — clearing an old slot off your calendar shouldn't
-// retroactively cancel a visit, or tell the guest their stay was called off after
-// they'd already been.
-// Use this rather than a bare window delete so a booked window's booking isn't
-// left orphaned. `bookingsOnWindow` is the owner's bookings for this window
-// (the store passes them from its live incomingBookings).
+// Future bookings only: clearing an old slot off your calendar shouldn't tell a
+// guest their stay was called off after they'd already been. Always use this
+// rather than a bare window delete, or a booked window's booking is orphaned.
 export async function cancelWindowAsOwner(
   listingId: string,
   windowId: string,
   bookingsOnWindow: readonly Booking[],
 ): Promise<void> {
-  // `isExpired`, not a hand-rolled comparison: it is `end < today`, so a stay
-  // checking out TODAY is still live. Written as `end > today` this missed
-  // exactly that case — the window was deleted anyway, leaving a CONFIRMED
-  // booking pointing at a slot that no longer exists, and the guest's own cancel
-  // (a batch that updates the window) then failed forever with no way out.
+  // `isExpired`, not a hand-rolled comparison — a stay checking out TODAY is
+  // still live, and getting that boundary wrong stranded the guest's own cancel.
   const active = bookingsOnWindow.filter(
     (booking) => booking.status !== "CANCELLED" && !isExpired(booking.end),
   );
   const windowRef = doc(db(), "listings", listingId, "windows", windowId);
-  // Read the window's slot share-link before deleting it: deleting the window
-  // without deleting its portal would leave a world-readable, still-requestable
-  // capability URL that the owner can no longer revoke (the window doc is gone).
+  // Read before deleting: the window doc is the only pointer to its share link,
+  // so losing it would strand a live capability URL nothing can revoke.
   const snap = await getDoc(windowRef);
   const slotPortalId = snap.exists()
     ? (snap.data().publicPortalId as string | null)
@@ -357,11 +312,8 @@ export async function cancelWindowAsOwner(
   await batch.commit();
 }
 
-// Clear a cancelled booking off this user's own list. Not a delete: the document
-// is the record for BOTH parties, and the side that didn't tidy up keeps seeing
-// it exactly as before. arrayUnion, never a plain write of `[uid]` — the rules
-// refuse a hiddenBy that drops the other party's entry, so replacing the array
-// would fail the moment they'd cleared it first.
+// arrayUnion, never a plain write: the rules refuse a hiddenBy that drops the
+// other party's entry, so replacing the array fails once they've cleared it too.
 export async function hideBooking(
   uid: string,
   bookingId: string,
@@ -371,8 +323,7 @@ export async function hideBooking(
   });
 }
 
-// The same for a whole list at once. The caller passes the bookings it already
-// holds live, so clearing a section costs one batch and no query.
+// The caller passes bookings it already holds, so this costs one batch, no query.
 export async function hideBookings(
   uid: string,
   bookingIds: readonly string[],

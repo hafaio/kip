@@ -16,15 +16,9 @@ const STATUS: Record<BookingStatus, { label: string; tone: ChipTone }> = {
   CANCELLED: { label: "Cancelled", tone: "neutral" },
 };
 
-// One booking as a passive grouped-list row: who/what/when on the left, a status
-// chip on the right. The whole row taps through to the booking page, where the
-// role-appropriate actions (confirm/decline/cancel) live.
-//
-// `lead` says which of the place and the person to put first. On a list that
-// spans places the place is what tells them apart; on one place's own Guests list
-// every row would otherwise repeat that place's title and lead with nothing. The
-// cover thumbnail follows `lead` for that same reason — one place's photo down
-// its own Guests list is decoration, not information.
+// `lead` says which of the place and the person comes first: the place tells
+// rows apart on a list spanning places, and repeats uselessly on one place's own
+// Guests list. The cover follows it for the same reason.
 export default function BookingRow({
   booking,
   lead = "place",
@@ -43,19 +37,14 @@ export default function BookingRow({
 
   const iAmGuest = booking.guestId === user?.uid;
   const otherUid = iAmGuest ? booking.ownerId : booking.guestId;
-  // Read live through the stay, so it's current rather than whoever they were
-  // when the booking was made. Someone who asked through a share link and is
-  // still waiting on an answer can't be read at all — a pending ask authorises
-  // nothing — so they're "Someone" until the stay is confirmed.
+  // A pending ask authorises no read, so an unanswered stranger is "Someone".
   const otherName = knownPerson(otherUid)?.displayName || "Someone";
   const known = [...friendListings, ...myListings, ...tripListings].find(
     (listing) => listing.id === booking.listingId,
   );
   const title = known?.title || "A place";
-  // A place you'd recognise on sight tells two rows apart faster than their
-  // titles do, so the cover leads on the lists that span places. A booking whose
-  // place can't be read any more falls back to a pin — the leading slot exists
-  // either way, and an empty one would break the row rhythm.
+  // An unreadable place falls back to a pin: the leading slot exists either way,
+  // and an empty one breaks the row rhythm.
   const PlaceIcon = known ? listingTypeIcon(known.type) : LuMapPin;
   const status = STATUS[booking.status];
   const person = iAmGuest ? `with ${otherName}` : otherName;

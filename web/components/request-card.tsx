@@ -13,12 +13,8 @@ import { useAction, useDialog } from "./dialog";
 import Button from "./ui/button";
 import Chip from "./ui/chip";
 
-// Which of your links a request came through, with everything needed to reach or
-// revoke it. Derived from your OWN live state rather than by reading the portal
-// doc: the recipient of a link-borne request is by definition that link's owner,
-// so the client already holds every token they have out — and a token that isn't
-// among them is one already revoked or regenerated, which is exactly the case
-// where there's nothing left to offer.
+// From your own live state, not the portal doc: you own every link that can
+// reach you, so a token you don't hold is one already revoked.
 type LinkTarget =
   | { readonly scope: "USER" }
   | { readonly scope: "LISTING"; readonly listing: Listing }
@@ -47,21 +43,11 @@ function findLink(
   return null;
 }
 
-// Someone asking to be friends, shown in Home's Friend requests section and on
-// the Friends tab. Asking to STAY is a different thing entirely and renders as a
-// BookingRow in its own section — the two used to share one stack, and readers
-// had to tell them apart by card shape.
-//
-// A request that arrived through a share link is marked as such: it's likely from
-// someone you don't know, and how they reached you is the main thing you need in
-// order to answer. The link is also the only thing that can stop them asking
-// again, so it's reachable from here — and offered for turning off on a decline.
-//
-// The person themselves taps through to their page, the same way a host does on
-// a place card. Deciding whether to let someone in is the moment you most want
-// to look at them, and for a stranger from a link this card was the ONLY place
-// they appeared — their page can't be reached by handle (they may have none) or
-// from a friends list they aren't in.
+// Asking to STAY is a different thing and renders as a BookingRow. A link-borne
+// request says so, since how they reached you is the main thing you need to
+// answer — and the link is the only way to stop them asking again. The person
+// taps through, because for a stranger from a link this card is the only place
+// they appear at all.
 export default function RequestCard({
   request,
 }: {
@@ -83,9 +69,8 @@ export default function RequestCard({
   const run = useAction();
   const [busy, setBusy] = useState(false);
   const viaLink = request.portalId !== null;
-  // This card also sits ON the requester's page, which is where the accept and
-  // decline live for someone you arrived at rather than were shown. Linking
-  // there from there would push a second copy of the screen it's already on.
+  // This card also sits ON the requester's page, where linking through would
+  // push a second copy of the screen it's already on.
   const onTheirPage = screen.kind === "person" && screen.id === request.from;
   const link = findLink(
     request.portalId,
@@ -105,11 +90,8 @@ export default function RequestCard({
     }
   }
 
-  // Each link is controlled where it was made: a profile link on your own page,
-  // a room's in that room's Sharing section, a date link's in that slot's sheet
-  // on the room page. The sheet isn't a screen, so the room screen names the
-  // slot and the page opens it — landing on the room instead would leave you
-  // hunting the one set of dates the card just told you they came through.
+  // Each link is controlled where it was made. A slot's sheet isn't a screen,
+  // so the room screen names the slot and the page opens it.
   function openLink(target: LinkTarget): void {
     if (target.scope === "USER") {
       navigate({ kind: "person", id: request.to });
@@ -131,11 +113,9 @@ export default function RequestCard({
     else return revokeSlotPortal(target.listing.id, target.window);
   }
 
-  // Saying no settles this one ask and nothing more — the link is still live and
-  // they can walk back through it — so the moment to mention that is here. The
-  // prompt names what turning it off costs, because the three scopes are not
-  // remotely the same hammer: a profile link is every place, for everyone you've
-  // ever sent it to; a date link is one set of nights.
+  // Declining leaves the link live, so this is the moment to say so. The prompt
+  // names the scope, because a profile link and a date link are not the same
+  // hammer at all.
   function revokePrompt(target: LinkTarget) {
     const closing =
       "Declining doesn't stop them asking again — turning the link off is what does.";
@@ -214,9 +194,7 @@ export default function RequestCard({
               {identity}
             </button>
           )}
-          {/* The chip stays a passive label — a status pill that takes a tap
-              reads as a button. The way to the link is its own quiet control,
-              and it's absent when the link is already off. */}
+          {/* Passive label: a status pill that took a tap would read as a button. */}
           {viaLink ? (
             <div className="flex shrink-0 flex-col items-end gap-1">
               <Chip tone="neutral">via your link</Chip>
@@ -233,9 +211,7 @@ export default function RequestCard({
           ) : null}
         </div>
 
-        {/* What you're granting sits beside the buttons rather than above them:
-            three stacked rows made a two-button card feel like a form. It only
-            fits alongside from sm up — at 390px the sentence needs the width. */}
+        {/* Beside the buttons from sm up; at 390px the sentence needs the width. */}
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:gap-4">
           <p className="min-w-0 flex-1 text-sm text-muted">
             Friends can see every place you share, whenever it's free.

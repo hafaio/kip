@@ -23,10 +23,7 @@ function countPhrase(count: number, noun: string): string | null {
   return `${count} ${noun}${count === 1 ? "" : "s"}`;
 }
 
-// The landing dashboard: a greeting, the two asks waiting on you (stays, then
-// friendships), what's coming up (your stays and your guests', asked-for as well
-// as confirmed), a peek at friends' available places, and — on desktop — a right
-// rail of friends.
+// The landing dashboard.
 export default function HomeView(): ReactElement {
   const {
     user,
@@ -41,15 +38,12 @@ export default function HomeView(): ReactElement {
     navigate,
   } = useKip();
 
-  // A pending ask whose dates have gone can't be acted on — confirming it would
-  // book a stay in the past — so it stops being "needs your attention" rather
-  // than sitting there forever. Same boundary slots and trips use.
+  // Confirming an ask whose dates have gone would book a stay in the past, so
+  // it stops needing attention rather than sitting there forever.
   const bookingRequests = incomingBookings.filter(
     (booking) => booking.status === "REQUESTED" && !isExpired(booking.end),
   );
-  // Your own asks belong here too, not only in Trips: an outstanding request is
-  // exactly the thing you'd want to notice without going looking for it. The
-  // row's status chip is what tells an ask apart from a settled stay.
+  // Your own outstanding asks too — the status chip tells them apart.
   const upcomingStays = trips.filter(
     (trip) => trip.status !== "CANCELLED" && !isExpired(trip.end),
   );
@@ -59,8 +53,7 @@ export default function HomeView(): ReactElement {
   const upcomingGuests = incomingBookings.filter(
     (booking) => booking.status === "CONFIRMED" && !isExpired(booking.end),
   );
-  // Your stays and your guests' interleave by date rather than sitting in two
-  // runs: capped at five, a stays-then-guests order would bury next week's guest
+  // Interleaved by date: capped at five, two runs would bury next week's guest
   // behind a trip six months out.
   const comingUp = [...upcomingStays, ...upcomingGuests].sort((left, right) =>
     left.start.localeCompare(right.start),
@@ -76,15 +69,13 @@ export default function HomeView(): ReactElement {
 
   const hasAttention = bookingRequests.length + incomingRequests.length > 0;
 
-  // The kip profile is the name of record; the Auth copy is a fire-and-forget
-  // mirror, so reading it first meant greeting "there" whenever that write lost.
+  // The Auth copy is a fire-and-forget mirror, so reading it first greeted
+  // "there" whenever that write lost.
   const firstName = (profile?.displayName || user.displayName || "there").split(
     " ",
   )[0];
-  // Each kind of ask is counted by name, so the line reads as a table of contents
-  // for the sections below it rather than as a total the reader has to reconcile
-  // against two separate stacks. "plus" joins the halves because the requests
-  // half already spends the sentence's one "and".
+  // Counted by name, so the line is a table of contents for the sections below
+  // rather than a total to reconcile against them.
   const waiting = [
     countPhrase(bookingRequests.length, "stay request"),
     countPhrase(incomingRequests.length, "friend request"),
@@ -270,10 +261,8 @@ export default function HomeView(): ReactElement {
   );
 }
 
-// kip only emails a verified address, so an unverified account receives nothing
-// at all — including "your stay was cancelled". That can't live only in Settings,
-// which someone with no reason to visit would never see. Google accounts arrive
-// verified, so this is only ever password sign-ups.
+// An unverified account receives nothing at all, and the only explanation would
+// otherwise sit in Settings, which they have no reason to visit.
 function VerifyEmailPrompt(): ReactElement | null {
   const { user, resendVerification } = useKip();
   const [sent, setSent] = useState(false);

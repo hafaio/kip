@@ -22,13 +22,8 @@ import {
 } from "../../functions/src/messages";
 import { NOTIFY_EVENTS } from "../utils/types";
 
-// The notification triggers themselves need emulators, real Auth accounts and an
-// SMTP server, so in practice they never get exercised — which is how they sat
-// entirely untested up to the point of being deployed. The DECISIONS they make
-// don't need any of that, so they live in a pure module and get tested here:
-// which of the two parties hears about something, under which preference, what
-// it actually says, which screen it points at, whose face it carries, and how it
-// renders — all of which are decisions, and none of which need a network.
+// The triggers need emulators, Auth accounts and SMTP, so in practice they never
+// get exercised. The decisions they make need none of that.
 
 const HOST_PHOTO = "https://lh3.googleusercontent.com/host";
 const GUEST_PHOTO = "https://lh3.googleusercontent.com/guest";
@@ -53,9 +48,7 @@ describe("dates as people read them", () => {
     expect(dateRange("2026-08-14", "2026-08-19")).toBe("Aug 14 – Aug 19");
   });
 
-  // `new Date("2026-08-14")` is UTC midnight, which prints as the 13th anywhere
-  // west of Greenwich. Parsing the string by hand is what avoids that, and this
-  // is the case that would catch a regression back to Date.
+  // Catches a regression back to `Date`, which reads UTC midnight as the 13th.
   it("doesn't shift a date by a timezone", () => {
     expect(dateRange("2026-01-01", "2026-01-02")).toBe("Jan 1 – Jan 2");
   });
@@ -74,8 +67,7 @@ describe("a booking appearing", () => {
     expect(notice.body).toContain("confirm or decline");
   });
 
-  // Separately switchable, because one wants something from you and the other
-  // is just news.
+  // Separately switchable: one wants something from you, the other is news.
   it("an instant booking is news, under its own preference", () => {
     const notice = noticeForNewBooking(
       { ...booking, status: "CONFIRMED" },
@@ -131,8 +123,7 @@ describe("a booking changing", () => {
     expect(notice?.subject).toContain("couldn't host");
   });
 
-  // Distinct from a decline: nothing was refused, and there may well be other
-  // dates worth asking about — so it points them back rather than apologising.
+  // Distinct from a decline: nothing was refused, so it points them back.
   it("moved dates read differently from a decline", () => {
     const notice = noticeForBookingChange(
       booking,
@@ -160,8 +151,7 @@ describe("a booking changing", () => {
     expect(notice?.subject).toBe("Your stay was cancelled");
   });
 
-  // The mirror case — and the one most easily got backwards, since both are a
-  // confirmed stay ending.
+  // The mirror case, and the one most easily got backwards.
   it("a guest cancelling a confirmed stay tells the host", () => {
     const notice = noticeForBookingChange(
       confirmed,
@@ -209,10 +199,8 @@ describe("a connect request", () => {
     expect(notice.body).not.toContain("(@");
   });
 
-  // The third route in — a host and their share-link guest are the one pair
-  // neither of the others can serve. Its copy was missed when the route was
-  // added, so a real request read "They found you by your username" to someone
-  // who has no username and was never searched for.
+  // The third route's copy was missed when it was added, so a real request read
+  // "They found you by your username" to someone who has none.
   it("names how they reached you — through a stay you shared", () => {
     const notice = noticeForConnectRequest({
       fromName: "Priya Raman",
@@ -230,10 +218,7 @@ describe("a connect request", () => {
   });
 });
 
-// An email that says something happened and leaves you to go and find it is half
-// an email. Every one carries a deep link to the exact screen — which the app's
-// fragment routes make possible — so these pin that each event points at the
-// right one.
+// Every email deep-links to the screen it's about; these pin which.
 describe("what each email links to", () => {
   const confirmed = { ...booking, status: "CONFIRMED" };
 
@@ -263,7 +248,7 @@ describe("what each email links to", () => {
     expect(byGuest?.path).toBe("#/booking/bk_42");
   });
 
-  // A connect request has no page of its own — Friends is where it's answered.
+  // A connect request has no page of its own.
   it("a connect request points at Friends", () => {
     const notice = noticeForConnectRequest({ fromName: "Priya Raman" });
     expect(notice.path).toBe("#/friends");
@@ -276,10 +261,7 @@ describe("what each email links to", () => {
   });
 });
 
-// The face on an email is always the OTHER party's — the person who did the
-// thing being reported. Getting this backwards would show people their own photo
-// and tell them nothing, and both directions of a cancellation exist precisely so
-// it can be got backwards.
+// Always the OTHER party's — backwards, it shows people their own photo.
 describe("whose photo the email carries", () => {
   const confirmed = { ...booking, status: "CONFIRMED" };
 
@@ -368,8 +350,7 @@ describe("rendering an email", () => {
     expect(withPhoto.html).toContain("Review the request");
   });
 
-  // The plain-text part is what a client that refuses HTML shows, so it has to
-  // stand on its own — link included.
+  // What a client refusing HTML shows, so it has to stand on its own.
   it("keeps a plain-text alternative that still links", () => {
     expect(withPhoto.text).toContain("Sam would like");
     expect(withPhoto.text).toContain(
@@ -377,10 +358,8 @@ describe("rendering an email", () => {
     );
   });
 
-  // "Unsubscribe" is the word people look for, and it goes to the endpoint a
-  // provider can also POST — not to Settings, which is behind a sign-in that an
-  // unsubscribe must never require. Both parts, or the text one silently keeps
-  // sending people somewhere they can't act.
+  // Points at the endpoint, not Settings, which is behind a sign-in an
+  // unsubscribe must never require. Both parts, or the text one silently rots.
   it("offers one Unsubscribe link, in both parts, pointing at the endpoint", () => {
     expect(withPhoto.html).toContain(
       `<a class="kip-link" href="${UNSUB.replaceAll("&", "&amp;")}"`,
@@ -393,8 +372,7 @@ describe("rendering an email", () => {
     }
   });
 
-  // Most clients block remote images by default, and some people block them
-  // always — the email still has to say who this is about.
+  // Most clients block remote images, so the name has to carry it alone.
   it("names the person whether the photo loads, is blocked, or is absent", () => {
     expect(withPhoto.html).toContain('src="cid:kip-photo"');
     expect(withPhoto.html).toContain('alt="Sam Okafor"');
@@ -405,9 +383,8 @@ describe("rendering an email", () => {
     expect(withoutPhoto.html).toContain("Sam Okafor");
   });
 
-  // The whole reason for the CID attachment: a kip photo URL is an unguessable
-  // bearer capability, and anything in an email is fetched by the recipient's
-  // client (Gmail proxies and caches it), which hands the capability out.
+  // The whole reason for the CID attachment: a photo URL is a bearer capability,
+  // and a remote image is fetched and cached by the recipient's client.
   it("never puts the photo URL in the email", () => {
     expect(withPhoto.html).not.toContain(GUEST_PHOTO);
     expect(withPhoto.text).not.toContain(GUEST_PHOTO);
@@ -427,9 +404,7 @@ describe("rendering an email", () => {
     expect(hostile.html).toContain("&lt;script&gt;");
   });
 
-  // Email clients are not browsers: no flexbox, no grid, no external stylesheet,
-  // no webfont, and a gradient that several of them drop — so anything that has
-  // to stay legible sits on a solid colour underneath.
+  // Several clients drop gradients, so anything legible sits on a solid.
   it("stays inside what an email client can render", () => {
     expect(withPhoto.html).not.toContain("display:flex");
     expect(withPhoto.html).not.toContain("<link");
@@ -440,8 +415,7 @@ describe("rendering an email", () => {
     expect(withPhoto.html).toContain("prefers-color-scheme: dark");
   });
 
-  // One template, driven by the notice — every event renders through the same
-  // shape, so the only differences are the words, the link and the face.
+  // One template: the only differences are the words, the link and the face.
   it("renders every event through the same template", () => {
     const connect = renderEmail(
       noticeForConnectRequest({ fromName: "Priya Raman" }),
@@ -455,10 +429,7 @@ describe("rendering an email", () => {
   });
 });
 
-// One-click unsubscribe (RFC 8058). The half that can be tested here is the half
-// that decides: what the link says, that the two headers agree, and that exactly
-// one kind is ever named. The endpoint itself — the key comparison, the lazy
-// mint, the write — needs Firestore, so it isn't reachable from this suite.
+// Only the deciding half — the endpoint itself needs Firestore.
 describe("the unsubscribe link", () => {
   const ENDPOINT =
     "https://us-central1-hafaio-kip-dev.cloudfunctions.net/unsubscribe";
@@ -518,12 +489,9 @@ describe("the unsubscribe link", () => {
   });
 });
 
-// Kin to the checks in `drift.test.ts`, and here for the same reason those exist:
-// `functions/` is a separate package and keeps its own copy of this vocabulary.
-// The page now lists every kind, so it reads as a second Settings screen — and
-// two screens naming the same switch differently is a bug you only notice by
-// having both open. Cosmetic, unlike a key mismatch, which is why it's a
-// same-words check rather than anything cleverer.
+// `functions/` keeps its own copy of this vocabulary, and the page reads as a
+// second Settings screen — two of them naming one switch differently is a bug
+// you only notice with both open.
 describe("both settings surfaces name the switches the same way", () => {
   it("labels match the web app's", () => {
     expect(NOTIFY_LABELS).toEqual(
@@ -550,9 +518,8 @@ describe("the page a link lands on", () => {
       .filter((row) => row[2])
       .map((row) => row[1]);
 
-  // The whole point of the GET: mail passes through link scanners and security
-  // proxies that fetch every url in a message, and a page that acted on being
-  // fetched would unsubscribe people who never clicked. So this one only offers.
+  // Link scanners fetch every url in a message, so a GET that acted would
+  // unsubscribe people who never clicked.
   it("changes nothing, and says so", () => {
     expect(ask).toContain("Unsubscribe");
     expect(ask).toContain("Nothing is saved until you press Save");
@@ -560,9 +527,7 @@ describe("the page a link lands on", () => {
     expect(ask).not.toContain("won&#39;t email you");
   });
 
-  // The scope used to be carried by wording alone — "turn off these emails"
-  // above "turn off all kip email", two sentences a reader had to tell apart.
-  // Now the switch itself shows it: the kind that email was about arrives off.
+  // The scope is shown by the switch rather than carried by wording alone.
   it("arrives with the kind that email was about already switched off", () => {
     expect(ask).toContain(`We&#39;ve switched off &quot;${NOTIFY_LABELS.stayCancelled}&quot; below`);
     expect(checkedKinds(ask)).toEqual([
@@ -572,8 +537,7 @@ describe("the page a link lands on", () => {
     ]);
   });
 
-  // Pre-marking is only safe if saving it means what it looks like: turn off
-  // that one, leave every other switch exactly where the reader found it.
+  // Pre-marking is only safe if saving means exactly what it looks like.
   it("saves as the one change it showed, and nothing else", () => {
     const submitted = checkedKinds(ask)
       .map((kind) => `${kind}=on`)
@@ -586,7 +550,7 @@ describe("the page a link lands on", () => {
     });
   });
 
-  // One loud button now, so there is nothing left for it to be confused with.
+  // One loud button, so there's nothing for it to be confused with.
   it("has a single primary action, with the wider one kept quiet", () => {
     expect(ask).toContain(
       '<button class="cta save" type="submit" name="action" value="set">',
@@ -597,16 +561,14 @@ describe("the page a link lands on", () => {
     expect(ask.match(/class="cta/g)).toHaveLength(1);
   });
 
-  // Acting is one request to one url — the same one the header advertises.
+  // One url, the same one the header advertises.
   it("posts to the url it came from", () => {
     expect(ask).toContain(`<form method="post" ${ACTION}>`);
     expect(ask.match(/<form/g)).toHaveLength(1);
   });
 
-  // The page no longer sends RFC 8058's body — it says what it wants outright.
-  // The provider path is untouched all the same, which is the thing that must
-  // not move: the header still promises one-click, and one-click still means the
-  // single kind the url names.
+  // The page says what it wants outright, but the provider path must not move:
+  // one-click still means the single kind the url names.
   it("leaves the unattended one-click path exactly as it was", () => {
     expect(ask).not.toContain("List-Unsubscribe");
     expect(unsubscribeHeaders(POST_URL)["List-Unsubscribe-Post"]).toBe(
@@ -615,17 +577,14 @@ describe("the page a link lands on", () => {
     expect(formIntent(ONE_CLICK_BODY)).toBe("one");
   });
 
-  // The switch is drawn beside a real checkbox rather than replacing it: the
-  // input is what a form with no JavaScript submits, what a keyboard toggles,
-  // and what a screen reader announces. Clipped, never `display:none`, or it
-  // stops being focusable — and then the track has to show that focus itself.
+  // A real checkbox is what a JavaScript-less form submits and a screen reader
+  // announces. Clipped, never `display:none`, or it stops being focusable.
   it("draws a switch without giving up the control underneath", () => {
     expect(ask).not.toContain("display:none");
     expect(ask).toContain(".row input:checked ~ .track");
     expect(ask).toContain(".row input:focus-visible ~ .track");
-    // ON is the app's gradient, over a solid of the same family. It sits on its
-    // own layer so the animation below can fade it — a gradient can't be
-    // interpolated to a flat colour, but an opacity can.
+    // Its own layer, because a gradient can't be interpolated to a flat colour
+    // but an opacity can.
     expect(ask).toContain(
       '.track::before { content:""; position:absolute; inset:0; border-radius:999px; background-color:#dd5f38;background-image:',
     );
