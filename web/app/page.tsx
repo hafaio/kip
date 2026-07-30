@@ -17,6 +17,7 @@ import SettingsView from "../components/settings-view";
 import SignInScreen from "../components/sign-in-screen";
 import ThemeButton from "../components/theme-button";
 import TripsView from "../components/trips-view";
+import Button from "../components/ui/button";
 import IconButton from "../components/ui/icon-button";
 import Wordmark from "../components/wordmark";
 import { historyScroll, rememberScroll, useKip } from "../utils/store";
@@ -59,6 +60,26 @@ function CurrentScreen({ screen }: { screen: Screen }): ReactElement {
   }
 }
 
+// Reload rather than a retry button: the store has already retried and given up,
+// and a reload is what re-runs auth from scratch, which covers the likeliest
+// causes. A client cannot talk a server out of a refusal, so this is disclosure.
+function StaleDataNotice(): ReactElement {
+  return (
+    <div className="mb-4 flex flex-col gap-3 rounded-3xl bg-surface p-4 shadow-card sm:flex-row sm:items-center">
+      <p className="min-w-0 flex-1 text-sm text-muted">
+        kip stopped receiving updates, so this screen may be out of date.
+      </p>
+      <Button
+        variant="secondary"
+        onClick={() => window.location.reload()}
+        className="shrink-0"
+      >
+        Reload
+      </Button>
+    </div>
+  );
+}
+
 function Splash(): ReactElement {
   return (
     <div className="flex min-h-dvh items-center justify-center">
@@ -92,6 +113,7 @@ function useScreenTitle(screen: Screen): string {
 export default function Page(): ReactElement {
   const {
     authReady,
+    listenersLost,
     user,
     profileReady,
     needsOnboarding,
@@ -215,6 +237,7 @@ export default function Page(): ReactElement {
               <span className="text-sm font-semibold text-muted">{title}</span>
             </div>
           ) : null}
+          {listenersLost ? <StaleDataNotice /> : null}
           <CurrentScreen screen={screen} />
         </div>
       </main>
