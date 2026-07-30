@@ -26,10 +26,9 @@ import {
   noticeForNewBooking,
   notifyFromForm,
   notifyStateFrom,
-  ONE_CLICK_BODY,
   renderEmail,
   renderNotifySaved,
-  renderUnsubscribeAsk,
+  renderUnsubscribeChoices,
   renderUnsubscribeFailed,
   renderUnsubscribed,
   unsubscribeHeaders,
@@ -343,8 +342,13 @@ async function saveNotify(
 }
 
 // RFC 8058 one-click, so it must be `invoker: "public"` — a provider's POST
-// never has a session. Only the POST acts: mail passes through link scanners
-// that fetch every url, and a GET that acted would unsubscribe people silently.
+// never has a session. BOTH verbs act, and the GET doing so is a trade made with
+// eyes open: someone who pressed Unsubscribe has said what they want, and a page
+// that answers "are you sure?" is how "report spam" happens instead — but the
+// url is a link in the message body too, so a mail gateway that fetches every
+// link silences that one kind for someone who never clicked. Bounded (one kind,
+// never the account), visibly undoable on the page itself, and Settings always
+// shows the truth.
 export const unsubscribe = onRequest(
   { region: REGION, invoker: "public" },
   async (request, response) => {
@@ -387,15 +391,19 @@ export const unsubscribe = onRequest(
         "This unsubscribe link no longer works.\n",
       );
     } else if (request.method === "GET") {
-      logger.info("unsubscribe asked", { uid, kind });
+      logger.info("unsubscribing", { uid, kind, intent: "one" });
+      // Before rendering, so the switches show what is stored rather than what
+      // is about to be. `prefs` is the read that authorised this one, taken
+      // before the write, which is why the page applies the same change again.
+      await saveNotify(uid, { [kind]: false });
       respond(
         200,
-        renderUnsubscribeAsk(
+        renderUnsubscribeChoices(
           kind,
           notifyStateFrom(prefs.notify),
           unsubscribeLink(unsubscribeEndpoint(), uid, kind, key),
         ),
-        `POST this url with "${ONE_CLICK_BODY}" to stop these emails: ${NOTIFY_LABELS[kind]}\n`,
+        `Unsubscribed from: ${NOTIFY_LABELS[kind]}\n`,
       );
     } else {
       const intent = formIntent(request.body);

@@ -256,9 +256,6 @@ const FONT =
 // that drop `background-image` would leave white text on nothing.
 const ACCENT_FILL = `background-color:${TERRA.accent};background-image:${TERRA.gradient};`;
 
-// Named because the animation fades this value out alongside the fill.
-const GLOW = "0 6px 18px rgba(221,95,56,.34)";
-
 export type EmailAssets = {
   origin: string;
   // Null falls back to an initial in a circle.
@@ -407,7 +404,7 @@ function unsubscribePage(heading: string, body: string, action: string): string 
 <meta name="referrer" content="no-referrer">
 <title>${escapeHtml(heading)} · kip</title>
 <style>
-:root { color-scheme: light dark; }
+:root { color-scheme: light dark; --rest-fill:#efe7dd; --rest-ink:#a08e7d; }
 * { box-sizing:border-box; }
 body { margin:0; background:${TERRA.canvas}; color:${TERRA.text}; font-family:${FONT}; }
 .wrap { min-height:100vh; padding:48px 20px; display:flex; align-items:center; justify-content:center; }
@@ -424,36 +421,32 @@ p { margin:12px 0 0; font-size:16px; line-height:25px; }
 .row { position:relative; display:flex; align-items:center; gap:14px; padding:11px 0; cursor:pointer; }
 .row .text { flex:1; min-width:0; font-size:15px; font-weight:600; line-height:21px; }
 .row input { position:absolute; width:1px; height:1px; margin:0; opacity:0; }
-.track { position:relative; flex:none; width:44px; height:26px; border-radius:999px; background:#efe7dd; }
+.track { position:relative; flex:none; width:44px; height:26px; border-radius:999px; background:var(--rest-fill); }
 .track::before { content:""; position:absolute; inset:0; border-radius:999px; ${ACCENT_FILL}opacity:0; transition:opacity .18s; }
 .track::after { content:""; position:absolute; top:2px; left:2px; width:22px; height:22px; border-radius:999px; background:#fff; box-shadow:0 1px 2px rgba(50,25,8,.05); transition:transform .18s; }
-.row input:checked ~ .track { box-shadow:${GLOW}; }
+.row input:checked ~ .track { box-shadow:0 6px 18px rgba(221,95,56,.34); }
 .row input:checked ~ .track::before { opacity:1; }
 .row input:checked ~ .track::after { transform:translateX(18px); }
 .row input:focus-visible ~ .track { outline:2px solid ${TERRA.accent}; outline-offset:3px; }
 .tag { display:inline-block; margin-left:8px; padding:2px 9px; border-radius:999px; background:${TERRA.accentSoft}; color:${TERRA.accentInk}; font-size:12px; font-weight:700; line-height:18px; vertical-align:2px; }
-@keyframes kip-glow { from { box-shadow:${GLOW}; } to { box-shadow:0 6px 18px rgba(221,95,56,0); } }
-@keyframes kip-fill { from { opacity:1; } to { opacity:0; } }
-@keyframes kip-thumb { from { transform:translateX(18px); } to { transform:none; } }
-.origin input:not(:checked) ~ .track { animation:kip-glow .5s ease .6s both; }
-.origin input:not(:checked) ~ .track::before { animation:kip-fill .5s ease .6s both; }
-.origin input:not(:checked) ~ .track::after { animation:kip-thumb .5s cubic-bezier(.3,.7,.4,1) .6s both; }
 @media (prefers-reduced-motion: reduce) {
-  /* Selector for selector with the rule above: a shorter one loses on
-     specificity however late it comes, and the animation would have played for
-     exactly the people who asked for no animation. */
   .track::before, .track::after { transition:none; }
-  .origin input:not(:checked) ~ .track, .origin input:not(:checked) ~ .track::before, .origin input:not(:checked) ~ .track::after { animation:none; }
 }
 .save { margin-top:22px; }
+/* Only ever set by the script at the foot of the form, so a page whose script
+   didn't run has an ordinary working Save rather than one nothing can revive.
+   Flat rather than faded: dropping opacity over the gradient left white text on
+   pale orange and the label couldn't be read, so it wears the same neutral this
+   page already gives a switch that's off. */
+.save:disabled { background-image:none; background-color:var(--rest-fill); color:var(--rest-ink); cursor:default; }
 .plain { display:block; margin:14px 0 0; padding:0; background:none; border:0; color:${TERRA.muted}; font-family:inherit; font-size:15px; text-decoration:underline; cursor:pointer; }
 .after { margin-top:16px; font-size:15px; }
 .after a { color:${TERRA.accentInk}; }
 @media (prefers-color-scheme: dark) {
+  :root { --rest-fill:#33291e; --rest-ink:#a9998a; }
   body { background:#161009; color:#f4ece2; }
   .card { background:#221a12; box-shadow:none; }
   .quiet { color:#a9998a; }
-  .track { background:#33291e; }
   .track::after { box-shadow:0 1px 2px rgba(0,0,0,.4); }
   .tag { background:#3b2417; color:#f4936c; }
   .plain { color:#a9998a; }
@@ -472,48 +465,68 @@ ${action}
 </html>`;
 }
 
-// The asking page deliberately has no such link: a second one of equal weight
-// beside "turn off all kip email" makes the destructive one easier to mis-hit.
+// This page deliberately has no such link: a second one of equal weight beside
+// "turn off all kip email" makes the destructive one easier to mis-hit.
 function settingsButton(settingsUrl: string): string {
   return `<p class="act"><a class="cta" href="${escapeHtml(settingsUrl)}">Open kip Settings</a></p>`;
 }
 
-// Changes nothing — it asks. Link scanners fetch every url in a message, so a
-// GET that acted would unsubscribe people who never clicked. Shows the whole set,
-// since someone who wants out usually wants out of all of it, and sending them to
-// a sign-in to say so is how "report spam" happens. The kind this email was about
-// arrives already switched off, so the scope is visible in the switches rather
-// than carried by the wording of two near-identical buttons.
-// Because pressing a button is no longer itself the action, the page has to say
-// so in words, or someone who closes the tab leaves believing they unsubscribed.
-export function renderUnsubscribeAsk(
+// The only script on any of these pages, and nothing depends on it: if it never
+// runs, Save is simply always pressable and pressing it writes back the state
+// already stored. It exists because CSS can style a disabled button but cannot
+// make one, and a button that merely looks disabled is still announced as
+// available to a screen reader and still submits on Enter. The `checked`
+// ATTRIBUTE is the state a box was rendered with and doesn't move when clicked,
+// so a box where that disagrees with `.checked` is a box someone moved.
+const SAVE_SCRIPT = `<script>
+const form = document.querySelector("form");
+const boxes = [...form.querySelectorAll(".row input")];
+const save = form.querySelector(".save");
+const sync = () => {
+  save.disabled = !boxes.some((box) => box.checked !== box.hasAttribute("checked"));
+};
+form.addEventListener("change", sync);
+sync();
+</script>`;
+
+// Where a browser lands, once the click has already been honoured. The switches
+// are what's left to decide, not a confirmation of what was asked for — someone
+// who wants out usually wants out of more of it, and sending them to a sign-in
+// to say so is how "report spam" happens. Which is also why the whole set is
+// here: `state` is what's stored, and the kind this email was about is shown
+// switched off because it now IS off, so the scope needs no wording to carry it.
+// Re-ticking that row and saving is the undo.
+export function renderUnsubscribeChoices(
   kind: NotifyKind,
   state: NotifyState,
   postUrl: string,
 ): string {
   const action = `action="${escapeHtml(postUrl)}"`;
-  const proposed: NotifyState = { ...state, [kind]: false };
+  const saved: NotifyState = { ...state, [kind]: false };
   // A real checkbox, clipped rather than hidden so it keeps focus and keyboard
   // behaviour with no JavaScript — a hand-made copy of the app's `Switch`, since
-  // a function has no build step to share one. The chip is the load-bearing half
-  // of "this is the row you came from"; the animation is decoration, and is
-  // scoped to `:not(:checked)` so re-ticking a row drops it mid-flight rather
-  // than sliding a thumb off a box the reader has just turned on.
+  // a function has no build step to share one. The chip is what marks the row
+  // this email came from, and it's permanent: an animation saying "we just
+  // switched this off" would be over before the page is read, and while it ran
+  // it drew the thumb in the ON position over a box that was already off, so a
+  // tap landing in that window turned the row back on while appearing to do
+  // nothing at all.
   const boxes = KINDS.map((each) => {
-    const origin = each === kind;
-    const tag = origin ? '<span class="tag">from this email</span>' : "";
-    return `<label class="row${origin ? " origin" : ""}"><input type="checkbox" name="${each}" value="on"${proposed[each] ? " checked" : ""}><span class="text">${escapeHtml(NOTIFY_LABELS[each])}${tag}</span><span class="track"></span></label>`;
+    const tag =
+      each === kind ? '<span class="tag">from this email</span>' : "";
+    return `<label class="row"><input type="checkbox" name="${each}" value="on"${saved[each] ? " checked" : ""}><span class="text">${escapeHtml(NOTIFY_LABELS[each])}${tag}</span><span class="track"></span></label>`;
   }).join("\n");
 
   return unsubscribePage(
-    "Unsubscribe",
-    `We've switched off "${NOTIFY_LABELS[kind]}" below. Nothing is saved until you press Save.`,
+    "Unsubscribed",
+    `kip won't email you about "${NOTIFY_LABELS[kind]}" any more. Everything else is unchanged — change any of it below.`,
     `<p class="label">What kip emails you</p>
 <form method="post" ${action}>
 ${boxes}
 <button class="cta save" type="submit" name="action" value="set">Save these choices</button>
 <button class="plain" type="submit" name="action" value="all">Turn off all kip email</button>
-</form>`,
+</form>
+${SAVE_SCRIPT}`,
   );
 }
 
@@ -533,9 +546,8 @@ export function renderNotifySaved(
 }
 
 // Names the one kind that was turned off, so nobody is left wondering whether
-// they just silenced everything. Answers the POST — from a provider acting
-// unattended and from the form above alike, so a person sees the same ending
-// whichever route they came by.
+// they just silenced everything. The unattended path only: both of the page's
+// own buttons carry an `action`, so a browser lands on `renderNotifySaved`.
 export function renderUnsubscribed(
   kind: NotifyKind,
   settingsUrl: string,
