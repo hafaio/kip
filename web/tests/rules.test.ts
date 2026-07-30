@@ -2398,6 +2398,11 @@ describe("shared stays", () => {
       });
       await setDoc(doc(db, "users", HOST, "friends", HOSTFRIEND), { since: 0 });
       await setDoc(doc(db, "users", HOSTFRIEND, "friends", HOST), { since: 0 });
+      // Sharing is off by default, so every test below that expects a friend to
+      // see the stay needs it turned ON explicitly.
+      await setDoc(doc(db, "users", GUEST, "settings", "prefs"), {
+        shareStaysWithFriends: true,
+      });
     });
   });
 
@@ -2439,10 +2444,14 @@ describe("shared stays", () => {
     await assertSucceeds(getDoc(doc(authed(THEIRFRIEND), "bookings", "bss")));
   });
 
-  // Absent prefs means sharing, matching the switch Settings draws for someone
-  // who has never opened it. The beforeEach writes no prefs doc at all.
-  it("never having touched the setting counts as sharing", async () => {
-    await assertSucceeds(getDoc(doc(authed(THEIRFRIEND), "bookings", "bss")));
+  // Absent prefs is the state of every account that predates this switch, and of
+  // every one that has never opened Settings. It must read the same way as OFF,
+  // or the default leaks precisely for the people who never chose it.
+  it("never having touched the setting counts as not sharing", async () => {
+    await seed((db) =>
+      deleteDoc(doc(db, "users", GUEST, "settings", "prefs")),
+    );
+    await assertFails(getDoc(doc(authed(THEIRFRIEND), "bookings", "bss")));
   });
 
   // Where someone merely ASKED to go, or was turned down, stays between them.
