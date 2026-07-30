@@ -53,12 +53,16 @@ export default function PhotoStrip({
   photos,
   editable = false,
   onChange,
+  onBusyChange,
 }: {
   ownerId: string;
   listingId: string;
   photos: readonly ListingPhoto[];
   editable?: boolean;
   onChange?: (photos: ListingPhoto[]) => Promise<void>;
+  // Lets a form refuse to submit mid-upload, which would drop the photo in
+  // flight with nothing on screen to say so.
+  onBusyChange?: (busy: boolean) => void;
 }): ReactElement | null {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -91,6 +95,10 @@ export default function PhotoStrip({
       window.removeEventListener("drop", swallow);
     };
   }, [editable]);
+
+  useEffect(() => {
+    onBusyChange?.(busy);
+  }, [busy, onBusyChange]);
 
   if (!editable && photos.length === 0) return null;
 

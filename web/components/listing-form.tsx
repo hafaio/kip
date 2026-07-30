@@ -23,14 +23,18 @@ const TEXTAREA =
 // (ListingFormScreen) wires submit/cancel to the nav stack.
 export default function ListingForm({
   initial,
+  ownerId,
+  listingId,
+  photos,
   onSubmit,
   onPhotos,
 }: {
   initial?: Listing;
+  ownerId: string;
+  listingId: string;
+  photos: readonly ListingPhoto[];
   onSubmit: (input: ListingInput) => Promise<void>;
-  // Persists the strip's edits straight away, so it's only there when editing —
-  // see the note by the strip below.
-  onPhotos?: (photos: ListingPhoto[]) => Promise<void>;
+  onPhotos: (photos: ListingPhoto[]) => Promise<void>;
 }): ReactElement {
   const [title, setTitle] = useState(initial?.title ?? "");
   const [type, setType] = useState<ListingType>(initial?.type ?? "ROOM");
@@ -47,6 +51,7 @@ export default function ListingForm({
   const [geo, setGeo] = useState<GeoState>(hasInitialCoords ? "found" : "idle");
   const [matches, setMatches] = useState<GeocodeResult[]>([]);
   const [busy, setBusy] = useState(false);
+  const [uploading, setUploading] = useState(false);
 
   async function lookup(): Promise<void> {
     if (!label.trim()) return;
@@ -197,35 +202,31 @@ export default function ListingForm({
         )}
       </div>
 
-      {/* A photo is an upload to `listings/{ownerId}/{listingId}/…`, so there is
-          nowhere to put one until the place exists. Rather than pre-allocating an
-          id for a form that may never be submitted, a new place says so — and
-          creating it lands on its own page, where the same strip is waiting. */}
-      {initial && onPhotos ? (
-        <div className="flex flex-col gap-1.5">
-          <span className="text-sm text-muted">Photos</span>
-          <PhotoStrip
-            ownerId={initial.ownerId}
-            listingId={initial.id}
-            photos={initial.photos}
-            editable
-            onChange={onPhotos}
-          />
-        </div>
-      ) : (
-        <p className="text-sm text-muted">
-          You can add photos once the place is created.
-        </p>
-      )}
+      <div className="flex flex-col gap-1.5">
+        <span className="text-sm text-muted">Photos</span>
+        <PhotoStrip
+          ownerId={ownerId}
+          listingId={listingId}
+          photos={photos}
+          editable
+          onChange={onPhotos}
+          onBusyChange={setUploading}
+        />
+      </div>
 
       <Button
         size="lg"
         onClick={submit}
-        disabled={busy || !title.trim() || !label.trim()}
+        disabled={busy || uploading || !title.trim() || !label.trim()}
         className="w-full"
       >
         {initial ? "Save changes" : "Add place"}
       </Button>
+      {uploading ? (
+        <p className="-mt-3 text-center text-sm text-muted">
+          Waiting for photos to finish uploading…
+        </p>
+      ) : null}
     </div>
   );
 }

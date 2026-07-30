@@ -11,6 +11,7 @@ import {
   type QueryDocumentSnapshot,
   query,
   serverTimestamp,
+  setDoc,
   Timestamp,
   updateDoc,
   where,
@@ -140,20 +141,28 @@ export function watchMyListings(
   );
 }
 
+// An id with no document, so the form can upload photos to
+// `listings/{ownerId}/{id}/…` before the place exists: Storage checks only the
+// owner in the path, and Firestore pins only `ownerId` on create.
+export function newListingId(): string {
+  return doc(collection(db(), "listings")).id;
+}
+
 export async function createListing(
   ownerId: string,
+  listingId: string,
   input: ListingInput,
-): Promise<string> {
-  const ref = await addDoc(collection(db(), "listings"), {
+  photos: readonly ListingPhoto[],
+): Promise<void> {
+  await setDoc(doc(db(), "listings", listingId), {
     ownerId,
     title: input.title,
     type: input.type,
     description: input.description,
     location: withGeohash(input.location),
-    photos: [],
+    photos: [...photos],
     createdAt: serverTimestamp(),
   });
-  return ref.id;
 }
 
 export async function updateListing(
