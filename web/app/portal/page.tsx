@@ -55,7 +55,7 @@ type StandingAsk = {
 // but the account comes AFTER the tap — the buttons are live signed out, and
 // tapping one holds the ask and opens sign-up in place.
 export default function PortalPage(): ReactElement {
-  const { user, profile, profileReady, ensureAnonymous } = useKip();
+  const { user, anonymous, profile, profileReady, ensureAnonymous } = useKip();
   const [page, setPage] = useState<PortalContent | null>(null);
   const [state, setState] = useState<LoadState>("loading");
   const [standing, setStanding] = useState<StandingAsk | null>(null);
@@ -102,7 +102,7 @@ export default function PortalPage(): ReactElement {
 
   // Reported separately, so neither ask can hide the other's affordance.
   useEffect(() => {
-    if (!user || user.isAnonymous || !portal) return;
+    if (!user || anonymous || !portal) return;
     Promise.all([
       fetchMyBookingsWith(user.uid, portal.ownerId),
       fetchMyConnectRequest(user.uid, portal.ownerId),
@@ -118,7 +118,9 @@ export default function PortalPage(): ReactElement {
         });
       })
       .catch((error: unknown) => console.error(error));
-  }, [user, portal]);
+    // `anonymous` earns its place in the deps: linking keeps the uid, so `user`
+    // never changes identity for someone who made their account on this page.
+  }, [user, anonymous, portal]);
 
   // Cleared first, so a later dependency change can't fire a second request. The
   // name comes off the kip profile, never `user.email` — that would write their
@@ -165,7 +167,7 @@ export default function PortalPage(): ReactElement {
   }, [ask, portal, user, profileReady, profile]);
 
   // Anonymous counts as signed out here — a ticket is not an account.
-  const identified = Boolean(user) && user?.isAnonymous === false;
+  const identified = Boolean(user) && !anonymous;
   const needsAccount = ask !== null && !identified;
   const needsName =
     ask !== null && identified && profileReady && !profile?.displayName;

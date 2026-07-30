@@ -178,12 +178,12 @@ function DiscoverabilitySection(): ReactElement | null {
 // unverified account would silently receive nothing. That has to be said here,
 // with a way to fix it, or it just looks broken.
 function NotificationsSection(): ReactElement | null {
-  const { user, prefs, setNotify, resendVerification } = useKip();
+  const { user, emailVerified, prefs, setNotify, resendVerification } =
+    useKip();
   const [sent, setSent] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   if (!user) return null;
-  const verified = user.emailVerified;
 
   async function resend(): Promise<void> {
     setError(null);
@@ -198,7 +198,7 @@ function NotificationsSection(): ReactElement | null {
 
   return (
     <Section title="Notifications">
-      {verified ? null : (
+      {emailVerified ? null : (
         <div className="flex flex-col gap-3 rounded-3xl bg-surface p-4 shadow-card">
           <p className="text-sm text-muted">
             kip only emails a verified address — otherwise anyone could sign up
