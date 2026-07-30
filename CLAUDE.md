@@ -98,6 +98,24 @@ Rules: [firebase/firestore.rules](./firebase/firestore.rules), [firebase/storage
   instant**: clear or replace the field and every old grant stops matching, with no sweep. Leftover
   grants are inert, so cleanup is a Firestore TTL policy on `expires` — hygiene, never security.
 
+  **The load is a dependency chain, and only some of it is real.** Nothing here can be batched away:
+  a Firestore transaction is a read phase plus a commit (more round trips, not fewer), the web SDK's
+  `transaction.get` takes a DocumentReference so queries can't go in one at all, and even if they
+  could, rules evaluate against COMMITTED state — a grant written inside the transaction would be
+  invisible to the rules authorising reads in that same transaction. The grant genuinely has to land
+  first. What was NOT real: `claimGrant` was queued behind the portal doc read though it needs only
+  the token (a function argument) and the uid; and the "which slots do I already hold" query ran once
+  per room, each behind the grant, though `guestId == uid` is the FIRST clause of the booking read
+  rule and so needs no grant at all. Both now start on the sign-in alone, taking five serial round
+  trips to three, with one bookings query for the page instead of one per room.
+
+  What's left is latency nobody can remove, so the page stops hiding it: `fetchPortalPage` takes an
+  `onOwner` callback that fires the moment the portal doc lands, and the page paints the host block
+  then, with skeletons where the rooms will be. Skeletons and not "Nothing shared here right now" —
+  that line is a statement about an empty link, and saying it to someone whose rooms are still in
+  flight is worse than saying nothing. `layout.tsx` also preconnects the four Firebase hosts, since a
+  stranger opening a link pays DNS and TLS for each of them with nothing warmed.
+
   Because a grant needs an identity, the share-link page signs visitors in **anonymously** on load
   (`ensureAnonymous` in the store). Invisible — no prompt, no account — and Firebase auto-deletes
   unused anonymous accounts after 30 days (already enabled on the dev project).
