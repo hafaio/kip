@@ -165,7 +165,11 @@ type ContextShape = {
   declineRequest: (request: ConnectRequest) => Promise<void>;
   cancelRequest: (request: ConnectRequest) => Promise<void>;
   unfriend: (friendUid: string) => Promise<void>;
-  createListing: (input: ListingInput) => Promise<string>;
+  createListing: (
+    listingId: string,
+    input: ListingInput,
+    photos: readonly ListingPhoto[],
+  ) => Promise<void>;
   updateListing: (listingId: string, input: ListingInput) => Promise<void>;
   setListingPhotos: (
     listingId: string,
@@ -914,9 +918,13 @@ export function KipProvider({ children }: { children: ReactNode }) {
   );
 
   const createListing = useCallback(
-    (input: ListingInput) => {
+    (
+      listingId: string,
+      input: ListingInput,
+      photos: readonly ListingPhoto[],
+    ) => {
       if (!user) throw new Error("not signed in");
-      return fbCreateListing(user.uid, input);
+      return fbCreateListing(user.uid, listingId, input, photos);
     },
     [user],
   );

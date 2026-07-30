@@ -700,9 +700,22 @@ in Storage at `listings/{ownerId}/{listingId}/{photoId}`. `utils/photos.ts` owns
 keeps the bucket small and, deliberately, re-encodes away EXIF: a GPS tag on a photo of someone's
 home should not ride along with a share link. It then mints the download URL once, at upload, and
 returns it to be stored. `components/photo-strip.tsx` is the editable strip (owner view of RoomPage
-— a new listing has no id to upload against, so it appears after create; drag or the per-thumbnail
-arrows reorder, and the first photo is the cover), `components/cover-photo.tsx` the read-only cover
-used by `PlaceCard`, the RoomPage hero and the portal page.
+and the listing form; drag or the per-thumbnail arrows reorder, and the first photo is the cover),
+`components/cover-photo.tsx` the read-only cover used by `PlaceCard`, the RoomPage hero and the
+portal page.
+
+**A new place can carry photos, because its id is minted before it is written.** `newListingId()`
+is `doc(collection(…))` — an id with no round trip and no document — so the form uploads to
+`listings/{ownerId}/{draftId}/…` straight away and `createListing` `setDoc`s that same id with the
+photos already on it. Nothing about the path needs the listing to exist: Storage checks only the
+owner in it, and the Firestore create rule pins only `ownerId`. Photos at the moment you have them
+to hand is the whole point — being sent to a second screen after saving was the wrong shape.
+
+Two consequences the form handles. Abandoning the form strands whatever was uploaded, so
+`ListingFormScreen` deletes it on unmount unless the create went through — in-app only; a closed tab
+leaks objects that are owner-only and invisible, which isn't worth a `beforeunload` prompt.
+And submitting mid-upload would create the place without the photo still on its way, so the strip
+reports `onBusyChange` and the button waits.
 
 **The URL is the capability, and the Firestore listing read is the gate.** `firebase/storage.rules`
 is now two lines — `uid == ownerId`, with the owner in the object path — and makes **no**
