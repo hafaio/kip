@@ -390,6 +390,29 @@ describe("portal grants (live dates)", () => {
     );
   });
 
+  // How the portal page learns which slots the visitor already holds. It asks
+  // ONCE for the whole page, on `guestId` alone and before any grant exists —
+  // both of which only work because that is the first clause of the booking read
+  // rule. Adding a lookup ahead of it would put this back behind the grant.
+  it("a visitor can query their own stays with no grant at all", async () => {
+    await seed((db) =>
+      setDoc(doc(db, "bookings", "bkv"), {
+        listingId: "L1",
+        ownerId: OWNER,
+        guestId: VISITOR,
+        windowId: "w1",
+        start: isoIn(10),
+        end: isoIn(14),
+        status: "CONFIRMED",
+        createdAt: 0,
+      }),
+    );
+    const mine = (db: Firestore) =>
+      query(collection(db, "bookings"), where("guestId", "==", VISITOR));
+    await assertSucceeds(getDocs(mine(authed(VISITOR))));
+    await assertFails(getDocs(mine(authed("freeloader"))));
+  });
+
   it("a grant cannot be forged for someone else to use", async () => {
     await seed((db) =>
       setDoc(doc(db, "portals", "p1", "grants", VISITOR), {

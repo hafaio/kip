@@ -257,20 +257,43 @@ function grantExpiry(): Date {
 // Rooms are read live for USER and LISTING scope and copied for SLOT; free dates
 // are always live. `signIn` is taken in flight so the anonymous sign-in overlaps
 // the portal read — the portal doc needs no identity, being readable by id.
+// `onOwner` fires when the portal doc lands — a round trip before the rooms and
+// two before the dates — so the page has something honest to draw that early.
 export async function fetchPortalPage(
   portalId: string,
   signIn: Promise<string>,
+  onOwner?: (portal: Portal) => void,
 ): Promise<PortalContent | null> {
-  const [snap, uid] = await Promise.all([
-    getDoc(doc(db(), "portals", portalId)),
-    signIn,
-  ]);
-  if (!snap.exists()) return null;
-  const portal = toPortal(snap as QueryDocumentSnapshot);
-  const data = snap.data();
+  // The grant needs the token and the uid, and both are in hand before the
+  // portal doc lands — waiting for that doc put a whole round trip in front of a
+  // write that never read it. Swallowed because a token naming no portal has the
+  // write refused by design, and that case belongs to `snap.exists()` below; a
+  // grant that genuinely failed to land resurfaces as a refusal on the reads it
+  // was meant to authorise.
+  const claimed = signIn.then((uid) =>
+    claimGrant(portalId, uid).catch(() => {}),
+  );
 
-  // Claim before the reads below: the grant is what authorises them.
-  await claimGrant(portalId, uid);
+  // Announced off the doc read ALONE. Awaiting the Promise.all first would put
+  // the sign-in, the grant and the bookings query in front of a callback whose
+  // whole purpose is to beat them — the portal doc needs no identity, so it is
+  // the one thing that can be shown at one round trip.
+  const early = getDoc(doc(db(), "portals", portalId)).then((snap) => {
+    const found = snap.exists()
+      ? toPortal(snap as QueryDocumentSnapshot)
+      : null;
+    if (found) onOwner?.(found);
+    return { snap, found };
+  });
+
+  const [{ snap, found }, held] = await Promise.all([
+    early,
+    signIn.then(heldWindows),
+    claimed,
+  ]);
+  if (!found) return null;
+  const portal = found;
+  const data = snap.data() ?? {};
 
   const listings: PortalListing[] = portal.listings.length
     ? [...portal.listings]
@@ -279,7 +302,10 @@ export async function fetchPortalPage(
   const perListing = await Promise.all(
     listings.map(
       async (listing) =>
-        [listing.listingId, await readVisibleWindows(listing, uid)] as const,
+        [
+          listing.listingId,
+          await readVisibleWindows(listing, held.get(listing.listingId)),
+        ] as const,
     ),
   );
 
@@ -321,17 +347,18 @@ async function readLiveListings(
     });
 }
 
+const EMPTY_HELD: ReadonlySet<string> = new Set();
+
 async function readVisibleWindows(
   listing: PortalListing,
-  uid: string,
+  holding: ReadonlySet<string> = EMPTY_HELD,
 ): Promise<PortalWindow[]> {
   const windowsRef = collection(db(), "listings", listing.listingId, "windows");
-  const held = await heldWindowIds(listing.listingId, uid);
   const snaps = listing.windowIds
     ? await Promise.all(
         listing.windowIds.map((id) => getDoc(doc(windowsRef, id))),
       )
-    : await readOpenAndHeld(windowsRef, held);
+    : await readOpenAndHeld(windowsRef, holding);
 
   return (
     snaps
@@ -350,7 +377,7 @@ async function readVisibleWindows(
           details: data.details ?? "",
           autoAccept: data.autoAccept === true,
           booked: (data.status ?? "OPEN") !== "OPEN",
-          bookedByMe: held.has(entry.id),
+          bookedByMe: holding.has(entry.id),
         };
       })
       .sort((left, right) => left.start.localeCompare(right.start))
@@ -358,23 +385,31 @@ async function readVisibleWindows(
 }
 
 // Asked of my own bookings rather than of the slots: a slot no longer names the
-// guest holding it, so there is nothing on it left to match against.
-async function heldWindowIds(
-  listingId: string,
-  uid: string,
-): Promise<Set<string>> {
+// guest holding it, so there is nothing on it left to match against. One query
+// for the whole page, keyed by room — it was one per room, each of them waiting
+// on the grant that authorises the room reads. `guestId == uid` is the FIRST
+// clause of the booking read rule, so this needs no grant and never had to.
+//
+// The status filter is not tidiness: without it this drags back every booking
+// the visitor has ever had, on the critical path, to use the confirmed few. The
+// old per-room query was at least bounded by its room. `fetchStaysOf` proves the
+// pair is allowed.
+async function heldWindows(uid: string): Promise<Map<string, Set<string>>> {
   const snap = await getDocs(
     query(
       collection(db(), "bookings"),
       where("guestId", "==", uid),
-      where("listingId", "==", listingId),
+      where("status", "==", "CONFIRMED"),
     ),
   );
-  return new Set(
-    snap.docs
-      .filter((entry) => entry.data().status === "CONFIRMED")
-      .map((entry) => entry.data().windowId as string),
-  );
+  const byListing = new Map<string, Set<string>>();
+  for (const entry of snap.docs) {
+    const booking = entry.data();
+    const slots = byListing.get(booking.listingId) ?? new Set<string>();
+    slots.add(booking.windowId as string);
+    byListing.set(booking.listingId, slots);
+  }
+  return byListing;
 }
 
 // Two reads rather than an `or` because each stands on its own clause of the
