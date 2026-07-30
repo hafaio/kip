@@ -94,6 +94,7 @@ function toWindow(
     details: data.details ?? "",
     bookedBy: data.bookedBy ?? null,
     publicPortalId: data.publicPortalId ?? null,
+    createdAt: epoch(data.createdAt),
   };
 }
 
@@ -254,6 +255,8 @@ export async function addWindow(
     status: "OPEN",
     autoAccept: window.autoAccept,
     details: window.details,
+    // What makes a saved search able to say "2 new" without asking a server.
+    createdAt: serverTimestamp(),
   });
 }
 

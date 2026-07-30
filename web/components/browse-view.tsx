@@ -8,10 +8,10 @@ import {
   LuSlidersHorizontal,
   LuX,
 } from "react-icons/lu";
-import { formatDate, todayIso } from "../utils/format";
+import { todayIso } from "../utils/format";
 import { geocodeAddress } from "../utils/geocode";
-import { listingTypeLabel } from "../utils/listings";
 import {
+  describeCriteria,
   EMPTY_CRITERIA,
   type SearchCriteria,
   searchListings,
@@ -19,6 +19,7 @@ import {
 import { useKip } from "../utils/store";
 import type { ListingType } from "../utils/types";
 import PlaceCard from "./place-card";
+import SavedSearches from "./saved-searches";
 import Button from "./ui/button";
 import IconButton from "./ui/icon-button";
 import Segmented from "./ui/segmented";
@@ -28,26 +29,6 @@ const RADII = [10, 25, 50, 100, 250] as const;
 
 const FIELD =
   "h-11 w-full rounded-xl border border-border bg-surface px-3.5 text-base outline-none transition focus:border-accent focus:ring-2 focus:ring-accent/20";
-
-// A one-line summary of the active filters for the filter chip.
-function summarize(criteria: SearchCriteria): string {
-  const parts: string[] = [];
-  if (criteria.start && criteria.end) {
-    parts.push(`${formatDate(criteria.start)} – ${formatDate(criteria.end)}`);
-  } else if (criteria.start) {
-    parts.push(`From ${formatDate(criteria.start)}`);
-  } else if (criteria.end) {
-    parts.push(`Until ${formatDate(criteria.end)}`);
-  } else {
-    parts.push("Any dates");
-  }
-  if (criteria.type) parts.push(listingTypeLabel(criteria.type));
-  if (criteria.near) {
-    parts.push(criteria.nearLabel ?? "Nearby");
-    parts.push(`${criteria.radiusKm} km`);
-  }
-  return parts.join(" · ");
-}
 
 export default function BrowseView(): ReactElement {
   const {
@@ -93,7 +74,7 @@ export default function BrowseView(): ReactElement {
           className="flex h-11 min-w-0 flex-1 items-center gap-2 rounded-full bg-surface px-4 text-left text-sm font-medium shadow-soft transition hover:shadow-card"
         >
           <LuSlidersHorizontal className="shrink-0 text-accent-ink" />
-          <span className="truncate">{summarize(criteria)}</span>
+          <span className="truncate">{describeCriteria(criteria)}</span>
         </button>
         <IconButton label="Refresh" variant="surface" onClick={refresh}>
           <LuRotateCw className={refreshing ? "animate-spin" : ""} />
@@ -332,6 +313,15 @@ function FilterSheet({
             {resultCount === 1 ? "Show 1 place" : `Show ${resultCount} places`}
           </Button>
         </div>
+
+        {/* Below the footer, not above it: picking a saved search is the rarer
+            reason to be here, and the primary action must stay reachable
+            without scrolling past a list. */}
+        <SavedSearches
+          criteria={criteria}
+          setCriteria={setCriteria}
+          onApply={onClose}
+        />
       </div>
     </Sheet>
   );

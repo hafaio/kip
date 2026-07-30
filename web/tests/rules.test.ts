@@ -2268,3 +2268,50 @@ describe("bookings (dates that have already gone)", () => {
     await assertSucceeds(ask("wsoon", isoIn(10), isoIn(14)));
   });
 });
+
+// Private notes about what you're looking for. Nothing else resolves them, so
+// the only thing to prove is that the boundary is the owner.
+describe("saved searches", () => {
+  const path = (uid: string) => ["users", uid, "searches", "s1"] as const;
+
+  beforeEach(async () => {
+    await seed((db) =>
+      setDoc(doc(db, ...path(OWNER)), {
+        label: "Lisbon in May",
+        criteria: { start: null, end: null, near: null, radiusKm: 50 },
+        lastSeenAt: 0,
+        createdAt: 0,
+      }),
+    );
+  });
+
+  it("the owner reads, writes and removes their own", async () => {
+    const owner = authed(OWNER);
+    await assertSucceeds(getDoc(doc(owner, ...path(OWNER))));
+    await assertSucceeds(
+      updateDoc(doc(owner, ...path(OWNER)), { lastSeenAt: 1 }),
+    );
+    await assertSucceeds(
+      setDoc(doc(owner, "users", OWNER, "searches", "s2"), { label: "Two" }),
+    );
+    await assertSucceeds(deleteDoc(doc(owner, ...path(OWNER))));
+  });
+
+  it("nobody else can read one, list them, or plant one", async () => {
+    const stranger = authed(STRANGER);
+    await assertFails(getDoc(doc(stranger, ...path(OWNER))));
+    await assertFails(
+      getDocs(collection(stranger, "users", OWNER, "searches")),
+    );
+    await assertFails(
+      setDoc(doc(stranger, "users", OWNER, "searches", "planted"), {
+        label: "x",
+      }),
+    );
+    await assertFails(deleteDoc(doc(stranger, ...path(OWNER))));
+  });
+
+  it("a signed-out visitor gets nothing", async () => {
+    await assertFails(getDoc(doc(anon(), ...path(OWNER))));
+  });
+});

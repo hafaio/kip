@@ -171,6 +171,13 @@ service cloud.firestore {
         allow read, write: if isSignedIn() && request.auth.uid == userId;
       }
 
+      // Saved searches are private notes about what you're looking for, read
+      // only by their owner's client. Nothing else resolves them, so there is
+      // nothing here to pin.
+      match /searches/{searchId} {
+        allow read, write: if isSignedIn() && request.auth.uid == userId;
+      }
+
       match /knownBy/{readerUid} {
         allow get: if isSignedIn()
           && (request.auth.uid == readerUid || request.auth.uid == userId);

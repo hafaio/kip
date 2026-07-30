@@ -3,12 +3,19 @@
 import { type ReactElement, useMemo, useState } from "react";
 import { LuChevronRight } from "react-icons/lu";
 import { isExpired } from "../utils/format";
-import { EMPTY_CRITERIA, searchListings } from "../utils/search";
+import {
+  EMPTY_CRITERIA,
+  hitsForSearches,
+  type SearchCriteria,
+  searchListings,
+} from "../utils/search";
 import { useKip } from "../utils/store";
 import Avatar from "./avatar";
 import BookingRow from "./booking-row";
+import { useDialog } from "./dialog";
 import PlaceCard from "./place-card";
 import RequestCard from "./request-card";
+import SavedSearchRow from "./saved-search-row";
 import Button from "./ui/button";
 import { Group, Row, Section } from "./ui/list";
 
@@ -34,9 +41,14 @@ export default function HomeView(): ReactElement {
     friends,
     friendListings,
     friendWindows,
+    savedSearches,
+    setCriteria,
+    markSearchSeen,
+    deleteSavedSearch,
     setView,
     navigate,
   } = useKip();
+  const { confirm } = useDialog();
 
   // Confirming an ask whose dates have gone would book a stay in the past, so
   // it stops needing attention rather than sitting there forever.
@@ -62,6 +74,31 @@ export default function HomeView(): ReactElement {
     () => searchListings(friendListings, friendWindows, EMPTY_CRITERIA),
     [friendListings, friendWindows],
   );
+  // Free: the browse set is already in memory, so these are array passes, not
+  // reads. They're as of the last refresh, like everything else drawn from it.
+  const searchHits = useMemo(
+    () => hitsForSearches(savedSearches, friendListings, friendWindows),
+    [savedSearches, friendListings, friendWindows],
+  );
+
+  // Opening one puts its results on screen, which is what "seen" means.
+  function openSearch(searchId: string, criteria: SearchCriteria): void {
+    setCriteria(criteria);
+    markSearchSeen(searchId).catch((error) =>
+      console.error("markSearchSeen", error),
+    );
+    setView("browse");
+  }
+
+  async function removeSearch(searchId: string, label: string): Promise<void> {
+    const ok = await confirm({
+      title: "Remove this search?",
+      body: `"${label}" will stop appearing here. The places themselves aren't affected.`,
+      confirmLabel: "Remove",
+      tone: "danger",
+    });
+    if (ok) await deleteSavedSearch(searchId);
+  }
 
   if (!user) {
     return <p className="text-muted">Sign in to see your home.</p>;
@@ -166,6 +203,27 @@ export default function HomeView(): ReactElement {
               <Group>
                 {comingUp.slice(0, COMING_UP_PREVIEW).map((booking) => (
                   <BookingRow key={booking.id} booking={booking} />
+                ))}
+              </Group>
+            </Section>
+          ) : null}
+
+          {/* Above the general list because it's the same thing narrowed to
+              what you actually asked for. */}
+          {searchHits.length > 0 ? (
+            <Section title="Your searches">
+              <Group>
+                {searchHits.map((hit) => (
+                  <SavedSearchRow
+                    key={hit.search.id}
+                    hits={hit}
+                    onOpen={() =>
+                      openSearch(hit.search.id, hit.search.criteria)
+                    }
+                    onRemove={() =>
+                      removeSearch(hit.search.id, hit.search.label)
+                    }
+                  />
                 ))}
               </Group>
             </Section>
