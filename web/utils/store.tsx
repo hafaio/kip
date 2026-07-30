@@ -81,7 +81,19 @@ import {
   watchIncomingConnectRequests,
   watchOutgoingConnectRequests,
 } from "./requests";
-import { EMPTY_CRITERIA, type SearchCriteria } from "./search";
+import {
+  EMPTY_CRITERIA,
+  type SavedSearch,
+  type SearchCriteria,
+  sameCriteria,
+} from "./search";
+import {
+  deleteSavedSearch as fbDeleteSavedSearch,
+  markSearchSeen as fbMarkSearchSeen,
+  saveSearch as fbSaveSearch,
+  MAX_SAVED_SEARCHES,
+  watchSavedSearches,
+} from "./searches";
 import { setPrefs, watchPrefs } from "./settings";
 import {
   type AvailabilityWindow,
@@ -133,6 +145,13 @@ type ContextShape = {
   // Increments on back/forward, so arriving can be told from returning.
   popped: number;
   criteria: SearchCriteria;
+  savedSearches: readonly SavedSearch[];
+  saveSearch: (
+    label: string,
+    criteria: SearchCriteria,
+  ) => Promise<"saved" | "full" | "duplicate">;
+  markSearchSeen: (searchId: string) => Promise<void>;
+  deleteSavedSearch: (searchId: string) => Promise<void>;
   setView: (view: View) => void;
   navigate: (screen: Screen) => void;
   replace: (screen: Screen) => void;
@@ -231,6 +250,7 @@ const EMPTY_REQUESTS: ConnectRequest[] = [];
 const EMPTY_LISTINGS: Listing[] = [];
 const EMPTY_BOOKINGS: Booking[] = [];
 const EMPTY_PROFILES: Profile[] = [];
+const EMPTY_SEARCHES: SavedSearch[] = [];
 const EMPTY_WINDOWS: WindowMap = {};
 
 // Applied at the two subscriptions rather than per list, so every surface
@@ -421,6 +441,8 @@ export function KipProvider({ children }: { children: ReactNode }) {
   // the sign-in screen at someone already signed in.
   const [authReady, setAuthReady] = useState(false);
   const [prefs, setPrefsState] = useState<Prefs>(DEFAULT_PREFS);
+  const [savedSearches, setSavedSearches] =
+    useState<SavedSearch[]>(EMPTY_SEARCHES);
   const [friends, setFriends] = useState<Friend[]>(EMPTY_FRIENDS);
   const [incomingRequests, setIncoming] =
     useState<ConnectRequest[]>(EMPTY_REQUESTS);
@@ -581,6 +603,7 @@ export function KipProvider({ children }: { children: ReactNode }) {
       setTrips(EMPTY_BOOKINGS);
       setIncomingBookings(EMPTY_BOOKINGS);
       setPrefsState(DEFAULT_PREFS);
+      setSavedSearches(EMPTY_SEARCHES);
       return;
     }
     const uid = user.uid;
@@ -592,6 +615,7 @@ export function KipProvider({ children }: { children: ReactNode }) {
       watchMyTrips(uid, shownTo(uid, setTrips)),
       watchIncomingBookings(uid, shownTo(uid, setIncomingBookings)),
       watchPrefs(uid, setPrefsState),
+      watchSavedSearches(uid, setSavedSearches),
     ];
     return () => {
       for (const unsub of unsubs) unsub();
@@ -917,6 +941,38 @@ export function KipProvider({ children }: { children: ReactNode }) {
     [user],
   );
 
+  const saveSearch = useCallback(
+    async (label: string, next: SearchCriteria) => {
+      if (!user) throw new Error("not signed in");
+      if (savedSearches.length >= MAX_SAVED_SEARCHES) return "full" as const;
+      // Checked here rather than only where the control is hidden: the filters
+      // sit above the name field in the same sheet, so they can become a
+      // duplicate of something saved while the name is being typed.
+      if (savedSearches.some((saved) => sameCriteria(saved.criteria, next))) {
+        return "duplicate" as const;
+      }
+      await fbSaveSearch(user.uid, label, next);
+      return "saved" as const;
+    },
+    [user, savedSearches],
+  );
+
+  const markSearchSeen = useCallback(
+    async (searchId: string) => {
+      if (!user) throw new Error("not signed in");
+      await fbMarkSearchSeen(user.uid, searchId);
+    },
+    [user],
+  );
+
+  const deleteSavedSearch = useCallback(
+    async (searchId: string) => {
+      if (!user) throw new Error("not signed in");
+      await fbDeleteSavedSearch(user.uid, searchId);
+    },
+    [user],
+  );
+
   const createListing = useCallback(
     (
       listingId: string,
@@ -1131,6 +1187,10 @@ export function KipProvider({ children }: { children: ReactNode }) {
     replace,
     back,
     setCriteria,
+    savedSearches,
+    saveSearch,
+    markSearchSeen,
+    deleteSavedSearch,
     refreshBrowse,
     refreshWindows,
     signIn,

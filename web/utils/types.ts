@@ -95,6 +95,9 @@ export type AvailabilityWindow = {
   readonly details: string;
   readonly bookedBy: string | null; // guest uid while BOOKED, so they can release it
   readonly publicPortalId: string | null;
+  // 0 for anything written before this field existed, so it reads as "not new"
+  // rather than flooding a saved search that has never seen it.
+  readonly createdAt: number;
 };
 
 // Carries no names: each side self-issues a `knownBy` pointer and reads the

@@ -380,6 +380,10 @@ type SeedWindow = {
   readonly details: string;
   readonly bookedBy: string | null;
   readonly publicPortalId: string | null;
+  // Age of the slot itself, not of its dates. A slot counts as new against a
+  // saved search when it was added after that search was last opened, so the
+  // default sits well behind `writeSearches`' `lastSeenAt` and one slot doesn't.
+  readonly addedDaysAgo: number;
 };
 
 // Defaults to the shape `addWindow` writes.
@@ -398,6 +402,7 @@ function slot(
     details: "",
     bookedBy: null,
     publicPortalId: null,
+    addedDaysAgo: 30,
     ...extra,
   };
 }
@@ -590,7 +595,9 @@ const OTHER_LISTINGS: readonly SeedListing[] = [
       // Started yesterday and still running: a slot spanning today is open, not
       // expired, and has to read that way everywhere.
       slot(`${SEED}w_now`, -1, 4, { details: "Started yesterday, still open" }),
-      slot(`${SEED}w_open`, 15, 20, { autoAccept: true }),
+      // Added after the saved search below last looked, which is the only way
+      // to reach its "new" badge — one you create yourself is seen as of now.
+      slot(`${SEED}w_open`, 15, 20, { autoAccept: true, addedDaysAgo: 1 }),
     ],
   },
   {
@@ -1569,7 +1576,7 @@ function chunked<T>(items: readonly T[], size: number): T[][] {
 }
 
 // Found by prefix, except the two whose id the schema dictates: a connect
-// request keyed `${from}_${to}`, and a friend edge under the real account.
+// request keyed `${from}_${to}`, and the subcollections under the real account.
 async function wipe(db: Firestore, realUid: string): Promise<number> {
   let removed = 0;
   for (const name of ["users", "listings", "bookings", "portals"]) {
@@ -1579,11 +1586,13 @@ async function wipe(db: Firestore, realUid: string): Promise<number> {
       removed += 1;
     }
   }
-  for (const snap of await seedDocs(
-    db.collection(`users/${realUid}/friends`),
-  )) {
-    await snap.ref.delete();
-    removed += 1;
+  for (const name of ["friends", "searches"]) {
+    for (const snap of await seedDocs(
+      db.collection(`users/${realUid}/${name}`),
+    )) {
+      await snap.ref.delete();
+      removed += 1;
+    }
   }
   // Permanent to the app, but the Admin SDK is outside that — and a seeded
   // handle has to go with its user or the next run inherits a squatter.
@@ -1716,6 +1725,24 @@ function writePeople(writes: Write[], real: RealUser): void {
   }
 }
 
+// Last looked at before the SF flat's newest slot was added, so Home shows the
+// count AND the new badge. Both are computed client-side from the browse set.
+function writeSearches(writes: Write[], real: RealUser): void {
+  put(writes, `users/${real.uid}/searches/${SEED}search_sf`, {
+    label: "San Francisco, any time",
+    criteria: {
+      start: null,
+      end: null,
+      near: { lat: 37.7749, lng: -122.4194 },
+      nearLabel: "San Francisco, CA",
+      radiusKm: 50,
+      type: null,
+    },
+    lastSeenAt: daysAgo(3),
+    createdAt: daysAgo(20),
+  });
+}
+
 function writeListings(
   writes: Write[],
   listings: readonly SeedListing[],
@@ -1749,6 +1776,7 @@ function writeListings(
         details: window.details,
         bookedBy: window.bookedBy,
         publicPortalId: window.publicPortalId,
+        createdAt: daysAgo(window.addedDaysAgo),
       });
     }
   }
@@ -1913,6 +1941,7 @@ function printTour(): void {
         'Needs your attention — 4 connect requests (one per route in: handle, profile link, room link, date link; the three link ones carry the "via your link" chip) plus 4 booking asks',
         '"Asked me · found by handle" is the only one with an @handle under the name; the other three show an initial avatar and no handle line',
         "Coming up — 12 rows: your 7 live trips (one in progress since 2 days ago, three asks still waiting) then your 5 confirmed guests",
+        'Your searches — "San Francisco, any time" with a place count and a 1-new badge (a slot added yesterday, after it was last opened). Tapping it applies the filters, jumps to Browse, and clears the badge',
         "Open at friends' places — 7 places match, so it shows 4 and a Browse all",
         "Friends rail (desktop) — 4 of your 8",
       ],
@@ -2131,6 +2160,7 @@ async function main(): Promise<void> {
   writeBookings(writes, real, listings);
   writePortals(writes, real, listings, photos);
   writeRequests(writes, real);
+  writeSearches(writes, real);
   await commitAll(db, writes);
 
   const windows = listings.reduce(

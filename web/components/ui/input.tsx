@@ -1,6 +1,6 @@
 "use client";
 
-import type { InputHTMLAttributes, ReactElement, ReactNode } from "react";
+import type { ComponentPropsWithRef, ReactElement, ReactNode } from "react";
 
 // The one text input for the app: a white surface with the only visible border +
 // an accent focus ring, at the shared 44px (h-11) control height and text-base
@@ -12,7 +12,9 @@ export default function Input({
   suffix,
   className = "",
   ...props
-}: InputHTMLAttributes<HTMLInputElement> & {
+  // `ComponentPropsWithRef` rather than `InputHTMLAttributes` so a caller can
+  // hold the element — React 19 passes `ref` through as an ordinary prop.
+}: ComponentPropsWithRef<"input"> & {
   prefix?: ReactNode;
   suffix?: ReactNode;
 }): ReactElement {

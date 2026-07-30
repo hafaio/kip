@@ -11,7 +11,7 @@
     "export": "next build",
     "fmt": "biome format --write",
     "lint": "tsc && biome check && tsc --noEmit -p ../functions",
-    "test": "bun test tests/drift.test.ts tests/notifications.test.ts",
+    "test": "bun test tests/drift.test.ts tests/notifications.test.ts tests/search.test.ts",
     "test:rules": "firebase emulators:exec --config ../firebase.json --only firestore --project demo-kip-rules 'bun test tests/rules.test.ts'"
   },
   "dependencies": {

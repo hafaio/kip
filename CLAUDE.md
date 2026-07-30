@@ -10,6 +10,8 @@ Firebase rules (`firebase/`); native mobile apps are a later phase. User-facing 
 ```
 users/{uid}                        { username, displayName, photoURL, searchable, createdAt }  # readable by self|friend|searchable; NO email (lives on the Auth account only)
 users/{uid}/settings/prefs         { shareStaysWithFriends, profilePortalId, notify: {...} }  # private to owner
+users/{uid}/searches/{searchId}    { label, criteria: {...SearchCriteria}, lastSeenAt, createdAt }  # private to owner;
+                                     # counts are computed client-side, nothing server-side reads these
 users/{uid}/friends/{friendUid}    { username, displayName, photoURL, since }  # denormalized, BOTH sides; you may
                                      # rewrite the entry describing YOU, which is how a rename heals
 usernames/{handle}                 { uid }                                # handle->uid registry; GET-only, no list, no update-by-non-owner
@@ -19,7 +21,8 @@ connectRequests/{from_to}          { from, to, fromName, fromUsername, fromPhoto
 listings/{listingId}               { ownerId, title, type: "ROOM"|"FLAT"|"HOUSE", description,
                                      location: { label, lat, lng, geohash }, photos[{id,url}], publicPortalId, createdAt }
 listings/{listingId}/windows/{wid} { start, end (ISO dates, end exclusive), status: "OPEN"|"BOOKED",
-                                     autoAccept, details, bookedBy (guest uid while BOOKED), publicPortalId }
+                                     autoAccept, details, bookedBy (guest uid while BOOKED), publicPortalId,
+                                     createdAt }  # when the SLOT was added, not its dates; 0 if written before the field
 bookings/{bookingId}               { listingId, ownerId, guestId, windowId, start, end,
                                      status: "REQUESTED"|"CONFIRMED"|"CANCELLED",
                                      cancelledBy?, cancelReason?,   # stamped by whoever cancels
@@ -432,6 +435,61 @@ Rules: [firebase/firestore.rules](./firebase/firestore.rules), [firebase/storage
   fetches all friends' listings + windows once (`fetchFriendListings` chunks the `in` filter at
   30 uids) and filters by date/type/distance in `utils/search.ts`. This sidesteps Firestore's
   inability to combine a geo range with a date range, and keeps `firestore.indexes.json` empty.
+- **Counting a saved search costs no reads, which is the whole reason it exists.** `refreshBrowse`
+  runs in the store provider on mount, unconditionally — so every screen already holds every
+  friend's listings and windows. A saved search is just a stored `SearchCriteria`, and its count is
+  one `searchListings` pass over data that is already in memory. Ten of them are ten array passes,
+  not ten queries. The feature is not literally read-free: `watchSavedSearches` is one more listener
+  in the store's owned-subscriptions bundle, costing at most ten documents on attach. It's the
+  *counting* that's free, which is the part that would otherwise have scaled with the number of
+  searches.
+
+  Capped at `MAX_SAVED_SEARCHES` (10) in the client, because a rule can't count a subcollection.
+  Two tabs at nine can both pass the check and land you at eleven — not worth closing, since the
+  only person an over-long list costs is the owner loading their own app, and the listener stays
+  unbounded deliberately so a search past the cap is still visible and still removable.
+
+  **Two surfaces, and Browse gained no new control.** Home lists them, because that's where you see
+  them without going looking. `SavedSearches` (`components/saved-searches.tsx`) is the same list
+  again at the BOTTOM of the filter sheet — the place a search is composed is the place to keep one
+  or pick one up again. It sits below the sheet's footer on purpose: tweaking dates is the common
+  reason to open it, so "Show N places" must stay reachable without scrolling past a list.
+
+  This started as a bookmark icon in the Browse header opening a sheet of its own, and that was
+  wrong twice over. One icon doing both jobs couldn't be named — its label said "Saved searches"
+  and the first thing inside was a save form — and a bare unlabelled glyph next to the existing
+  refresh button wasn't findable at all. Splitting it into two icons would have been worse: a third
+  44px circle squeezes a filter pill that already truncates, and two bookmark-ish glyphs are a coin
+  flip every time. Folding it into the filter sheet leaves the header as it was.
+
+  Applying one closes the sheet and runs it: picking a saved search is asking for its results, not
+  asking to fill the form in. The rows are NOT whole-row tap targets, unlike their neighbours
+  elsewhere: removing one needs its own control, and a button can't nest inside a button.
+
+  **Saving refuses an exact duplicate** (`sameCriteria`), shown by replacing the section's "Save
+  this one" link with `Saved as "…"` rather than adding a line under it — it's the same fact the
+  link would have acted on. That state is what forced `shrink-0` onto `SectionHeading`'s title: a
+  user-chosen name is long enough to wrap "Saved searches" onto two lines, and a fixed title should
+  never reflow to make room for its action. The guard matters because of the cap: a
+  mis-tap silently spending one of ten slots on a copy is worse than the redundant row it makes.
+  Compared field by field rather than by JSON, since key order isn't guaranteed and coordinates
+  want a tolerance — "Lisbon" geocoded twice is the same search. Radius only counts when there's a
+  location for it to be a radius around. Saving the EMPTY search is deliberately allowed even
+  though Home's "Open at friends' places" section already computes exactly that set: the badge is
+  the difference, and a global "anything new from anyone" watch is otherwise unreachable.
+
+  **"New" needed a field on the slot, and it had to land with the feature.** `windows.createdAt` is
+  when the SLOT was added, not what its dates are, and a saved search counts matching slots created
+  after its `lastSeenAt` — no trigger, no function, arithmetic on loaded data. Retrofitting the
+  field later would have been the bad version: every window written before it exists reads 0, which
+  is fine as "not new" but would have meant the first digest either flooded or carried a null
+  special-case forever. Opening a search marks it seen, since its results are then on screen.
+
+  Consequence worth knowing: a search you create yourself is seen as of now, so **nothing can be new
+  until a slot is added after that moment** — which is why `seed.ts` writes one with an older
+  `lastSeenAt` beside a slot added yesterday. It's the only route to that badge.
+
+  Deliberately **no notification** — see the digest note under Known limitations.
 - **Geohash for distance.** Listings store a `geohash` (via `geofire-common`) computed from
   lat/lng on write; Browse ranks by `distanceBetween`. Coordinates are optional in the listing
   form for now (no geocoder yet) — distance filtering is a no-op until they're filled in.
@@ -783,7 +841,8 @@ CONFIRMED); **slots** (a booked slot's dates are frozen, notes still editable; a
 dates are frozen too — not even by a day — while notes and delete still work, and a slot ending
 TODAY stays editable, which pins the deliberate UTC-vs-local slack); **friend edges**
 (you may heal only the entry describing you); the **usernames registry + profile integrity**; the
-**discovery gate**; and the **browse lookup budget** (20 distinct friends passes, 25 fails).
+**discovery gate**; **saved searches** (owner-only, not listable, not plantable by anyone else); and
+the **browse lookup budget** (20 distinct friends passes, 25 fails).
 
 Any fixture the expiry rule touches uses `isoIn(days)`, not a date literal — a hard-coded date
 silently changes meaning as the calendar walks past it, and "the host can freely edit an open slot"
@@ -850,7 +909,11 @@ The deployer holds `firebase.admin`, `cloudfunctions.admin`, `run.admin`, `artif
 `secretmanager.admin`. That is a powerful principal — it can deploy code that runs with admin access
 to the database — which is exactly why it's reachable only from this repo and never as a stored key.
 
-`bun test` runs the two suites that need no emulator: the notification decisions above, and a drift
+`bun test` runs the three suites that need no emulator (named one by one in the script, so the
+emulator-only rules suite isn't swept in — a new file has to be added there): the notification
+decisions above; the saved-search arithmetic (`countNewSince` ignoring slots written before
+`createdAt` existed and counting slots rather than places; `sameCriteria` treating one place
+geocoded twice as one search); and a drift
 check that pins the vocabulary the two packages share but can't import across
 (`NotifyKind`, cancel reasons). That drift **fails open** — the function reads `prefs.notify[kind]`,
 and a key the web side never writes is `undefined`, which `=== false` treats as "not disabled", so a
@@ -897,14 +960,15 @@ functions are deployed; the Gmail App Password secret is set.
   a devDependency) builds a whole world around your account — friends with and without
   handles/photos/places, incoming and outgoing connect requests, places of all three types, slots
   that are open / Instant / booked / expired, bookings from both sides in every status including
-  all five cancel reasons, and thirteen share links covering each scope plus a dead token. It ends by
+  all five cancel reasons, thirteen share links covering each scope plus a dead token, and a saved
+  search whose "new" badge is live. It ends by
   **printing where to find each state**, which is the point: most of these surfaces are otherwise
   unreachable without a second real account. Set `KIP_ORIGIN` if `bun dev` isn't on port 3000.
 
   It is **idempotent by construction**: every document it writes is named `seed_…` or lives under
   a user that is, so the wipe at the start is a documentId range scan (plus the two cases whose ids
-  the schema dictates — a `${from}_${to}` connect request, and friend edges under your real
-  account). Dropping an entry from the file really removes it. One side effect worth knowing: it
+  the schema dictates — a `${from}_${to}` connect request, and the friend edges and saved searches
+  under your real account). Dropping an entry from the file really removes it. One side effect worth knowing: it
   sets your own `prefs.profilePortalId`, so a profile link you'd already shared is replaced.
 
   What it can't cover, and why: onboarding and the unverified-email banner live on the Auth
@@ -938,6 +1002,28 @@ functions are deployed; the Gmail App Password secret is set.
   for one user", undoable in Settings in a tap, so there's little to protect. If it's ever wanted it
   belongs as an explicit "invalidate my links" control, the way regenerating a share link is
   explicit — not as a side effect of unrelated edits.
+- **Emailing a saved-search digest is deferred, and the reasons are specific.** Saved searches ship
+  without any notification: the in-app count and "new" badge are free, and the email is the
+  expensive 20%. Two things to know before building it.
+
+  **Fan-out is inverted but naturally bounded.** A trigger fires on one window write and has to find
+  every saved search that matches — result→queries, not query→results. The saving grace is that only
+  friends can see a listing and friend edges are denormalized both ways, so
+  `users/{ownerId}/friends` enumerates every possible recipient in one query. You never scan all
+  searches; the social graph bounds it. Even so, prefer a **daily scheduled digest over a per-write
+  trigger**: availability isn't urgent, a host adding a week of dates writes several windows in one
+  sitting, and a digest collapses that into one email and one run regardless of write volume.
+
+  **The blocker is duplication, not cost.** `searchListings` lives in `web/utils/search.ts` and the
+  two packages can't import across each other — the same reason `NotifyKind` needs a drift test.
+  Reimplementing date overlap, type and `distanceBetween` in `functions/` is a far bigger drift
+  surface than a handful of string keys, and a divergence is user-visible in the worst way: the
+  email says "3 new places" and the app shows none. Anyone building this should pin both sides with
+  shared fixtures first.
+
+  It would also be the first non-transactional notification here — every existing one is 1:1 and
+  caused by a person acting on you. That argues for its own entry in `NOTIFY_EVENTS` defaulting OFF,
+  unlike the other five.
 - **A calendar view is an idea on the back burner**, not a planned next step. Everything is read as
   lists today, and a month grid might make a host's own year legible in a way rows can't. Noted
   because nothing in the schema blocks it — windows are ISO date ranges, so it would be a rendering
