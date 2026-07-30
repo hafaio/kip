@@ -403,8 +403,16 @@ Rules: [firebase/firestore.rules](./firebase/firestore.rules), [firebase/storage
   that on **being the guest's own friend AND the guest sharing** (`prefs.shareStaysWithFriends`).
 
   **A private prefs doc is no obstacle, because a rule's `get()` is not a client read.** The same
-  move `sharesStayWith` already makes. Absent prefs counts as sharing, matching the switch Settings
-  draws — a rule quietly disagreeing with the UI would be worse than either answer.
+  move `sharesStayWith` already makes.
+
+  **Sharing is OFF until asked for, and absent prefs reads as off.** Where someone is sleeping is
+  the most sensitive thing kip holds, and a friends list is not a small audience — an account that
+  has never opened Settings has not agreed to publish it. That makes the absent case the one that
+  matters: it is the state of every account predating the switch and every account that never
+  touched it, so a default of ON would have leaked precisely for the people who never chose. Three
+  places have to agree or the rule quietly disagrees with the switch Settings draws —
+  `guestSharesStays` (now `exists(prefs) && ...get('shareStaysWithFriends', false)`, where it used
+  to pass on a missing doc), `DEFAULT_PREFS`, and `watchPrefs`'s `?? false`.
 
   **CONFIRMED only.** Where someone merely asked to go, or was turned down, stays between the two
   of them.
@@ -941,7 +949,7 @@ TODAY stays editable, which pins the deliberate UTC-vs-local slack); **friend ed
 (you may heal only the entry describing you); the **usernames registry + profile integrity**; the
 **discovery gate**; **saved searches** (owner-only, not listable, not plantable by anyone else);
 **shared stays** (a friend of the guest reads the booking, a friend of only the host reads the SLOT
-but not the booking, sharing off closes it and back on reopens it, absent prefs counts as sharing,
+but not the booking, sharing off closes it and back on reopens it, absent prefs counts as NOT sharing,
 a request or cancellation is never shared, planting a friend edge on your own side proves nothing,
 and the feed's query is refused without its status filter); and
 the **browse lookup budget** (20 distinct friends passes, 25 fails).

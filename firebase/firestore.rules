@@ -38,13 +38,15 @@ service cloud.firestore {
     }
 
     // The prefs doc is private to its owner, which is no obstacle: a rule's get()
-    // is not a client read. Absent means on, matching the client default — a rule
-    // quietly disagreeing with the switch Settings draws is worse than either
-    // answer on its own.
+    // is not a client read. Absent means OFF, matching the client default — a
+    // rule quietly disagreeing with the switch Settings draws is worse than
+    // either answer on its own. Off because someone who has never opened
+    // Settings has not agreed to publish where they sleep to a friends list.
     function guestSharesStays(guestId) {
       let prefs = /databases/$(database)/documents/users/$(guestId)/settings/prefs;
       return isFriendOf(guestId)
-        && (!exists(prefs) || get(prefs).data.get('shareStaysWithFriends', true) == true);
+        && exists(prefs)
+        && get(prefs).data.get('shareStaysWithFriends', false) == true;
     }
 
     // The null guard has to test null, not '': an OPEN slot carries bookingId
