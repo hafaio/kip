@@ -74,16 +74,32 @@ export function firebaseConfigured(): boolean {
   return firebaseConfig.appId !== "";
 }
 
-// A permission-denied here is almost always benign — a listener firing as auth
-// tears down, or racing a just-created parent — so it's logged, not thrown.
+// A snapshot error is TERMINAL: the SDK drops that listener and never retries
+// it. So logging alone leaves the screen frozen on its last snapshot, still
+// styled as live — worse than an error, because nothing looks wrong. Whoever
+// attached the listener has to attach a new one, hence this signal. It carries
+// no name because the store re-attaches all of them together anyway.
+const listenerLosses = new Set<() => void>();
+
+export function onListenerLost(handler: () => void): () => void {
+  listenerLosses.add(handler);
+  return () => {
+    listenerLosses.delete(handler);
+  };
+}
+
 export function onSnapshotError(
   context: string,
 ): (error: FirestoreError) => void {
   return (error) => {
+    // A permission-denied is usually a race a re-attach settles — auth tearing
+    // down, or a listener beating its parent's create. Anything else is worth
+    // the stack. Both kinds leave the listener equally dead.
     if (error.code === "permission-denied") {
-      console.warn(`snapshot(${context}): permission-denied (transient)`);
-      return;
+      console.warn(`snapshot(${context}): permission-denied`);
+    } else {
+      console.error(`snapshot(${context})`, error);
     }
-    console.error(`snapshot(${context})`, error);
+    for (const handler of listenerLosses) handler();
   };
 }
