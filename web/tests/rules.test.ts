@@ -365,13 +365,23 @@ describe("portal grants (live dates)", () => {
 
   // A grant lapses long before a stay does, so holding the slot has to be enough.
   it("the guest holding a slot can read it without any grant", async () => {
-    await seed((db) =>
-      setDoc(
+    await seed(async (db) => {
+      await setDoc(doc(db, "bookings", "bkv"), {
+        listingId: "L1",
+        ownerId: OWNER,
+        guestId: VISITOR,
+        windowId: "w1",
+        start: isoIn(10),
+        end: isoIn(14),
+        status: "CONFIRMED",
+        createdAt: 0,
+      });
+      await setDoc(
         doc(db, "listings", "L1", "windows", "w1"),
-        { status: "BOOKED", bookedBy: VISITOR },
+        { status: "BOOKED", bookingId: "bkv" },
         { merge: true },
-      ),
-    );
+      );
+    });
     await assertSucceeds(
       getDoc(doc(authed(VISITOR), "listings", "L1", "windows", "w1")),
     );
@@ -1181,7 +1191,7 @@ describe("a confirm must hand over the slot", () => {
         status: "OPEN",
         autoAccept: false,
         details: "",
-        bookedBy: null,
+        bookingId: null,
       });
       await setDoc(doc(db, "bookings", "h1"), seedBooking("h1", G1));
       await setDoc(doc(db, "bookings", "h2"), seedBooking("h2", G2));
@@ -1200,18 +1210,20 @@ describe("a confirm must hand over the slot", () => {
     batch.update(doc(db, "bookings", "h1"), { status: "CONFIRMED" });
     batch.update(doc(db, "listings", "LH", "windows", "wh"), {
       status: "BOOKED",
-      bookedBy: G1,
+      bookingId: "h1",
     });
     await assertSucceeds(batch.commit());
   });
 
-  it("the slot must be handed to THAT guest, not another", async () => {
+  // Pinned to the booking rather than to its guest, so one guest's second ask
+  // can't be answered by handing them a slot promised to the first.
+  it("the slot must be handed to THAT booking, not another", async () => {
     const db = authed(OWNER);
     const batch = writeBatch(db);
     batch.update(doc(db, "bookings", "h1"), { status: "CONFIRMED" });
     batch.update(doc(db, "listings", "LH", "windows", "wh"), {
       status: "BOOKED",
-      bookedBy: G2,
+      bookingId: "h2",
     });
     await assertFails(batch.commit());
   });
@@ -1245,7 +1257,7 @@ describe("a slot holds one stay", () => {
         status: "BOOKED",
         autoAccept: false,
         details: "",
-        bookedBy: A,
+        bookingId: "bsA",
       });
     });
   });
@@ -1273,7 +1285,7 @@ describe("a slot holds one stay", () => {
         status: "BOOKED",
         autoAccept: false,
         details: "",
-        bookedBy: "someone",
+        bookingId: "someone-elses-booking",
       }),
     );
     await assertSucceeds(
@@ -1283,7 +1295,7 @@ describe("a slot holds one stay", () => {
         status: "OPEN",
         autoAccept: false,
         details: "",
-        bookedBy: null,
+        bookingId: null,
       }),
     );
   });
@@ -1312,7 +1324,7 @@ describe("cancellation attribution", () => {
         status: "OPEN",
         autoAccept: false,
         details: "",
-        bookedBy: null,
+        bookingId: null,
       });
       await setDoc(doc(db, "bookings", "bc"), {
         listingId: "LC",
@@ -1392,7 +1404,7 @@ describe("bookings (field validation)", () => {
       });
       await setDoc(doc(db, "listings", "L1", "windows", "w-auto-booked"), {
         start: base.start, end: base.end, status: "BOOKED", autoAccept: true, details: "",
-        bookedBy: "someone-else",
+        bookingId: "someone-elses-booking",
       });
     });
   });
@@ -1420,7 +1432,7 @@ describe("bookings (field validation)", () => {
     });
     batch.update(doc(db, "listings", "L1", "windows", "w-auto"), {
       status: "BOOKED",
-      bookedBy: GUEST,
+      bookingId: "bk3",
     });
     await assertSucceeds(batch.commit());
   });
@@ -1484,7 +1496,7 @@ describe("bookings (field validation)", () => {
     batch.update(doc(db, "bookings", "bk7"), { status: "CONFIRMED" });
     batch.update(doc(db, "listings", "L1", "windows", "w-normal"), {
       status: "BOOKED",
-      bookedBy: GUEST,
+      bookingId: "bk7",
     });
     await assertSucceeds(batch.commit());
   });
@@ -1510,7 +1522,7 @@ describe("windows (a booked slot's dates are frozen)", () => {
         status: "BOOKED",
         autoAccept: false,
         details: "",
-        bookedBy: STRANGER,
+        bookingId: "bw",
       });
       await setDoc(doc(db, "listings", "LW", "windows", "wo"), {
         start: isoIn(30),
@@ -1518,7 +1530,7 @@ describe("windows (a booked slot's dates are frozen)", () => {
         status: "OPEN",
         autoAccept: false,
         details: "",
-        bookedBy: null,
+        bookingId: null,
       });
     });
   });
@@ -1553,7 +1565,7 @@ describe("windows (a booked slot's dates are frozen)", () => {
     await assertSucceeds(
       updateDoc(doc(authed(OWNER), "listings", "LW", "windows", "wb"), {
         status: "OPEN",
-        bookedBy: null,
+        bookingId: null,
       }),
     );
   });
@@ -1571,7 +1583,7 @@ describe("windows (an expired slot's dates are frozen)", () => {
         status: "OPEN",
         autoAccept: false,
         details: "",
-        bookedBy: null,
+        bookingId: null,
       });
     });
   });
@@ -1619,7 +1631,7 @@ describe("windows (an expired slot's dates are frozen)", () => {
         status: "OPEN",
         autoAccept: false,
         details: "",
-        bookedBy: null,
+        bookingId: null,
       });
     });
     await assertSucceeds(
@@ -1642,29 +1654,57 @@ describe("windows (guest field pinning)", () => {
         status: "OPEN",
         autoAccept: true,
         details: "",
-        bookedBy: null,
+        bookingId: null,
         publicPortalId: "pp1",
       });
     });
   });
 
+  const claim = {
+    listingId: "L1",
+    ownerId: OWNER,
+    guestId: STRANGER,
+    windowId: "w-auto",
+    start: isoIn(10),
+    end: isoIn(14),
+    status: "CONFIRMED",
+    cancelledBy: null,
+    cancelReason: null,
+    createdAt: 0,
+  };
+
   it("a friend can claim an auto-accept window (OPEN -> BOOKED)", async () => {
-    await assertSucceeds(
+    const db = authed(STRANGER);
+    const batch = writeBatch(db);
+    batch.set(doc(db, "bookings", "bkc"), claim);
+    batch.update(doc(db, "listings", "L1", "windows", "w-auto"), {
+      status: "BOOKED",
+      bookingId: "bkc",
+    });
+    await assertSucceeds(batch.commit());
+  });
+
+  // The flip alone used to pass, which let a friend mark a slot taken without
+  // ever asking for it — a booking nobody could see, on dates nobody could use.
+  it("claiming a slot without lodging the booking is refused", async () => {
+    await assertFails(
       updateDoc(doc(authed(STRANGER), "listings", "L1", "windows", "w-auto"), {
         status: "BOOKED",
-        bookedBy: STRANGER,
+        bookingId: "bkc",
       }),
     );
   });
 
   it("a claiming friend cannot also change the slot's portal link", async () => {
-    await assertFails(
-      updateDoc(doc(authed(STRANGER), "listings", "L1", "windows", "w-auto"), {
-        status: "BOOKED",
-        bookedBy: STRANGER,
-        publicPortalId: null,
-      }),
-    );
+    const db = authed(STRANGER);
+    const batch = writeBatch(db);
+    batch.set(doc(db, "bookings", "bkd"), claim);
+    batch.update(doc(db, "listings", "L1", "windows", "w-auto"), {
+      status: "BOOKED",
+      bookingId: "bkd",
+      publicPortalId: null,
+    });
+    await assertFails(batch.commit());
   });
 });
 
@@ -2090,7 +2130,7 @@ describe("booking transitions", () => {
         status: "OPEN",
         autoAccept: false,
         details: "",
-        bookedBy: null,
+        bookingId: null,
       });
       await setDoc(doc(db, "bookings", "t_cancelled"), {
         ...base,
@@ -2232,7 +2272,7 @@ describe("bookings (dates that have already gone)", () => {
         status: "OPEN",
         autoAccept: false,
         details: "",
-        bookedBy: null,
+        bookingId: null,
       });
       await setDoc(doc(db, "listings", "LPAST", "windows", "wsoon"), {
         start: isoIn(10),
@@ -2240,7 +2280,7 @@ describe("bookings (dates that have already gone)", () => {
         status: "OPEN",
         autoAccept: false,
         details: "",
-        bookedBy: null,
+        bookingId: null,
       });
     });
   });
@@ -2313,5 +2353,300 @@ describe("saved searches", () => {
 
   it("a signed-out visitor gets nothing", async () => {
     await assertFails(getDoc(doc(anon(), ...path(OWNER))));
+  });
+});
+
+// Who is staying somewhere is the guest's to give away, not the host's and not
+// the slot's. The slot names only a booking; reading THAT is the permission.
+describe("shared stays", () => {
+  const HOST = "sshost";
+  const GUEST = "ssguest";
+  const THEIRFRIEND = "ssfriend";
+  const HOSTFRIEND = "sshostfriend";
+
+  const stay = {
+    listingId: "LSS",
+    ownerId: HOST,
+    guestId: GUEST,
+    windowId: "wss",
+    start: isoIn(10),
+    end: isoIn(14),
+    status: "CONFIRMED",
+    cancelledBy: null,
+    cancelReason: null,
+    createdAt: 0,
+  };
+
+  beforeEach(async () => {
+    await seed(async (db) => {
+      await setDoc(doc(db, "listings", "LSS"), { ownerId: HOST });
+      await setDoc(doc(db, "listings", "LSS", "windows", "wss"), {
+        start: stay.start,
+        end: stay.end,
+        status: "BOOKED",
+        autoAccept: false,
+        details: "",
+        bookingId: "bss",
+      });
+      await setDoc(doc(db, "bookings", "bss"), stay);
+      // Both directions, as every friendship here is written.
+      await setDoc(doc(db, "users", GUEST, "friends", THEIRFRIEND), {
+        since: 0,
+      });
+      await setDoc(doc(db, "users", THEIRFRIEND, "friends", GUEST), {
+        since: 0,
+      });
+      await setDoc(doc(db, "users", HOST, "friends", HOSTFRIEND), { since: 0 });
+      await setDoc(doc(db, "users", HOSTFRIEND, "friends", HOST), { since: 0 });
+    });
+  });
+
+  it("a friend of the guest can read the stay", async () => {
+    await assertSucceeds(getDoc(doc(authed(THEIRFRIEND), "bookings", "bss")));
+  });
+
+  // The whole point of the swap: being able to see the SLOT is not being able
+  // to see who is in it, and every friend of the host can see the slot.
+  it("a friend of only the host cannot", async () => {
+    await assertSucceeds(
+      getDoc(doc(authed(HOSTFRIEND), "listings", "LSS", "windows", "wss")),
+    );
+    await assertFails(getDoc(doc(authed(HOSTFRIEND), "bookings", "bss")));
+  });
+
+  it("a stranger cannot", async () => {
+    await assertFails(getDoc(doc(authed(STRANGER), "bookings", "bss")));
+    await assertFails(getDoc(doc(anon(), "bookings", "bss")));
+  });
+
+  it("the two parties always can", async () => {
+    await assertSucceeds(getDoc(doc(authed(GUEST), "bookings", "bss")));
+    await assertSucceeds(getDoc(doc(authed(HOST), "bookings", "bss")));
+  });
+
+  it("switching sharing off closes it, and back on reopens it", async () => {
+    await seed((db) =>
+      setDoc(doc(db, "users", GUEST, "settings", "prefs"), {
+        shareStaysWithFriends: false,
+      }),
+    );
+    await assertFails(getDoc(doc(authed(THEIRFRIEND), "bookings", "bss")));
+    await seed((db) =>
+      setDoc(doc(db, "users", GUEST, "settings", "prefs"), {
+        shareStaysWithFriends: true,
+      }),
+    );
+    await assertSucceeds(getDoc(doc(authed(THEIRFRIEND), "bookings", "bss")));
+  });
+
+  // Absent prefs means sharing, matching the switch Settings draws for someone
+  // who has never opened it. The beforeEach writes no prefs doc at all.
+  it("never having touched the setting counts as sharing", async () => {
+    await assertSucceeds(getDoc(doc(authed(THEIRFRIEND), "bookings", "bss")));
+  });
+
+  // Where someone merely ASKED to go, or was turned down, stays between them.
+  it("only a confirmed stay is shared, never a request or a cancellation", async () => {
+    for (const status of ["REQUESTED", "CANCELLED"]) {
+      await seed((db) =>
+        setDoc(doc(db, "bookings", "bss"), { ...stay, status }),
+      );
+      await assertFails(getDoc(doc(authed(THEIRFRIEND), "bookings", "bss")));
+    }
+  });
+
+  // The stays feed is one query, so it stands or falls whole.
+  it("a friend can query their stays, and nobody else can", async () => {
+    const stays = (db: Firestore) =>
+      query(
+        collection(db, "bookings"),
+        where("guestId", "==", GUEST),
+        where("status", "==", "CONFIRMED"),
+      );
+    await assertSucceeds(getDocs(stays(authed(THEIRFRIEND))));
+    await assertFails(getDocs(stays(authed(HOSTFRIEND))));
+  });
+
+  // `fetchStaysOf` pins the status because it MUST, not for tidiness: without
+  // it the query is refused outright, however readable every document in it is.
+  // Pinned here so nobody "simplifies" that filter away and empties the feed.
+  it("the same query without the status filter is refused", async () => {
+    await assertFails(
+      getDocs(
+        query(collection(authed(THEIRFRIEND), "bookings"), where("guestId", "==", GUEST)),
+      ),
+    );
+  });
+
+  // The guest's own trips listener is that same under-constrained query, and it
+  // still works — the first clause matches before anything unpinned is read.
+  it("the guest's own trips query is unaffected", async () => {
+    await assertSucceeds(
+      getDocs(
+        query(collection(authed(GUEST), "bookings"), where("guestId", "==", GUEST)),
+      ),
+    );
+  });
+
+  // A pointer can't be forged into a friendship, and the friend edge is the
+  // thing being checked — so planting one in your own list proves nothing.
+  it("claiming them as a friend on your own side is not enough", async () => {
+    await seed((db) =>
+      setDoc(doc(db, "users", STRANGER, "friends", GUEST), { since: 0 }),
+    );
+    await assertFails(getDoc(doc(authed(STRANGER), "bookings", "bss")));
+  });
+});
+
+// The rules above are checked with hand-built writes. These mirror what
+// `utils/` ACTUALLY sends, shape for shape, because the two can drift and the
+// stays feed already proved a query can be refused for what it omits rather
+// than for what it asks — a failure no rule test of the document would catch.
+describe("the calls the client really makes", () => {
+  const HOST = "cchost";
+  const GUEST = "ccguest";
+  const WINDOW = "ccw";
+
+  const booking = {
+    listingId: "LCC",
+    ownerId: HOST,
+    guestId: GUEST,
+    windowId: WINDOW,
+    start: isoIn(10),
+    end: isoIn(14),
+    status: "CONFIRMED",
+    cancelledBy: null,
+    cancelReason: null,
+    createdAt: 0,
+  };
+
+  beforeEach(async () => {
+    await seed(async (db) => {
+      await setDoc(doc(db, "listings", "LCC"), { ownerId: HOST });
+      await setDoc(doc(db, "users", HOST, "friends", GUEST), { since: 0 });
+      await setDoc(doc(db, "users", GUEST, "friends", HOST), { since: 0 });
+      await setDoc(doc(db, "listings", "LCC", "windows", WINDOW), {
+        start: booking.start,
+        end: booking.end,
+        status: "BOOKED",
+        autoAccept: false,
+        details: "",
+        bookingId: "ccb",
+      });
+      await setDoc(doc(db, "bookings", "ccb"), booking);
+    });
+  });
+
+  // `cancelBookingAsGuest` — the release clause reads the guest off the booking
+  // now, so this is the one that would strand a guest unable to call off a stay.
+  it("a guest cancels a confirmed stay and releases the slot", async () => {
+    const db = authed(GUEST);
+    const batch = writeBatch(db);
+    batch.update(doc(db, "bookings", "ccb"), {
+      status: "CANCELLED",
+      cancelledBy: GUEST,
+      cancelReason: "STAY_CANCELLED",
+    });
+    batch.update(doc(db, "listings", "LCC", "windows", WINDOW), {
+      status: "OPEN",
+      bookingId: null,
+    });
+    await assertSucceeds(batch.commit());
+  });
+
+  it("someone else's guest cannot release the slot", async () => {
+    await assertFails(
+      updateDoc(doc(authed(STRANGER), "listings", "LCC", "windows", WINDOW), {
+        status: "OPEN",
+        bookingId: null,
+      }),
+    );
+  });
+
+  // `cancelBookingAsOwner` / `declineBooking` — the host reopens it instead.
+  it("the host cancels a confirmed stay and reopens the slot", async () => {
+    const db = authed(HOST);
+    const batch = writeBatch(db);
+    batch.update(doc(db, "bookings", "ccb"), {
+      status: "CANCELLED",
+      cancelledBy: HOST,
+      cancelReason: "STAY_CANCELLED",
+    });
+    batch.update(doc(db, "listings", "LCC", "windows", WINDOW), {
+      status: "OPEN",
+      bookingId: null,
+    });
+    await assertSucceeds(batch.commit());
+  });
+
+  it("watchIncomingBookings reads every stay against my places", async () => {
+    await assertSucceeds(
+      getDocs(
+        query(collection(authed(HOST), "bookings"), where("ownerId", "==", HOST)),
+      ),
+    );
+  });
+
+  it("fetchMyBookingsWith reads my own asks to one host", async () => {
+    await assertSucceeds(
+      getDocs(
+        query(
+          collection(authed(GUEST), "bookings"),
+          where("guestId", "==", GUEST),
+          where("ownerId", "==", HOST),
+        ),
+      ),
+    );
+  });
+
+  // `heldWindowIds` on the portal page: a visitor has to find which slots they
+  // hold from their own bookings, the slot no longer naming them.
+  it("heldWindowIds reads my own bookings on one listing", async () => {
+    await assertSucceeds(
+      getDocs(
+        query(
+          collection(authed(GUEST), "bookings"),
+          where("guestId", "==", GUEST),
+          where("listingId", "==", "LCC"),
+        ),
+      ),
+    );
+  });
+
+  // `addWindow` writes no bookingId at all, and the create rule reads it as
+  // absent-means-null. A stricter `== null` on a missing key would refuse this.
+  it("addWindow's write, which omits bookingId entirely, is accepted", async () => {
+    await assertSucceeds(
+      setDoc(doc(authed(HOST), "listings", "LCC", "windows", "ccnew"), {
+        start: isoIn(40),
+        end: isoIn(44),
+        status: "OPEN",
+        autoAccept: false,
+        details: "",
+        createdAt: 0,
+      }),
+    );
+  });
+
+  // `requestBooking`, non-auto path: the ask alone, leaving the slot open.
+  it("a friend's plain request touches no slot", async () => {
+    await seed((db) =>
+      setDoc(doc(db, "listings", "LCC", "windows", "ccopen"), {
+        start: isoIn(50),
+        end: isoIn(54),
+        status: "OPEN",
+        autoAccept: false,
+        details: "",
+      }),
+    );
+    await assertSucceeds(
+      setDoc(doc(authed(GUEST), "bookings", "ccask"), {
+        ...booking,
+        windowId: "ccopen",
+        start: isoIn(50),
+        end: isoIn(54),
+        status: "REQUESTED",
+      }),
+    );
   });
 });

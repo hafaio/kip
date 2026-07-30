@@ -4,22 +4,24 @@ import { type ReactElement, useState } from "react";
 import { LuChevronRight, LuZap } from "react-icons/lu";
 import { formatDateRange, nights } from "../utils/format";
 import { useKip } from "../utils/store";
-import type { AvailabilityWindow, Listing } from "../utils/types";
+import type { AvailabilityWindow, Booking, Listing } from "../utils/types";
 import CoverPhoto from "./cover-photo";
 import Button from "./ui/button";
 import Chip from "./ui/chip";
 import { Row } from "./ui/list";
 
-// A range someone else holds isn't listed at all, so the only booked rows here
-// are the reader's own.
 export default function SlotRow({
   listing,
   window,
+  stay = null,
 }: {
   listing: Listing;
   window: AvailabilityWindow;
+  // Passing this is what makes a taken row worth showing: it's the route to who
+  // is there, and having it at all is the permission to know.
+  stay?: Booking | null;
 }): ReactElement {
-  const { user, trips, requestBooking, refreshWindows, navigate } = useKip();
+  const { trips, requestBooking, refreshWindows, navigate } = useKip();
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<string | null>(null);
 
@@ -51,7 +53,8 @@ export default function SlotRow({
 
   // Holding the window, not merely having a booking on it: two friends can both
   // have REQUESTED one, and the loser must not see "Booked by you".
-  const iHoldWindow = window.bookedBy != null && window.bookedBy === user?.uid;
+  const iHoldWindow =
+    window.bookingId != null && window.bookingId === myBooking?.id;
   const pendingRequest = myBooking?.status === "REQUESTED";
   const showInstant = window.autoAccept && window.status === "OPEN";
 
@@ -90,17 +93,31 @@ export default function SlotRow({
     );
   }
 
-  // A taken range is only listed when it's mine, so this is the moment before
-  // `trips` arrives rather than someone else's stay.
+  // Unattributed either way: the chip says a slot is taken, and who by is a
+  // deliberate second step through the stay. The non-interactive branch is a
+  // fallback — today's caller filters out any taken slot it can't hand a stay.
   if (window.status === "BOOKED") {
-    return (
-      <div className="flex min-h-14 items-center gap-3 px-4 py-3 opacity-60">
+    const taken = (
+      <>
         {thumb}
         <div className="min-w-0 flex-1">
           {dates}
           {meta}
         </div>
         <Chip tone="booked">Booked</Chip>
+      </>
+    );
+    return stay ? (
+      <Row
+        onClick={() => navigate({ kind: "booking", id: stay.id })}
+        className="opacity-60"
+      >
+        {taken}
+        <LuChevronRight className="shrink-0 text-faint" />
+      </Row>
+    ) : (
+      <div className="flex min-h-14 items-center gap-3 px-4 py-3 opacity-60">
+        {taken}
       </div>
     );
   }

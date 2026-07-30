@@ -378,7 +378,6 @@ type SeedWindow = {
   readonly status: WindowStatus;
   readonly autoAccept: boolean;
   readonly details: string;
-  readonly bookedBy: string | null;
   readonly publicPortalId: string | null;
   // Age of the slot itself, not of its dates. A slot counts as new against a
   // saved search when it was added after that search was last opened, so the
@@ -400,7 +399,6 @@ function slot(
     status: "OPEN",
     autoAccept: false,
     details: "",
-    bookedBy: null,
     publicPortalId: null,
     addedDaysAgo: 30,
     ...extra,
@@ -464,12 +462,10 @@ const MY_LISTINGS: readonly Omit<SeedListing, "ownerId">[] = [
       }),
       slot(`${SEED}w_stayed`, -60, -55, {
         status: "BOOKED",
-        bookedBy: `${SEED}fr_guest`,
       }),
       slot(`${SEED}w_expired`, -30, -26),
       slot(`${SEED}w_today`, -1, 3, {
         status: "BOOKED",
-        bookedBy: `${SEED}via_room`,
         details: "In progress right now",
       }),
       slot(`${SEED}w_open`, 10, 14),
@@ -483,11 +479,9 @@ const MY_LISTINGS: readonly Omit<SeedListing, "ownerId">[] = [
       }),
       slot(`${SEED}w_confirmed`, 30, 34, {
         status: "BOOKED",
-        bookedBy: `${SEED}fr_guest`,
       }),
       slot(`${SEED}w_link`, 40, 44, {
         status: "BOOKED",
-        bookedBy: `${SEED}via_slot`,
       }),
       slot(`${SEED}w_ask_link`, 46, 50),
     ],
@@ -510,14 +504,12 @@ const MY_LISTINGS: readonly Omit<SeedListing, "ownerId">[] = [
       }),
       slot(`${SEED}w_guest`, 52, 56, {
         status: "BOOKED",
-        bookedBy: `${SEED}via_user`,
       }),
       // An instant slot that HAS been taken: the owner row shows Booked, not
       // Instant, even though the flag is still set.
       slot(`${SEED}w_instant_taken`, 60, 63, {
         status: "BOOKED",
         autoAccept: true,
-        bookedBy: `${SEED}fr_guest2`,
       }),
     ],
   },
@@ -573,10 +565,9 @@ const OTHER_LISTINGS: readonly SeedListing[] = [
       }),
       slot(`${SEED}w_ask`, 14, 18, { details: "Ask first" }),
       slot(`${SEED}w_pending`, 20, 24),
-      slot(`${SEED}w_mine`, 26, 30, { status: "BOOKED", bookedBy: ME }),
+      slot(`${SEED}w_mine`, 26, 30, { status: "BOOKED" }),
       slot(`${SEED}w_theirs`, 33, 37, {
         status: "BOOKED",
-        bookedBy: `${SEED}other`,
       }),
     ],
   },
@@ -630,7 +621,6 @@ const OTHER_LISTINGS: readonly SeedListing[] = [
     windows: [
       slot(`${SEED}w_taken`, 17, 21, {
         status: "BOOKED",
-        bookedBy: `${SEED}other`,
       }),
       slot(`${SEED}w_past`, -40, -35),
     ],
@@ -647,7 +637,7 @@ const OTHER_LISTINGS: readonly SeedListing[] = [
     photoCount: 0,
     publicPortalId: null,
     windows: [
-      slot(`${SEED}w_today`, -2, 2, { status: "BOOKED", bookedBy: ME }),
+      slot(`${SEED}w_today`, -2, 2, { status: "BOOKED" }),
       slot(`${SEED}w_open`, 25, 29, { details: "Trails start at the door" }),
     ],
   },
@@ -663,9 +653,9 @@ const OTHER_LISTINGS: readonly SeedListing[] = [
     photoCount: 2,
     publicPortalId: null,
     windows: [
-      slot(`${SEED}w_past`, -70, -64, { status: "BOOKED", bookedBy: ME }),
+      slot(`${SEED}w_past`, -70, -64, { status: "BOOKED" }),
       slot(`${SEED}w_free`, 9, 13, { autoAccept: true }),
-      slot(`${SEED}w_soon`, 45, 50, { status: "BOOKED", bookedBy: ME }),
+      slot(`${SEED}w_soon`, 45, 50, { status: "BOOKED" }),
     ],
   },
   {
@@ -715,7 +705,6 @@ const OTHER_LISTINGS: readonly SeedListing[] = [
       slot(`${SEED}w_asked`, 19, 23),
       slot(`${SEED}w_taken`, 26, 29, {
         status: "BOOKED",
-        bookedBy: `${SEED}other`,
       }),
     ],
   },
@@ -739,12 +728,10 @@ const OTHER_LISTINGS: readonly SeedListing[] = [
       }),
       slot(`${SEED}w_taken`, 30, 33, {
         status: "BOOKED",
-        bookedBy: `${SEED}other`,
         publicPortalId: PORTAL_HOST_SLOT_TAKEN,
       }),
       slot(`${SEED}w_mine`, 36, 40, {
         status: "BOOKED",
-        bookedBy: ME,
         publicPortalId: PORTAL_HOST_SLOT_MINE,
       }),
       slot(`${SEED}w_hidden`, 44, 48, { details: "Never shared with anyone" }),
@@ -763,7 +750,7 @@ const OTHER_LISTINGS: readonly SeedListing[] = [
     publicPortalId: null,
     windows: [
       slot(`${SEED}w_open`, 14, 19, { details: "Free on the profile link" }),
-      slot(`${SEED}w_mine`, 52, 57, { status: "BOOKED", bookedBy: ME }),
+      slot(`${SEED}w_mine`, 52, 57, { status: "BOOKED" }),
     ],
   },
   {
@@ -783,7 +770,6 @@ const OTHER_LISTINGS: readonly SeedListing[] = [
       slot(`${SEED}w_instant`, 20, 24, { autoAccept: true }),
       slot(`${SEED}w_taken`, 27, 30, {
         status: "BOOKED",
-        bookedBy: `${SEED}other`,
       }),
     ],
   },
@@ -836,7 +822,6 @@ const OTHER_LISTINGS: readonly SeedListing[] = [
       }),
       slot(`${SEED}w_taken`, 25, 28, {
         status: "BOOKED",
-        bookedBy: `${SEED}other`,
       }),
     ],
   },
@@ -1332,6 +1317,16 @@ const ELSEWHERE: readonly SeedBooking[] = (
 
 const BOOKINGS: readonly SeedBooking[] = [...HOSTING, ...STAYING, ...ELSEWHERE];
 
+// Derived rather than declared, because a slot no longer records its guest — so
+// a fixture has nothing left to contradict itself about. Keyed by listing too:
+// window ids repeat across places.
+const HOLDER = new Map(
+  BOOKINGS.filter((booking) => booking.status === "CONFIRMED").map(
+    (booking) =>
+      [`${booking.listingId}/${booking.windowId}`, booking.id] as const,
+  ),
+);
+
 type SeedPortal =
   | { readonly id: string; readonly scope: "USER"; readonly ownerId: string }
   | {
@@ -1774,7 +1769,7 @@ function writeListings(
         status: window.status,
         autoAccept: window.autoAccept,
         details: window.details,
-        bookedBy: window.bookedBy,
+        bookingId: HOLDER.get(`${listing.id}/${window.id}`) ?? null,
         publicPortalId: window.publicPortalId,
         createdAt: daysAgo(window.addedDaysAgo),
       });
@@ -2136,16 +2131,12 @@ async function main(): Promise<void> {
     `Cleared ${removed} document(s) and ${removedObjects} photo object(s) from the previous run.`,
   );
 
-  // Resolve the sentinel.
+  // Resolve the sentinel. A held slot needs none: it names its booking, and the
+  // booking is where the guest is resolved.
   const listings: readonly SeedListing[] = [
     ...MY_LISTINGS.map((listing) => ({ ...listing, ownerId: uid })),
     ...OTHER_LISTINGS,
-  ].map((listing) => ({
-    ...listing,
-    windows: listing.windows.map((window) =>
-      window.bookedBy === ME ? { ...window, bookedBy: uid } : window,
-    ),
-  }));
+  ];
 
   const avatarCount = await uploadAvatars();
   const photos = new Map<string, readonly ListingPhoto[]>();

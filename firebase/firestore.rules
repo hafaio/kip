@@ -37,6 +37,27 @@ service cloud.firestore {
       return get(/databases/$(database)/documents/listings/$(listingId)).data.ownerId;
     }
 
+    // The prefs doc is private to its owner, which is no obstacle: a rule's get()
+    // is not a client read. Absent means on, matching the client default — a rule
+    // quietly disagreeing with the switch Settings draws is worse than either
+    // answer on its own.
+    function guestSharesStays(guestId) {
+      let prefs = /databases/$(database)/documents/users/$(guestId)/settings/prefs;
+      return isFriendOf(guestId)
+        && (!exists(prefs) || get(prefs).data.get('shareStaysWithFriends', true) == true);
+    }
+
+    // The null guard has to test null, not '': an OPEN slot carries bookingId
+    // PRESENT and null (the create rule pins it that way), and get(k, default)
+    // substitutes only for an ABSENT key. Guarding on '' let null through to
+    // path interpolation, which is a Null value error — denying by throwing
+    // rather than by answering, so no clause after this one would ever run.
+    function slotHolder(bookingId) {
+      return bookingId != null && exists(/databases/$(database)/documents/bookings/$(bookingId))
+        ? get(/databases/$(database)/documents/bookings/$(bookingId)).data.guestId
+        : '';
+    }
+
     // Same pointer shape as sharesStayWith — inert once the booking isn't CONFIRMED.
     function guestOfListing(listingId) {
       return request.auth != null
@@ -71,9 +92,19 @@ service cloud.firestore {
     // getAfter requires the slot flip to travel with the booking. Without it a
     // confirm is a lone booking write, the slot stays OPEN, and the host can
     // promise one slot to any number of guests.
-    function slotHandedTo(booking, guestId) {
+    function slotHandedTo(booking, bookingId) {
       let after = getAfter(/databases/$(database)/documents/listings/$(booking.listingId)/windows/$(booking.windowId)).data;
-      return after.status == 'BOOKED' && after.bookedBy == guestId;
+      return after.status == 'BOOKED' && after.get('bookingId', '') == bookingId;
+    }
+
+    // The mirror image, checked from the slot's side: the booking travels with
+    // the flip, so it is not committed yet and only getAfter can see it.
+    function bookingArrivingWith(bookingId, listingId, windowId) {
+      return bookingId != ''
+        && getAfter(/databases/$(database)/documents/bookings/$(bookingId)).data.guestId == request.auth.uid
+        && getAfter(/databases/$(database)/documents/bookings/$(bookingId)).data.status == 'CONFIRMED'
+        && getAfter(/databases/$(database)/documents/bookings/$(bookingId)).data.listingId == listingId
+        && getAfter(/databases/$(database)/documents/bookings/$(bookingId)).data.windowId == windowId;
     }
 
     // Called from create AND update: a request must not outlive the route that
@@ -295,20 +326,22 @@ service cloud.firestore {
       match /windows/{windowId} {
         // Three separate grant checks because all three links can cover one
         // window at once and a rule compares one value at a time. Same ordering
-        // discipline as the listing rule. `bookedBy` stands alone: a grant lapses
-        // long before a stay does.
+        // discipline as the listing rule. The holder check stands alone (a grant
+        // lapses long before a stay does) and goes last because, like the slot's
+        // own grant above it, it costs a lookup per document rather than one for
+        // the whole query.
         allow read: if request.auth.uid == listingOwner(listingId)
           || isFriendOf(listingOwner(listingId))
-          || resource.data.get('bookedBy', null) == request.auth.uid
           || portalGrant(get(/databases/$(database)/documents/listings/$(listingId)).data.get('publicPortalId', null))
           || portalGrant(get(/databases/$(database)/documents/users/$(listingOwner(listingId))/settings/prefs).data.get('profilePortalId', null))
-          || portalGrant(resource.data.get('publicPortalId', null));
+          || portalGrant(resource.data.get('publicPortalId', null))
+          || slotHolder(resource.data.get('bookingId', null)) == request.auth.uid;
         // Born free, or an owner could create one already BOOKED naming anyone as
         // holder and hand them a standing read of it.
         allow create: if isSignedIn()
           && request.auth.uid == listingOwner(listingId)
           && request.resource.data.status == 'OPEN'
-          && request.resource.data.get('bookedBy', null) == null;
+          && request.resource.data.get('bookingId', null) == null;
         allow delete: if isSignedIn() && request.auth.uid == listingOwner(listingId);
         allow update: if isSignedIn()
           && ((request.auth.uid == listingOwner(listingId)
@@ -328,20 +361,29 @@ service cloud.firestore {
                   && resource.data.autoAccept == true
                   && resource.data.status == 'OPEN'
                   && request.resource.data.status == 'BOOKED'
-                  && request.resource.data.bookedBy == request.auth.uid
-                  && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'bookedBy']))
+                  && bookingArrivingWith(request.resource.data.get('bookingId', ''), listingId, windowId)
+                  && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'bookingId']))
               // The booker releases it on cancel.
-              || (resource.data.bookedBy == request.auth.uid
+              || (slotHolder(resource.data.get('bookingId', null)) == request.auth.uid
                   && resource.data.status == 'BOOKED'
                   && request.resource.data.status == 'OPEN'
-                  && request.resource.data.bookedBy == null
-                  && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'bookedBy'])));
+                  && request.resource.data.get('bookingId', null) == null
+                  && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'bookingId'])));
       }
     }
 
     match /bookings/{bookingId} {
+      // The two parties, plus the guest's own friends when the guest opted in —
+      // which is what makes a held slot renderable at all, since the holder's
+      // identity now lives only here. Both party checks come first, so the
+      // trips and incoming queries never pay for the two extra lookups.
+      // CONFIRMED only for the third: a stay is what's being shared, and where
+      // someone merely ASKED to go — or was turned down — is nobody else's.
       allow read: if isSignedIn()
-        && (request.auth.uid == resource.data.guestId || request.auth.uid == resource.data.ownerId);
+        && (request.auth.uid == resource.data.guestId
+            || request.auth.uid == resource.data.ownerId
+            || (resource.data.status == 'CONFIRMED'
+                && guestSharesStays(resource.data.guestId)));
       // One way to ask, whoever is asking; only the authorisation differs. A
       // share-link visitor can never instant-book — a link is not friendship.
       // No names are carried, so there is nothing here to pin but the stamps.
@@ -356,7 +398,7 @@ service cloud.firestore {
             && (request.resource.data.status == 'REQUESTED'
                 || (request.resource.data.status == 'CONFIRMED'
                     && windowInstantlyBookable(request.resource.data.listingId, request.resource.data.windowId)
-                    && slotHandedTo(request.resource.data, request.auth.uid))))
+                    && slotHandedTo(request.resource.data, bookingId))))
           || (request.resource.data.status == 'REQUESTED'
               && portalCoversWindow(request.resource.data.listingId, request.resource.data.windowId))
         );
@@ -377,7 +419,7 @@ service cloud.firestore {
             || request.resource.data.status == 'CANCELLED')
         && (request.resource.data.status != 'CONFIRMED'
             || (bookingMatchesOpenSlot(resource.data)
-                && slotHandedTo(resource.data, resource.data.guestId)));
+                && slotHandedTo(resource.data, bookingId)));
       // A hide, not a delete: one document is the record for both parties. Each
       // may add only their own uid, so the client must arrayUnion.
       allow update: if isSignedIn()

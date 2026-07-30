@@ -1,11 +1,12 @@
 "use client";
 
-import { type ReactElement, useEffect, useState } from "react";
+import { type ReactElement, useEffect, useMemo, useState } from "react";
 import { LuChevronRight, LuMapPin, LuPlus, LuZap } from "react-icons/lu";
+import { fetchBookingIfVisible } from "../utils/bookings";
 import { formatDateRange, isExpired, nights, todayIso } from "../utils/format";
 import { fetchRoom, findOverlap, listingTypeLabel } from "../utils/listings";
 import { useKip } from "../utils/store";
-import type { AvailabilityWindow, Listing } from "../utils/types";
+import type { AvailabilityWindow, Booking, Listing } from "../utils/types";
 import Avatar from "./avatar";
 import BookingRow from "./booking-row";
 import CoverPhoto, { PhotoGallery } from "./cover-photo";
@@ -117,6 +118,67 @@ function DetailBlock({
   );
 }
 
+// One read per taken slot, never a query: a query returning even one unreadable
+// document is refused whole, so the misses have to be taken individually. The
+// reader's own stays come from `trips` instead of costing a read each.
+function useVisibleStays(
+  windows: readonly AvailabilityWindow[],
+): ReadonlyMap<string, Booking> {
+  const { trips } = useKip();
+  const [fetched, setFetched] = useState<ReadonlyMap<string, Booking>>(
+    new Map(),
+  );
+  const mine = useMemo(
+    () =>
+      new Map(
+        trips
+          .filter((trip) => trip.status === "CONFIRMED")
+          .map((trip) => [trip.id, trip] as const),
+      ),
+    [trips],
+  );
+  // Joined into one string so the effect tracks the SET of ids, not the array
+  // identity, which changes on every snapshot.
+  const wanted = windows
+    .filter(
+      (window) =>
+        window.status !== "OPEN" &&
+        window.bookingId != null &&
+        !mine.has(window.bookingId) &&
+        !isExpired(window.end),
+    )
+    .map((window) => window.bookingId as string)
+    .sort()
+    .join(",");
+
+  useEffect(() => {
+    if (!wanted) {
+      setFetched(new Map());
+      return;
+    }
+    let live = true;
+    Promise.all(
+      wanted
+        .split(",")
+        .map(async (id) => [id, await fetchBookingIfVisible(id)] as const),
+    )
+      .then((pairs) => {
+        if (!live) return;
+        setFetched(
+          new Map(
+            pairs.filter((pair): pair is [string, Booking] => pair[1] !== null),
+          ),
+        );
+      })
+      .catch((error) => console.error("visibleStays", error));
+    return () => {
+      live = false;
+    };
+  }, [wanted]);
+
+  return useMemo(() => new Map([...mine, ...fetched]), [mine, fetched]);
+}
+
 function FriendView({
   listing,
   windows,
@@ -124,17 +186,21 @@ function FriendView({
   listing: Listing;
   windows: readonly AvailabilityWindow[];
 }): ReactElement {
-  const { user, friends, navigate } = useKip();
+  const { friends, navigate } = useKip();
   const host = friends.find((friend) => friend.uid === listing.ownerId);
-  // A taken range isn't availability, but yours still is — "Booked by you" is
-  // how you find the stay you hold here.
-  const open = [...windows]
+  const held = useVisibleStays(windows);
+  // A taken range is listed only when its stay is readable — which happens for
+  // your own, and for a friend who shares theirs. Everyone else's simply isn't
+  // here, so an unexplained "Booked" never appears.
+  const dates = [...windows]
     .filter(
       (window) =>
         !isExpired(window.end) &&
-        (window.status === "OPEN" || window.bookedBy === user?.uid),
+        (window.status === "OPEN" ||
+          (window.bookingId != null && held.has(window.bookingId))),
     )
     .sort((left, right) => left.start.localeCompare(right.start));
+  const anyHeld = dates.some((window) => window.status !== "OPEN");
 
   return (
     <div className="flex flex-col gap-6 md:grid md:grid-cols-[minmax(0,1fr)_360px] md:items-start md:gap-8">
@@ -165,13 +231,24 @@ function FriendView({
       </div>
 
       <aside className="md:sticky md:top-24">
-        <Section title="Open dates">
-          {open.length === 0 ? (
+        {/* Named for what's in it: "Open dates" would be a lie the moment a
+            taken one is listed alongside. */}
+        <Section title={anyHeld ? "Dates" : "Open dates"}>
+          {dates.length === 0 ? (
             <p className="px-1 text-sm text-muted">No open dates right now.</p>
           ) : (
             <Group>
-              {open.map((window) => (
-                <SlotRow key={window.id} listing={listing} window={window} />
+              {dates.map((window) => (
+                <SlotRow
+                  key={window.id}
+                  listing={listing}
+                  window={window}
+                  stay={
+                    window.bookingId
+                      ? (held.get(window.bookingId) ?? null)
+                      : null
+                  }
+                />
               ))}
             </Group>
           )}
