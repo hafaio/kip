@@ -758,9 +758,40 @@ domain. Gmail's signature on a real send reads
 also *oversigns* (each name appears twice), which means nobody downstream can append a second
 `List-Unsubscribe` without breaking the signature.
 
-The GET page asking before it acts does NOT breach the RFC: 8058 specifies only the POST, and a
-browser following the link is out of scope — which is what lets that page stop a mail scanner
-prefetching someone into an unsubscribe.
+**The GET acts too, and that is a trade made with eyes open.** 8058 specifies only the POST, so a
+browser following the link is out of scope either way — the RFC is satisfied whichever this does.
+It used to ask, which stopped a mail gateway prefetching someone into an unsubscribe; but the same
+url is a link in the message body, so a page that answers "are you sure?" makes the person who
+actually pressed Unsubscribe press a second button to mean it, and that is how "report spam"
+happens. The click now wins. The cost is real and bounded: a gateway that fetches every link
+silences ONE kind for someone who never clicked, never the account, and the page they'd have seen
+carries the undo.
+
+**The page opens with its Save button greyed out and unclickable, and it lights up the moment a
+switch is moved.** That is how the page says "this already happened" without needing a second
+sentence to say it, and re-ticking the row the email came from is what lights it up — so the undo
+is the same control, not an extra one.
+
+It is a real `disabled` attribute, set by `SAVE_SCRIPT` — the only script on any of these pages,
+and the reason the "no script here at all" rule was dropped. CSS can *style* a disabled button but
+cannot *make* one, and a CSS-only impression of one was worse than it looked: `pointer-events:none`
+stops a click but not Enter on a focused button, and a screen reader still announces it as
+available. `.save:disabled` then does the styling — a flat neutral fill and muted text in place of
+the orange gradient, the same neutral the page gives a switch that's off, because dropping opacity
+over the gradient left white text on pale orange that couldn't be read.
+
+**Nothing depends on that script.** If it never runs, Save is simply always pressable, and pressing
+it writes back the state already stored — so a blocked script costs the indication and nothing else.
+Its test is the `checked` ATTRIBUTE (what the box was RENDERED with, unmoved by clicking) against
+`.checked` (live), so a box where those disagree is a box someone moved.
+
+**The row it came from carries a permanent chip and nothing else.** It used to animate its switch
+off on load — pure CSS, since a keyframes animation runs on render with no trigger — and that was a
+silent bug: the animation's 0.6s delay had backwards fill, so for 0.6s it DREW the thumb on over a
+box that was already off. A tap landing in that window turned the row back on, appearing to do
+nothing (it was drawn on before and after), silently undoing the unsubscribe. Verified with a
+headless-Chrome probe, then deleted rather than patched: the heading says "Unsubscribed" outright,
+so nothing was left for it to say.
 
 One judgement call, deliberate: the RFC's model is one message per list, and one-click means "stop
 this list". kip has five kinds behind one sender, and the header unsubscribes from **only the kind
