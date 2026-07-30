@@ -37,7 +37,7 @@ import {
   watchIncomingBookings,
   watchMyTrips,
 } from "./bookings";
-import { auth, firebaseConfigured } from "./firebase";
+import { auth, firebaseConfigured, onListenerLost } from "./firebase";
 import {
   setSearchable as fbSetSearchable,
   unfriend as fbUnfriend,
@@ -74,6 +74,7 @@ import {
   propagateListing,
   propagateProfile,
 } from "./portals";
+import { decideReattach, NO_LOSSES } from "./reattach";
 import {
   acceptRequest as fbAcceptRequest,
   declineRequest as fbDeclineRequest,
@@ -117,6 +118,9 @@ type WindowMap = Readonly<Record<string, readonly AvailabilityWindow[]>>;
 type ContextShape = {
   configured: boolean;
   authReady: boolean;
+  // Live data stopped arriving and re-attaching didn't fix it, so what's on
+  // screen is the last snapshot rather than the truth.
+  listenersLost: boolean;
   user: User | null;
   profile: Profile | null;
   // Distinguishes "still loading" from "loaded, needs onboarding".
@@ -440,6 +444,15 @@ export function KipProvider({ children }: { children: ReactNode }) {
   // Firebase restores a session asynchronously, so this stops the gate flashing
   // the sign-in screen at someone already signed in.
   const [authReady, setAuthReady] = useState(false);
+  // Re-attaching listeners the server dropped. Bumping `generation` re-subscribes
+  // all of them; `reattachTimer` being non-null doubles as the guard that
+  // collapses a burst of losses into one retry; `readyFor` stops a re-attach
+  // being mistaken for a new session.
+  const [generation, setGeneration] = useState(0);
+  const [listenersLost, setListenersLost] = useState(false);
+  const reattachState = useRef(NO_LOSSES);
+  const reattachTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const readyFor = useRef<string | null>(null);
   const [prefs, setPrefsState] = useState<Prefs>(DEFAULT_PREFS);
   const [savedSearches, setSavedSearches] =
     useState<SavedSearch[]>(EMPTY_SEARCHES);
@@ -564,6 +577,39 @@ export function KipProvider({ children }: { children: ReactNode }) {
   );
 
   useEffect(() => {
+    const stop = onListenerLost(() => {
+      // The owned listeners die together whenever the token is what's refused,
+      // so a burst has to buy ONE re-attach, not one per listener.
+      if (reattachTimer.current !== null) return;
+      const decision = decideReattach(reattachState.current, Date.now());
+      if (decision.verdict === "giveUp") {
+        setListenersLost(true);
+      } else {
+        reattachState.current = decision.next;
+        reattachTimer.current = setTimeout(() => {
+          reattachTimer.current = null;
+          setGeneration((previous) => previous + 1);
+        }, decision.delay);
+      }
+    });
+    return () => {
+      stop();
+      if (reattachTimer.current !== null) clearTimeout(reattachTimer.current);
+    };
+  }, []);
+
+  // The pending timer has to be cleared alongside the counters: sign-out kills
+  // every listener by itself, so an armed timer would re-attach against the new
+  // session — and, being the burst guard, swallow its first real loss.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `user` IS the dependency — the effect reads nothing from it and exists only to fire when the session changes.
+  useEffect(() => {
+    if (reattachTimer.current !== null) clearTimeout(reattachTimer.current);
+    reattachTimer.current = null;
+    reattachState.current = NO_LOSSES;
+    setListenersLost(false);
+  }, [user]);
+
+  useEffect(() => {
     if (!configured) {
       // No project, so no session is possible and the gate can settle at once.
       setAuthReady(true);
@@ -575,13 +621,21 @@ export function KipProvider({ children }: { children: ReactNode }) {
     });
   }, [configured]);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `generation` is unread on purpose — bumping it is how a lost listener gets re-attached.
   useEffect(() => {
     if (!configured || !user) {
       setProfile(null);
       setProfileReady(false);
+      readyFor.current = null;
       return;
     }
-    setProfileReady(false);
+    // Only a new session is "not loaded yet". `page.tsx` splashes over the whole
+    // app whenever this is false, so resetting it on a re-attach would unmount
+    // an open sheet and any half-typed form — the opposite of a silent repair.
+    if (readyFor.current !== user.uid) {
+      setProfileReady(false);
+      readyFor.current = user.uid;
+    }
     return watchOwnProfile(
       user.uid,
       (next) => {
@@ -591,9 +645,10 @@ export function KipProvider({ children }: { children: ReactNode }) {
       // Settle even on error, so the app never hangs on the splash.
       () => setProfileReady(true),
     );
-  }, [configured, user]);
+  }, [configured, user, generation]);
 
   // Subscribe to everything owned by the signed-in user.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `generation` is unread on purpose — bumping it is how a lost listener gets re-attached.
   useEffect(() => {
     if (!configured || !user) {
       setFriends(EMPTY_FRIENDS);
@@ -620,27 +675,33 @@ export function KipProvider({ children }: { children: ReactNode }) {
     return () => {
       for (const unsub of unsubs) unsub();
     };
-  }, [configured, user]);
+  }, [configured, user, generation]);
 
-  // Live windows for each of my own listings.
+  // Live windows for each of my own listings, keyed on the ids rather than the
+  // array (like `friendUidsKey` below) because a re-attach re-delivers the same
+  // listings as a new array and would otherwise rebuild every windows listener
+  // twice. The filter is because the windows read rule get()s the listing, so
+  // attaching before the create is acknowledged races into a permission-denied.
+  const watchedListingsKey = myListings
+    .filter((listing) => listing.createdAt > 0)
+    .map((listing) => listing.id)
+    .join(",");
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `generation` is unread on purpose — bumping it is how a lost listener gets re-attached.
   useEffect(() => {
     if (!configured || !user) {
       setMyWindows(EMPTY_WINDOWS);
       return;
     }
-    const unsubs = myListings
-      // The windows read rule get()s the listing, so attaching before the
-      // create is server-acknowledged races it into a permission-denied.
-      .filter((listing) => listing.createdAt > 0)
-      .map((listing) =>
-        watchWindows(listing.id, (windows) =>
-          setMyWindows((prev) => ({ ...prev, [listing.id]: windows })),
-        ),
-      );
+    const listingIds = watchedListingsKey ? watchedListingsKey.split(",") : [];
+    const unsubs = listingIds.map((listingId) =>
+      watchWindows(listingId, (windows) =>
+        setMyWindows((prev) => ({ ...prev, [listingId]: windows })),
+      ),
+    );
     return () => {
       for (const unsub of unsubs) unsub();
     };
-  }, [configured, user, myListings]);
+  }, [configured, user, watchedListingsKey, generation]);
 
   // Fetched, not live: the working set is small and this sidesteps dynamic
   // multi-collection listeners.
@@ -1161,6 +1222,7 @@ export function KipProvider({ children }: { children: ReactNode }) {
   const value: ContextShape = {
     configured,
     authReady,
+    listenersLost,
     user,
     profile,
     profileReady,

@@ -998,10 +998,40 @@ expect when it does.
   address and looks up lat/lng/geohash (free, key-less, low-volume). Swap for Google/Mapbox if
   precision/volume demands. No autocomplete yet — it's a single lookup on "Find" or at submit.
 - Friends' listings refresh on demand (`refreshBrowse`), not live.
-- Snapshot listeners pass `onSnapshotError(context)` (`utils/firebase.ts`) so a transient
-  `permission-denied` (auth tearing down on sign-out; a windows listener racing a just-created
-  listing) logs with context instead of throwing uncaught. The windows effect also skips listings
-  with `createdAt === 0` (not yet server-acknowledged) to avoid that race entirely.
+- **A lost listener is re-attached, and giving up is said out loud.** A Firestore snapshot error is
+  TERMINAL — the SDK drops that listener and never retries — so `onSnapshotError` (`utils/firebase.ts`)
+  logging and returning left the screen frozen on its last snapshot, still styled as live. That is
+  worse than an error: nothing looks wrong, and a place you just added simply never appears. It now
+  also fires `onListenerLost`, and the store re-attaches every owned listener by bumping a
+  `generation` counter that the three subscription effects depend on.
+
+  **The decision of WHEN to re-attach is a pure function** (`utils/reattach.ts`, `decideReattach`),
+  split out for the same reason `messages.ts` is: the effect around it needs React, Firebase and a
+  clock to exercise, the decision needs none of them, and `tests/reattach.test.ts` pins it. Backoff
+  is `REATTACH_DELAYS` (500ms / 2s / 6s) and the burst is **debounced to one re-attach** — the owned
+  listeners all die together whenever the token is what's refused, so nine losses must buy one retry,
+  not nine. **Three RETRIES, so the fourth loss is the one that gives up**: an easy thing to state
+  wrongly, and the first version of this note said "three refusals" for a state machine that takes
+  four. `listenersLost` then puts a notice on every screen offering a reload — a client cannot talk a
+  server out of a denial, so the honest move is to stop pretending the data is live. A loss arriving
+  after `REATTACH_QUIET` (60s) is a NEW incident and refills the budget, otherwise one hiccup early
+  on would leave a long session permanently one loss away from the notice. Signing in or out clears
+  the counters **and any pending timer** — sign-out is itself a reliable way to kill every listener
+  at once, and since a live timer IS the burst guard, leaving one armed would swallow the new
+  session's first real loss.
+
+  **A re-attach must not reset `profileReady`.** `page.tsx` renders a full-screen splash whenever
+  that is false, so resetting it mid-session blanks the whole app — unmounting an open sheet and any
+  half-typed form — which is the exact opposite of the invisible repair this mechanism exists to be.
+  The profile effect therefore tracks `readyFor` (whose profile the flag is about) and only reloads
+  the gate when the SESSION changes, not when `generation` bumps. This was live for one commit and
+  is the kind of thing that only shows up by driving the real UI.
+
+  The two benign races the old comment named are still benign and now heal on the first retry (auth
+  tearing down on sign-out; a windows listener racing a just-created listing — the windows effect
+  also still skips listings with `createdAt === 0`). Verified against the emulator by swapping
+  deny-all rules under live listeners: a *live* listener is proved only by changing a document
+  underneath it and watching the screen follow, since a frozen screen still looks populated.
 - Dev seeding: `bun run scripts/seed.ts <your-email>` (Admin SDK, ADC; needs `firebase-admin`,
   a devDependency) builds a whole world around your account — friends with and without
   handles/photos/places, incoming and outgoing connect requests, places of all three types, slots
