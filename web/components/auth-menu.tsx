@@ -9,7 +9,7 @@ import Avatar from "./avatar";
 // the SignInScreen, so this is the profile menu: your profile, Settings (the
 // dock has no room for it), and sign-out.
 export default function AuthMenu(): ReactElement | null {
-  const { user, profile, signOut, setView, navigate } = useKip();
+  const { user, anonymous, profile, signOut, setView, navigate } = useKip();
   const [open, setOpen] = useState(false);
 
   const displayName = profile?.displayName ?? user?.displayName ?? user?.email;
@@ -27,7 +27,7 @@ export default function AuthMenu(): ReactElement | null {
   // An anonymous share-link visitor is signed in as far as Firebase is concerned,
   // but has no account in any sense that matters — showing them an avatar with a
   // profile and a sign-out would be offering things that don't exist for them.
-  if (!user || user.isAnonymous) return null;
+  if (!user || anonymous) return null;
 
   return (
     <div className="relative">

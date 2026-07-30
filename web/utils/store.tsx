@@ -2,7 +2,7 @@
 
 import {
   signOut as fbSignOut,
-  onAuthStateChanged,
+  onIdTokenChanged,
   sendEmailVerification,
   signInAnonymously,
   type User,
@@ -122,6 +122,11 @@ type ContextShape = {
   // screen is the last snapshot rather than the truth.
   listenersLost: boolean;
   user: User | null;
+  // Snapshots of two mutable `user` fields — see their state declarations for
+  // why they can't be read off the object. Anonymous is a share-link ticket
+  // rather than an account, so it counts as signed out everywhere in the app.
+  anonymous: boolean;
+  emailVerified: boolean;
   profile: Profile | null;
   // Distinguishes "still loading" from "loaded, needs onboarding".
   profileReady: boolean;
@@ -438,6 +443,12 @@ export function KipProvider({ children }: { children: ReactNode }) {
   const configured = firebaseConfigured();
 
   const [user, setUser] = useState<User | null>(null);
+  // Snapshots of the two User fields the app branches on. They can't be read off
+  // `user` at render: Firebase mutates that object IN PLACE and only notifies
+  // onAuthStateChanged when the uid changes, so linking or verifying leaves the
+  // same reference holding new values with nothing for React to re-render on.
+  const [anonymous, setAnonymous] = useState(false);
+  const [emailVerified, setEmailVerified] = useState(false);
   // Lives in Firestore, not on the Auth user, so it's subscribed not derived.
   const [profile, setProfile] = useState<Profile | null>(null);
   const [profileReady, setProfileReady] = useState(false);
@@ -615,8 +626,14 @@ export function KipProvider({ children }: { children: ReactNode }) {
       setAuthReady(true);
       return;
     }
-    return onAuthStateChanged(auth(), (next) => {
+    // onIdTokenChanged, not onAuthStateChanged: the latter fires only on a uid
+    // change, and signing up from a share link LINKS the anonymous account,
+    // which keeps it. Token refreshes come through here too, which costs
+    // nothing — the User reference is unchanged, so every listener effect holds.
+    return onIdTokenChanged(auth(), (next) => {
       setUser(next);
+      setAnonymous(next?.isAnonymous ?? false);
+      setEmailVerified(next?.emailVerified ?? false);
       setAuthReady(true);
     });
   }, [configured]);
@@ -1224,6 +1241,8 @@ export function KipProvider({ children }: { children: ReactNode }) {
     authReady,
     listenersLost,
     user,
+    anonymous,
+    emailVerified,
     profile,
     profileReady,
     needsOnboarding,

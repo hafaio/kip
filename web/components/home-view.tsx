@@ -322,11 +322,11 @@ export default function HomeView(): ReactElement {
 // An unverified account receives nothing at all, and the only explanation would
 // otherwise sit in Settings, which they have no reason to visit.
 function VerifyEmailPrompt(): ReactElement | null {
-  const { user, resendVerification } = useKip();
+  const { user, emailVerified, resendVerification } = useKip();
   const [sent, setSent] = useState(false);
   const [failed, setFailed] = useState(false);
 
-  if (!user || user.emailVerified || !user.email) return null;
+  if (!user || emailVerified || !user.email) return null;
 
   async function resend(): Promise<void> {
     setFailed(false);
