@@ -894,9 +894,9 @@ export function KipProvider({ children }: { children: ReactNode }) {
     await fbSignOut(auth());
   }, []);
 
-  // Awaits `authSettled` rather than reading `currentUser`, which is null for a
-  // beat after load while Firebase restores a persisted session — reading it
-  // directly replaced a real session with an empty anonymous one.
+  // Reading `auth().currentUser` directly replaced a real session with an empty
+  // anonymous one: it is null for a beat after load while Firebase restores a
+  // persisted session. `authSettled` is that same read, held until the restore.
   const ensureAnonymous = useCallback(async () => {
     const restored = await authSettled();
     if (restored) return restored.uid;

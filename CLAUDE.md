@@ -126,6 +126,13 @@ Rules: [firebase/firestore.rules](./firebase/firestore.rules), [firebase/storage
   1. `ensureAnonymous` awaits `authSettled()` (`utils/auth.ts`) before deciding. Firebase restores a
      persisted session ASYNCHRONOUSLY, so `auth().currentUser` is null for a beat after load even
      for someone who is signed in; reading it directly mistakes them for a stranger.
+
+     **Only the WAIT is one-shot — the ANSWER is read fresh**, off `auth().currentUser`, every call.
+     Caching the first callback's argument (which is what it used to return) meant every later call
+     reported whoever was signed in AT LOAD. Pasting a second share link into the same tab changes
+     only the fragment, which is not a reload, so the load effect re-ran, `authSettled()` handed back
+     a stale `null`, and `signInAnonymously` replaced the visitor's real account with an empty one —
+     the very bug this function exists to prevent, reintroduced by its own cache.
   2. **An anonymous session counts as signed out inside the app.** `app/page.tsx` gates on
      `!user || anonymous`, because a visitor's ticket is not an account — it has no profile
      and can see nothing, so the gate would otherwise read "authenticated, no profile" and put a
@@ -147,6 +154,35 @@ Rules: [firebase/firestore.rules](./firebase/firestore.rules), [firebase/storage
   off `user` at render is the bug, not the exception. Watching the token also fires on hourly
   refreshes, which is free — the `User` reference is unchanged, so `setUser` bails and no listener
   effect re-runs.
+
+  **A tap on the share-link page is never a no-op, and that is a rule about the STATE MACHINE, not
+  about one bug.** Tapping holds the ask in `ask` and lets an effect send it once the sender is
+  known; two sheets cover the two reasons it can't go yet (no account, no display name). Neither
+  covered the gap between "signed in" and "profile loaded" — so a tap landing there set `ask`, opened
+  nothing, and the effect returned at its guard: no sheet, no spinner, no error, nothing in the
+  console. `holding` closes it by making an unsent ask and a spinning control the same fact, so a
+  future reason to stall can't produce a dead button either.
+
+  Two things made that gap wide enough to hit. The profile is a Firestore listener, so it costs its
+  own round trip after auth settles; and `fetchPortalPage`'s `onOwner` callback now paints the page
+  one round trip in instead of three, which put the button on screen EARLIER. The perf work is right
+  and the guard was always wrong — it just had nothing to be wrong in front of until then.
+
+  **A held ask also times out** (`ASK_TIMEOUT_MS`, 10s) and says so, since a spinner that never
+  stops goes on claiming work is in progress when none is. Scoped to exactly the sheet-less wait:
+  a sheet up means the visitor is being asked for something, and once the SEND starts the write
+  belongs to Firestore, which queues offline and lands on reconnect — so reporting a failure there
+  would be wrong rather than merely early. `failed` is a reason (`refused` | `stalled`) and not a
+  boolean, because the advice differs: a refusal may mean a revoked link, a stall never reached the
+  server at all.
+
+  **Nothing automated covers any of this**, and that is a standing risk rather than an oversight. A
+  share-link path needs two accounts, a live sign-in and a browser, so it can't be reached from the
+  unit or rules suites; a headless-Chrome suite against the Auth + Firestore emulators was written,
+  shown to fail on the unfixed code, and then deleted as more cruft than it was worth given it could
+  never gate CI. So the two guards above are held in place by nothing but this note. `holding`
+  especially reads as pointless indirection next to `busy` — it is not, and removing it brings the
+  dead button straight back with every other check still green.
 
   `emailVerified` rides along for the same structural reason, but note what that does NOT fix:
   nothing in `web/` calls `user.reload()`, the proactive token refresh doesn't reload either, and the
