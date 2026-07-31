@@ -37,6 +37,7 @@ import {
   watchIncomingBookings,
   watchMyTrips,
 } from "./bookings";
+import { clientState, recordDebugEvent } from "./debug";
 import { auth, firebaseConfigured, onListenerLost } from "./firebase";
 import {
   setSearchable as fbSetSearchable,
@@ -74,6 +75,13 @@ import {
   propagateListing,
   propagateProfile,
 } from "./portals";
+import {
+  GATE_BACKSTOP_MS,
+  type GateEvent,
+  type GateState,
+  gateStep,
+  NO_SESSION,
+} from "./profile-gate";
 import { decideReattach, NO_LOSSES } from "./reattach";
 import {
   acceptRequest as fbAcceptRequest,
@@ -130,6 +138,10 @@ type ContextShape = {
   profile: Profile | null;
   // Distinguishes "still loading" from "loaded, needs onboarding".
   profileReady: boolean;
+  // The gate above could not be settled: no answer is coming right now.
+  // Self-healing — a late answer still opens the gate. Distinct from
+  // `listenersLost`, which is data going stale AFTER it arrived.
+  profileUnreachable: boolean;
   // Gated on displayName only — a handle is optional and claimed from Settings.
   needsOnboarding: boolean;
   prefs: Prefs;
@@ -452,18 +464,19 @@ export function KipProvider({ children }: { children: ReactNode }) {
   // Lives in Firestore, not on the Auth user, so it's subscribed not derived.
   const [profile, setProfile] = useState<Profile | null>(null);
   const [profileReady, setProfileReady] = useState(false);
+  const [profileUnreachable, setUnreachable] = useState(false);
   // Firebase restores a session asynchronously, so this stops the gate flashing
   // the sign-in screen at someone already signed in.
   const [authReady, setAuthReady] = useState(false);
   // Re-attaching listeners the server dropped. Bumping `generation` re-subscribes
   // all of them; `reattachTimer` being non-null doubles as the guard that
-  // collapses a burst of losses into one retry; `readyFor` stops a re-attach
-  // being mistaken for a new session.
+  // collapses a burst of losses into one retry; `gate` (utils/profile-gate.ts)
+  // stops a re-attach being mistaken for a new session.
   const [generation, setGeneration] = useState(0);
   const [listenersLost, setListenersLost] = useState(false);
   const reattachState = useRef(NO_LOSSES);
   const reattachTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const readyFor = useRef<string | null>(null);
+  const gate = useRef<GateState>(NO_SESSION);
   const [prefs, setPrefsState] = useState<Prefs>(DEFAULT_PREFS);
   const [savedSearches, setSavedSearches] =
     useState<SavedSearch[]>(EMPTY_SEARCHES);
@@ -594,6 +607,12 @@ export function KipProvider({ children }: { children: ReactNode }) {
       if (reattachTimer.current !== null) return;
       const decision = decideReattach(reattachState.current, Date.now());
       if (decision.verdict === "giveUp") {
+        // Only here, not on each loss: this arrives once per incident and the
+        // losses behind it are already collapsed into one retry budget.
+        recordDebugEvent("listeners-lost", {
+          spent: reattachState.current.spent,
+          ...clientState(),
+        });
         setListenersLost(true);
       } else {
         reattachState.current = decision.next;
@@ -638,30 +657,49 @@ export function KipProvider({ children }: { children: ReactNode }) {
     });
   }, [configured]);
 
+  // Feeds `gateStep` and mirrors the result into state. The listener is the
+  // only source: with metadata events it either answers or raises the SDK's
+  // offline verdict, both bounded by the SDK's own timers — no second read.
   // biome-ignore lint/correctness/useExhaustiveDependencies: `generation` is unread on purpose — bumping it is how a lost listener gets re-attached.
   useEffect(() => {
     if (!configured || !user) {
+      gate.current = gateStep(gate.current, { kind: "signedOut" });
       setProfile(null);
       setProfileReady(false);
-      readyFor.current = null;
+      setUnreachable(false);
       return;
     }
-    // Only a new session is "not loaded yet". `page.tsx` splashes over the whole
-    // app whenever this is false, so resetting it on a re-attach would unmount
-    // an open sheet and any half-typed form — the opposite of a silent repair.
-    if (readyFor.current !== user.uid) {
-      setProfileReady(false);
-      readyFor.current = user.uid;
-    }
-    return watchOwnProfile(
-      user.uid,
+    const uid = user.uid;
+    const apply = (event: GateEvent): void => {
+      gate.current = gateStep(gate.current, event);
+      setProfileReady(gate.current.openFor === uid);
+      setUnreachable(gate.current.unreachable);
+    };
+    const silence = (code: string): void => {
+      const known = gate.current.unreachable;
+      apply({ kind: "silence", uid });
+      // Only the flip: retries repeat the failure, not the incident.
+      if (!known && gate.current.unreachable) {
+        recordDebugEvent("profile-unreachable", { code, ...clientState() });
+      }
+    };
+    apply({ kind: "attach", uid });
+    // A session swap must not show the old profile while the new one loads; a
+    // re-attach for the same open session must not blank it.
+    if (gate.current.openFor !== uid) setProfile(null);
+    const stop = watchOwnProfile(
+      uid,
       (next) => {
         setProfile(next);
-        setProfileReady(true);
+        apply({ kind: "answered", uid });
       },
-      // Settle even on error, so the app never hangs on the splash.
-      () => setProfileReady(true),
+      silence,
     );
+    const timer = setTimeout(() => silence("backstop"), GATE_BACKSTOP_MS);
+    return () => {
+      clearTimeout(timer);
+      stop();
+    };
   }, [configured, user, generation]);
 
   // Subscribe to everything owned by the signed-in user.
@@ -1245,6 +1283,7 @@ export function KipProvider({ children }: { children: ReactNode }) {
     emailVerified,
     profile,
     profileReady,
+    profileUnreachable,
     needsOnboarding,
     prefs,
     friends,

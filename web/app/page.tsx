@@ -80,6 +80,44 @@ function StaleDataNotice(): ReactElement {
   );
 }
 
+// In place of the splash once the profile gate has given up — the splash claims
+// something is still on its way. Deliberately BEHIND the gate: the other reading
+// of an unanswered profile is "no profile", which is onboarding and an overwrite.
+// Nothing here is terminal: a late answer opens the gate and this unmounts itself.
+function Unreachable(): ReactElement {
+  const { signOut } = useKip();
+
+  async function doSignOut() {
+    try {
+      await signOut();
+    } catch (error) {
+      console.error(error);
+    }
+  }
+
+  return (
+    <div className="mx-auto flex min-h-dvh max-w-md flex-col items-center justify-center gap-4 px-6 text-center">
+      <h1 className="text-xl font-bold tracking-[-0.02em]">
+        Can't reach kip right now
+      </h1>
+      <p className="text-sm text-muted">
+        Your account is fine — this device just can't get through. Check your
+        connection and try again.
+      </p>
+      <div className="flex gap-2">
+        <Button variant="secondary" onClick={() => window.location.reload()}>
+          Try again
+        </Button>
+        {/* A session the server refuses outright — a disabled account, a
+            revoked token — lands here too, and reloading hits the same wall. */}
+        <Button variant="ghost" onClick={doSignOut}>
+          Sign out
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 function Splash(): ReactElement {
   return (
     <div className="flex min-h-dvh items-center justify-center">
@@ -115,6 +153,7 @@ export default function Page(): ReactElement {
     user,
     anonymous,
     profileReady,
+    profileUnreachable,
     needsOnboarding,
     screen,
     canGoBack,
@@ -189,7 +228,7 @@ export default function Page(): ReactElement {
   // has no profile, so without this the gate would ask a passer-by to name
   // themselves.
   if (!user || anonymous) return <SignInScreen />;
-  if (!profileReady) return <Splash />;
+  if (!profileReady) return profileUnreachable ? <Unreachable /> : <Splash />;
   if (needsOnboarding) return <OnboardingScreen />;
 
   // The wordmark stands in for the title only where the title IS the app.

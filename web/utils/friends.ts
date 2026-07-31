@@ -12,6 +12,7 @@ import {
   writeBatch,
 } from "firebase/firestore";
 import { db, onSnapshotError } from "./firebase";
+import { classifySnapshot } from "./profile-gate";
 import type { Friend, Profile } from "./types";
 import { normalizeUsername } from "./username";
 
@@ -51,25 +52,31 @@ export async function setSearchable(
 }
 
 // The profile lives in Firestore, not on the Auth user, so own-profile views
-// read it live. A missing doc surfaces as null, which the gate reads as onboarding.
+// read it live. Metadata events are load-bearing: confirming a cached absence
+// changes no document data, so without them the server's "really no profile"
+// would never raise — and the absent-from-cache event they classify as silence
+// is the SDK's own offline verdict, raised only once it stops waiting.
 export function watchOwnProfile(
   uid: string,
-  onChange: (profile: Profile | null) => void,
-  onError?: () => void,
+  onAnswer: (profile: Profile | null) => void,
+  onSilence: (code: string) => void,
 ): () => void {
   const log = onSnapshotError("ownProfile");
   return onSnapshot(
     doc(db(), "users", uid),
+    { includeMetadataChanges: true },
     (snap) => {
-      // An ABSENT doc is only believable from the server — the cache says "no
-      // such document" for a browser that has simply never seen this account,
-      // which would put a returning user through onboarding.
-      if (!snap.exists() && snap.metadata.fromCache) return;
-      onChange(snap.exists() ? toProfile(uid, snap.data()) : null);
+      if (
+        classifySnapshot(snap.exists(), snap.metadata.fromCache) === "answered"
+      ) {
+        onAnswer(snap.exists() ? toProfile(uid, snap.data()) : null);
+      } else {
+        onSilence("offline-verdict");
+      }
     },
     (error) => {
       log(error);
-      onError?.();
+      onSilence(error.code);
     },
   );
 }

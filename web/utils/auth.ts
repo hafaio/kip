@@ -13,7 +13,7 @@ import {
   signInWithPopup,
   type User,
 } from "firebase/auth";
-import { auth } from "./firebase";
+import { auth, errorCode } from "./firebase";
 
 // A share-link visitor is already anonymous, so signing up LINKS that identity
 // rather than minting a new uid and orphaning their grant. Linking is impossible
@@ -133,9 +133,7 @@ export function passwordReset(email: string): Promise<void> {
 }
 
 export function authErrorCode(error: unknown): string {
-  return typeof error === "object" && error !== null && "code" in error
-    ? String((error as { code: unknown }).code)
-    : "";
+  return errorCode(error);
 }
 
 // Anything unmapped falls back to a generic line, so no raw SDK string is shown.

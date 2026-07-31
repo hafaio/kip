@@ -1,6 +1,12 @@
 "use client";
 
-import { type ReactElement, useEffect, useState } from "react";
+import {
+  type ReactElement,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { LuLoaderCircle, LuMapPin } from "react-icons/lu";
 import AuthMenu from "../../components/auth-menu";
 import AuthPanel from "../../components/auth-panel";
@@ -17,6 +23,12 @@ import {
   fetchMyBookingsWith,
   requestStayViaPortal,
 } from "../../utils/bookings";
+import {
+  clientState,
+  type DebugDetail,
+  recordDebugEvent,
+} from "../../utils/debug";
+import { errorCode } from "../../utils/firebase";
 import { formatDateRange, nights } from "../../utils/format";
 import { listingTypeIcon, listingTypeLabel } from "../../utils/listings";
 import { claimGrant, fetchPortalPage } from "../../utils/portals";
@@ -46,8 +58,8 @@ type Ask = { listingId: string | null; window: PortalWindow | null };
 // write may mean a revoked link, whereas a stall never reached the server.
 type Failure = "refused" | "stalled";
 
-// Generous, because the profile read it waits on normally settles in well under
-// a second — anything near this is broken rather than slow.
+// The only timeout in the flow: this page is outside the app's gate, so the
+// Unreachable screen never renders here. A stall nobody else names ends here.
 const ASK_TIMEOUT_MS = 10_000;
 
 // Dates and friendship are tracked separately, or one pending friend request
@@ -63,7 +75,14 @@ type StandingAsk = {
 // but the account comes AFTER the tap — the buttons are live signed out, and
 // tapping one holds the ask and opens sign-up in place.
 export default function PortalPage(): ReactElement {
-  const { user, anonymous, profile, profileReady, ensureAnonymous } = useKip();
+  const {
+    user,
+    anonymous,
+    profile,
+    profileReady,
+    profileUnreachable,
+    ensureAnonymous,
+  } = useKip();
   const [page, setPage] = useState<PortalContent | null>(null);
   // The portal doc on its own, a round trip ahead of `page`. A SLOT link carries
   // its room here too, but only `page` has the DATES, and a room rendered
@@ -74,7 +93,11 @@ export default function PortalPage(): ReactElement {
   const [standing, setStanding] = useState<StandingAsk | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [ask, setAsk] = useState<Ask | null>(null);
-  const [failed, setFailed] = useState<Failure | null>(null);
+  // Carries the ask it came from, so trying again is one tap rather than a hunt
+  // back to a button that may now be scrolled off or behind the error.
+  const [failed, setFailed] = useState<{ reason: Failure; ask: Ask } | null>(
+    null,
+  );
   // The rooms didn't load, but the host block did — a different failure from a
   // link that never resolved, and it must not overwrite what's already on screen.
   const [roomsFailed, setRoomsFailed] = useState(false);
@@ -106,6 +129,10 @@ export default function PortalPage(): ReactElement {
     setOwner(null);
     setRoomsFailed(false);
     setStanding(null);
+    // A held ask names a portal that is about to stop existing, and the send
+    // effect would refuse it forever without saying so.
+    setAsk(null);
+    setFailed(null);
     // Handed over in flight: the portal doc needs no identity to read.
     fetchPortalPage(token, ensureAnonymous(), (found) => {
       if (!live) return;
@@ -158,6 +185,30 @@ export default function PortalPage(): ReactElement {
     // never changes identity for someone who made their account on this page.
   }, [user, anonymous, hostId]);
 
+  // Written during render so a failure reports the state it actually failed in,
+  // rather than whatever the effect closed over when it armed — for the timer
+  // that is up to ten seconds of drift. Same shape as `lastPopped` in page.tsx.
+  const vector = useRef<DebugDetail>({});
+  vector.current = {
+    anonymous,
+    profileReady,
+    profileUnreachable,
+    hasProfile: profile !== null,
+    hasName: Boolean(profile?.displayName),
+    hostLoaded: portal !== null,
+    roomsLoaded: page !== null,
+  };
+  // These failures throw nothing, so the state that decided them is the whole
+  // report. Stable, so effects can call it without re-running on every render.
+  const report = useCallback((reason: Failure, extra: DebugDetail = {}) => {
+    recordDebugEvent("portal-ask", {
+      reason,
+      ...vector.current,
+      ...clientState(),
+      ...extra,
+    });
+  }, []);
+
   // Cleared first, so a later dependency change can't fire a second request. The
   // name comes off the kip profile, never `user.email` — that would write their
   // address into a document the host can read.
@@ -197,10 +248,11 @@ export default function PortalPage(): ReactElement {
       )
       .catch((error: unknown) => {
         console.error(error);
-        setFailed("refused");
+        report("refused", { code: errorCode(error) });
+        setFailed({ reason: "refused", ask: { listingId, window: slot } });
       })
       .finally(() => setBusy(null));
-  }, [ask, portal, user, profileReady, profile]);
+  }, [ask, portal, user, profileReady, profile, report]);
 
   // Anonymous counts as signed out here — a ticket is not an account.
   const identified = Boolean(user) && !anonymous;
@@ -212,17 +264,23 @@ export default function PortalPage(): ReactElement {
   // signed in and profile loaded, where a tap used to show nothing at all.
   const holding = ask === null ? busy : (ask.window?.id ?? FRIEND_ONLY);
 
-  // An ask held with NEITHER sheet up is waiting on the profile, and nothing
-  // else would ever stop the spinner. Deliberately not extended to the send:
-  // that write is Firestore's, which queues offline and lands on reconnect.
+  // An ask held with NEITHER sheet up is waiting on the profile. Deliberately
+  // not extended to the send: that write is Firestore's, which queues offline
+  // and lands on reconnect.
   useEffect(() => {
     if (ask === null || needsAccount || needsName) return;
-    const timer = setTimeout(() => {
+    const give = (): void => {
+      report("stalled");
       setAsk(null);
-      setFailed("stalled");
-    }, ASK_TIMEOUT_MS);
+      setFailed({ reason: "stalled", ask });
+    };
+    if (profileUnreachable) {
+      give();
+      return;
+    }
+    const timer = setTimeout(give, ASK_TIMEOUT_MS);
     return () => clearTimeout(timer);
-  }, [ask, needsAccount, needsName]);
+  }, [ask, needsAccount, needsName, profileUnreachable, report]);
 
   return (
     <div className="flex min-h-dvh flex-col">
@@ -266,7 +324,12 @@ export default function PortalPage(): ReactElement {
             isOwner={identified && user?.uid === portal.ownerId}
             standing={standing}
             busy={holding}
-            failed={failed}
+            failed={failed?.reason ?? null}
+            onRetry={() => {
+              if (!failed) return;
+              setAsk(failed.ask);
+              setFailed(null);
+            }}
             onAsk={(listingId, slot) => {
               setFailed(null);
               setAsk({ listingId, window: slot });
@@ -363,6 +426,7 @@ function PortalView({
   standing,
   busy,
   failed,
+  onRetry,
   onAsk,
 }: {
   portal: Portal;
@@ -375,6 +439,7 @@ function PortalView({
   isOwner: boolean;
   standing: StandingAsk | null;
   busy: string | null;
+  onRetry: () => void;
   onAsk: (listingId: string | null, window: PortalWindow | null) => void;
 }): ReactElement {
   const firstName = portal.ownerName.split(" ")[0] || portal.ownerName;
@@ -448,13 +513,19 @@ function PortalView({
         </p>
       ) : null}
 
-      {/* Without this the button just reappears and a failure is invisible. */}
+      {/* Without this the button just reappears and a failure is invisible. The
+          retry re-sends the ask that failed, so nothing has to be found again. */}
       {failed ? (
-        <p className="px-1 text-center text-sm text-danger">
-          {failed === "refused"
-            ? "That didn't go through. Check your connection and try again — the link may also have been turned off."
-            : "Couldn't reach kip just now, so nothing was sent. Check your connection and try again."}
-        </p>
+        <div className="flex flex-col items-center gap-3 px-1">
+          <p className="text-center text-sm text-danger">
+            {failed === "refused"
+              ? "That didn't go through — the link may have been turned off."
+              : "Couldn't reach kip just now, so nothing was sent. Check your connection."}
+          </p>
+          <Button variant="secondary" onClick={onRetry}>
+            Try again
+          </Button>
+        </div>
       ) : null}
     </div>
   );

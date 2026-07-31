@@ -74,6 +74,14 @@ export function firebaseConfigured(): boolean {
   return firebaseConfig.appId !== "";
 }
 
+// Every Firebase error carries one, auth and Firestore alike, and it is the only
+// part of one worth keeping — the message is prose that changes between releases.
+export function errorCode(error: unknown): string {
+  return typeof error === "object" && error !== null && "code" in error
+    ? String((error as { code: unknown }).code)
+    : "";
+}
+
 // A snapshot error is TERMINAL: the SDK drops that listener and never retries
 // it. So logging alone leaves the screen frozen on its last snapshot, still
 // styled as live — worse than an error, because nothing looks wrong. Whoever
