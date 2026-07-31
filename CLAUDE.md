@@ -1073,9 +1073,16 @@ The deployer holds `firebase.admin`, `cloudfunctions.admin`, `run.admin`, `artif
 `secretmanager.admin`. That is a powerful principal — it can deploy code that runs with admin access
 to the database — which is exactly why it's reachable only from this repo and never as a stored key.
 
-`bun test` runs the three suites that need no emulator (named one by one in the script, so the
-emulator-only rules suite isn't swept in — a new file has to be added there): the notification
-decisions above; the saved-search arithmetic (`countNewSince` ignoring slots written before
+`bun run test` runs everything that needs no emulator: plain `bun test` with the rules suite
+excluded by path, since that one does. It was an ALLOWLIST of filenames, and that list was copied
+into `ci.yml` as well — where it then stayed behind, so `search` and `reattach` were written, passed
+locally, and never once ran in CI. One exclusion beats four inclusions: a new suite is now picked up
+by both without editing either. `ci.yml` runs the script rather than its own copy for the same
+reason. Note the exclusion has to be the `--path-ignore-patterns` FLAG and not a `bunfig.toml`
+`[test]` entry — bunfig's version also wins over an explicitly named file, which makes `test:rules`
+match nothing at all. The suites: the notification
+decisions above; the re-attach decision (`decideReattach`, see Known limitations); the
+saved-search arithmetic (`countNewSince` ignoring slots written before
 `createdAt` existed and counting slots rather than places; `sameCriteria` treating one place
 geocoded twice as one search); and a drift
 check that pins the vocabulary the two packages share but can't import across
