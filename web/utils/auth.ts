@@ -35,18 +35,21 @@ function alreadyRegistered(error: unknown): boolean {
 
 // Firebase restores a persisted session asynchronously, so anything branching on
 // "is anyone signed in?" must await this or act on a false negative.
-let settled: Promise<User | null> | null = null;
+let restored: Promise<void> | null = null;
 
 export function authSettled(): Promise<User | null> {
-  if (!settled) {
-    settled = new Promise((resolve) => {
-      const stop = onAuthStateChanged(auth(), (user) => {
-        stop();
-        resolve(user);
-      });
+  restored ??= new Promise((resolve) => {
+    const stop = onAuthStateChanged(auth(), () => {
+      stop();
+      resolve();
     });
-  }
-  return settled;
+  });
+  // Only the WAIT is one-shot; the ANSWER is read fresh every call. Caching the
+  // first callback's argument reported whoever was signed in at load forever
+  // after — so opening a second share link in the same tab (a fragment change,
+  // which is not a reload) told the caller nobody was signed in, and
+  // `ensureAnonymous` replaced a real account with an empty one.
+  return restored.then(() => auth().currentUser);
 }
 
 export async function googleSignIn(): Promise<unknown> {

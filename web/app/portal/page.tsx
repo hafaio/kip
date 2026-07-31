@@ -42,6 +42,14 @@ const FRIEND_ONLY = "__friend__";
 // they asked to connect rather than for specific dates.
 type Ask = { listingId: string | null; window: PortalWindow | null };
 
+// Why an ask never went out. Two causes, because the advice differs: a refused
+// write may mean a revoked link, whereas a stall never reached the server.
+type Failure = "refused" | "stalled";
+
+// Generous, because the profile read it waits on normally settles in well under
+// a second — anything near this is broken rather than slow.
+const ASK_TIMEOUT_MS = 10_000;
+
 // Dates and friendship are tracked separately, or one pending friend request
 // suppresses every Request button on the page. A set, because bookings have
 // auto-ids and nothing stops a visitor asking for several ranges.
@@ -66,7 +74,7 @@ export default function PortalPage(): ReactElement {
   const [standing, setStanding] = useState<StandingAsk | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [ask, setAsk] = useState<Ask | null>(null);
-  const [failed, setFailed] = useState(false);
+  const [failed, setFailed] = useState<Failure | null>(null);
   // The rooms didn't load, but the host block did — a different failure from a
   // link that never resolved, and it must not overwrite what's already on screen.
   const [roomsFailed, setRoomsFailed] = useState(false);
@@ -160,7 +168,7 @@ export default function PortalPage(): ReactElement {
     const { listingId, window: slot } = ask;
     setAsk(null);
     setBusy(slot?.id ?? FRIEND_ONLY);
-    setFailed(false);
+    setFailed(null);
     const sender = {
       uid: user.uid,
       username: profile.username,
@@ -189,7 +197,7 @@ export default function PortalPage(): ReactElement {
       )
       .catch((error: unknown) => {
         console.error(error);
-        setFailed(true);
+        setFailed("refused");
       })
       .finally(() => setBusy(null));
   }, [ask, portal, user, profileReady, profile]);
@@ -199,6 +207,26 @@ export default function PortalPage(): ReactElement {
   const needsAccount = ask !== null && !identified;
   const needsName =
     ask !== null && identified && profileReady && !profile?.displayName;
+  // A held ask spins the control it came from, so a tap is never a no-op. The
+  // two sheets above cover "no account" and "no name"; neither covers the gap
+  // between signed in and profile loaded, where a tap set `ask`, opened nothing,
+  // and left the effect waiting — no sheet, no spinner, no error.
+  const holding = ask === null ? busy : (ask.window?.id ?? FRIEND_ONLY);
+
+  // An ask held with NEITHER sheet up is waiting on the profile, and if that
+  // never arrives the spinner keeps claiming work is in progress when none is.
+  // Scoped to exactly that state: a sheet up means the visitor is being asked
+  // for something, and once the send starts the write belongs to Firestore,
+  // which queues offline and lands on reconnect — so reporting a failure there
+  // would be wrong rather than merely early.
+  useEffect(() => {
+    if (ask === null || needsAccount || needsName) return;
+    const timer = setTimeout(() => {
+      setAsk(null);
+      setFailed("stalled");
+    }, ASK_TIMEOUT_MS);
+    return () => clearTimeout(timer);
+  }, [ask, needsAccount, needsName]);
 
   return (
     <div className="flex min-h-dvh flex-col">
@@ -243,10 +271,10 @@ export default function PortalPage(): ReactElement {
             roomsFailed={roomsFailed}
             isOwner={identified && user?.uid === portal.ownerId}
             standing={standing}
-            busy={busy}
+            busy={holding}
             failed={failed}
             onAsk={(listingId, slot) => {
-              setFailed(false);
+              setFailed(null);
               setAsk({ listingId, window: slot });
             }}
           />
@@ -349,7 +377,7 @@ function PortalView({
   // can be drawn honestly.
   roomsPending: boolean;
   roomsFailed: boolean;
-  failed: boolean;
+  failed: Failure | null;
   isOwner: boolean;
   standing: StandingAsk | null;
   busy: string | null;
@@ -429,8 +457,9 @@ function PortalView({
       {/* Without this the button just reappears and a failure is invisible. */}
       {failed ? (
         <p className="px-1 text-center text-sm text-danger">
-          That didn't go through. Check your connection and try again — the link
-          may also have been turned off.
+          {failed === "refused"
+            ? "That didn't go through. Check your connection and try again — the link may also have been turned off."
+            : "Couldn't reach kip just now, so nothing was sent. Check your connection and try again."}
         </p>
       ) : null}
     </div>
