@@ -2663,6 +2663,32 @@ describe("the calls the client really makes", () => {
     );
   });
 
+  // `areFriends` on the portal page, and the ONE that decides whether the
+  // "Ask to be friends" button is ever drawn. The rule reads path variables
+  // only, never `resource.data`, so an edge that isn't there answers "no"
+  // instead of throwing — which is what `connectRequests` does, and why this is
+  // pinned rather than assumed. Refusing here would reject the whole
+  // `Promise.all`, leave `standing` null forever and strand the control on
+  // `unknown` for exactly the visitors who are NOT friends yet.
+  it("areFriends answers no for an edge that doesn't exist", async () => {
+    await assertSucceeds(
+      getDoc(doc(authed(GUEST), "users", GUEST, "friends", STRANGER)),
+    );
+  });
+
+  it("areFriends answers yes for an edge that does", async () => {
+    await assertSucceeds(
+      getDoc(doc(authed(GUEST), "users", GUEST, "friends", HOST)),
+    );
+  });
+
+  // Only ever your own side, so nobody can probe someone else's circle.
+  it("nobody reads a friend edge they are not part of", async () => {
+    await assertFails(
+      getDoc(doc(authed(STRANGER), "users", GUEST, "friends", HOST)),
+    );
+  });
+
   // `requestBooking`, non-auto path: the ask alone, leaving the slot open.
   it("a friend's plain request touches no slot", async () => {
     await seed((db) =>

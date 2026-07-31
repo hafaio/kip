@@ -30,6 +30,7 @@ import {
 } from "../../utils/debug";
 import { errorCode } from "../../utils/firebase";
 import { formatDateRange, nights } from "../../utils/format";
+import { areFriends } from "../../utils/friends";
 import { listingTypeIcon, listingTypeLabel } from "../../utils/listings";
 import { claimGrant, fetchPortalPage } from "../../utils/portals";
 import {
@@ -62,14 +63,25 @@ type Failure = "refused" | "stalled";
 // Unreachable screen never renders here. A stall nobody else names ends here.
 const ASK_TIMEOUT_MS = 10_000;
 
-// Dates and friendship are tracked separately, or one pending friend request
-// suppresses every Request button on the page. A set, because bookings have
-// auto-ids and nothing stops a visitor asking for several ranges.
-type StandingAsk = {
+// Everything about the visitor's relationship with this host, answered in one
+// go. Dates stay a LIST rather than a flag, or one pending friend request
+// suppresses every Request button on the page — bookings have auto-ids and
+// nothing stops a visitor asking for several ranges.
+//
+// Null means not answered YET, which is why the connect control waits for it
+// rather than guessing: the three states are mutually exclusive, and the wrong
+// guess offers an ask that can only be refused.
+type Standing = {
   windowIds: readonly string[];
   confirmed: boolean;
   connectPending: boolean;
+  friend: boolean;
 };
+
+// What the connect control has to say. `none` covers the host themselves and
+// anyone already connected — neither has anything left to ask for. `unknown` is
+// the lookup not having answered yet, where drawing an ask would be a guess.
+type Connect = "ask" | "sent" | "none" | "unknown";
 
 // The one screen outside the auth gate. Browsing needs no account; asking does,
 // but the account comes AFTER the tap — the buttons are live signed out, and
@@ -90,7 +102,7 @@ export default function PortalPage(): ReactElement {
   // block is drawn from this. Superseded the moment `page` lands.
   const [owner, setOwner] = useState<Portal | null>(null);
   const [state, setState] = useState<LoadState>("loading");
-  const [standing, setStanding] = useState<StandingAsk | null>(null);
+  const [standing, setStanding] = useState<Standing | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [ask, setAsk] = useState<Ask | null>(null);
   // Carries the ask it came from, so trying again is one tap rather than a hunt
@@ -162,15 +174,16 @@ export default function PortalPage(): ReactElement {
   // Reported separately, so neither ask can hide the other's affordance. Keyed
   // on the host's uid rather than on `portal`, which is now a DIFFERENT object
   // each time it improves — first the portal doc, then the fuller one — and
-  // would otherwise run this, and its two reads, twice on every load.
+  // would otherwise run this, and its three reads, twice on every load.
   const hostId = portal?.ownerId ?? null;
   useEffect(() => {
     if (!user || anonymous || !hostId) return;
     Promise.all([
       fetchMyBookingsWith(user.uid, hostId),
       fetchMyConnectRequest(user.uid, hostId),
+      areFriends(user.uid, hostId),
     ])
-      .then(([bookings, request]) => {
+      .then(([bookings, request, friend]) => {
         const live = bookings.filter(
           (booking) => booking.status !== "CANCELLED",
         );
@@ -178,6 +191,7 @@ export default function PortalPage(): ReactElement {
           windowIds: live.map((booking) => booking.windowId),
           confirmed: live.some((booking) => booking.status === "CONFIRMED"),
           connectPending: request !== null,
+          friend,
         });
       })
       .catch((error: unknown) => console.error(error));
@@ -244,6 +258,9 @@ export default function PortalPage(): ReactElement {
             : (current?.windowIds ?? []),
           confirmed: current?.confirmed ?? false,
           connectPending: slot ? (current?.connectPending ?? false) : true,
+          // Asking is only ever offered to someone who isn't one yet, so this
+          // settles `unknown` for a visitor whose lookup never ran at all.
+          friend: current?.friend ?? false,
         })),
       )
       .catch((error: unknown) => {
@@ -256,6 +273,21 @@ export default function PortalPage(): ReactElement {
 
   // Anonymous counts as signed out here — a ticket is not an account.
   const identified = Boolean(user) && !anonymous;
+  const isOwner = identified && user?.uid === portal?.ownerId;
+  // A signed-out visitor has no edge and no request, so there is nothing to
+  // look up and the ask is live from the first paint — which is the visitor
+  // this whole page exists for.
+  const connect: Connect = isOwner
+    ? "none"
+    : !identified
+      ? "ask"
+      : standing === null
+        ? "unknown"
+        : standing.friend
+          ? "none"
+          : standing.connectPending
+            ? "sent"
+            : "ask";
   const needsAccount = ask !== null && !identified;
   const needsName =
     ask !== null && identified && profileReady && !profile?.displayName;
@@ -321,7 +353,8 @@ export default function PortalPage(): ReactElement {
             windows={page?.windows ?? {}}
             roomsPending={page === null}
             roomsFailed={roomsFailed}
-            isOwner={identified && user?.uid === portal.ownerId}
+            isOwner={isOwner}
+            connect={connect}
             standing={standing}
             busy={holding}
             failed={failed?.reason ?? null}
@@ -423,6 +456,7 @@ function PortalView({
   roomsPending,
   roomsFailed,
   isOwner,
+  connect,
   standing,
   busy,
   failed,
@@ -437,7 +471,8 @@ function PortalView({
   roomsFailed: boolean;
   failed: Failure | null;
   isOwner: boolean;
-  standing: StandingAsk | null;
+  connect: Connect;
+  standing: Standing | null;
   busy: string | null;
   onRetry: () => void;
   onAsk: (listingId: string | null, window: PortalWindow | null) => void;
@@ -487,8 +522,16 @@ function PortalView({
         ))
       )}
 
-      {/* The only route when a link has nothing free on it. */}
-      {!isOwner && !standing?.connectPending ? (
+      {/* The only route when a link has nothing free on it, and it reports its
+          own state where it stands rather than vanishing — the same swap a slot
+          row makes between Request and a Requested chip. Nothing at all once
+          they're connected: a link is an ordinary way to reach a friend's
+          places, so there is simply nothing left to ask for. */}
+      {connect === "sent" ? (
+        <Chip tone="pending" className="self-center">
+          Friend request sent
+        </Chip>
+      ) : connect === "ask" ? (
         <Button
           variant="secondary"
           size="lg"
@@ -504,8 +547,9 @@ function PortalView({
         </Button>
       ) : null}
 
-      {standing &&
-      (standing.windowIds.length > 0 || standing.connectPending) ? (
+      {/* Dates only — the connect chip above says its own piece, and this line
+          used to speak for both without naming which. */}
+      {standing && standing.windowIds.length > 0 ? (
         <p className="px-1 text-center text-sm text-muted">
           {standing.confirmed
             ? `${firstName} confirmed your dates — they're yours.`

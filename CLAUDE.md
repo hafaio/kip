@@ -897,9 +897,25 @@ document — so the trigger is `onDocumentDeleted` on `connectRequests`, and wha
 no is whether `users/{from}/friends/{to}` now exists. That one read also supplies the accepter's name
 and photo, already pinned by `edgeMatchesWriter` to their real profile, so nothing further is read.
 
-The edge must also POSTDATE the ask (`since > createdAt`, both server timestamps). Two people who
-are already friends can still send and drop a request — a friend opening your share link is offered
-one — and their standing edge would otherwise report that withdrawal as an acceptance.
+The edge must also POSTDATE the ask (`since > createdAt`, both server timestamps), or a pair who
+were ALREADY friends when the request was sent would have their withdrawal reported as an
+acceptance. All three routes in now refuse to offer that ask (handle search says "You're already
+friends", PersonPage gates on `!friend`, and the portal page on its `Connect` state — which it did
+not, and is how this case was found), but the rules don't forbid the write and the trigger can't
+assume the client behaved.
+
+**A connect control has three states and a fourth for "not yet".** `Connect` (`app/portal/page.tsx`)
+is `ask` | `sent` | `none` | `unknown`, and the control reports whichever it's in WHERE IT STANDS —
+a `pending` Chip reading "Friend request sent" in the button's own place, the same swap a slot row
+makes between Request and its Requested chip. It used to vanish instead, with a paragraph further
+down saying "Sent — they'll get back to you" that spoke for pending DATES as well and named neither.
+
+`unknown` is the one that matters: `standing` is fetched only after the portal doc lands, so an ask
+drawn before it answers is a guess, and it was wrong for anyone who had already asked. Friendship is
+now read in that same `Promise.all` rather than off the store's live `friends` — one answer arriving
+at one moment, no second readiness flag, and consistent with a page where nothing else is live
+either. A signed-out visitor skips it entirely: they have no edge and no request, so the ask is live
+from the first paint, which is the visitor this page is for.
 
 A decline sends nothing, deliberately: the person who asked learns it by the row disappearing, and
 "they said no" is not a message worth delivering to an inbox.
@@ -1120,7 +1136,10 @@ pinned on the other party); **guest access** (a `{bookingId}` pointer, inert onc
 CONFIRMED); **slots** (a booked slot's dates are frozen, notes still editable; an expired slot's
 dates are frozen too — not even by a day — while notes and delete still work, and a slot ending
 TODAY stays editable, which pins the deliberate UTC-vs-local slack); **friend edges**
-(you may heal only the entry describing you); the **usernames registry + profile integrity**; the
+(you may heal only the entry describing you, you may read only your own side, and an edge that
+isn't there ANSWERS rather than denying — the portal's `areFriends` asks about a stranger every
+time, and a rule touching `resource.data` would refuse it and strand the connect control on
+`unknown`, which is exactly what `connectRequests` does); the **usernames registry + profile integrity**; the
 **discovery gate**; **saved searches** (owner-only, not listable, not plantable by anyone else);
 **shared stays** (a friend of the guest reads the booking, a friend of only the host reads the SLOT
 but not the booking, sharing off closes it and back on reopens it, absent prefs counts as NOT sharing,

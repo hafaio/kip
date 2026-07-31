@@ -81,6 +81,16 @@ export function watchOwnProfile(
   );
 }
 
+// Your own edge, so it needs no grant — which is what makes it askable from the
+// share-link page, where the visitor can't read the host's side of anything.
+export async function areFriends(
+  uid: string,
+  otherUid: string,
+): Promise<boolean> {
+  const snap = await getDoc(doc(db(), "users", uid, "friends", otherUid));
+  return snap.exists();
+}
+
 function toFriend(snap: QueryDocumentSnapshot<DocumentData>): Friend {
   const data = snap.data();
   return {
