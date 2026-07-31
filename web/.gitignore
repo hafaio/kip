@@ -3,3 +3,8 @@ node_modules/
 out/
 *.tsbuildinfo
 .DS_Store
+# Generated, and its content depends on which command wrote it last: `next dev`
+# points the route-types import at .next/dev, `next build` at .next. Tracking it
+# meant a permanently dirty file that a bare commit could sweep up. `tsc` passes
+# without it entirely, so it is regenerated locally and needed by nothing.
+next-env.d.ts
