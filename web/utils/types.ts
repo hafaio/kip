@@ -148,6 +148,11 @@ export const NOTIFY_EVENTS = {
     note: "By your username, or through a link you shared.",
     default: true, // the only route in for a stranger holding your link
   },
+  connectAccepted: {
+    label: "Someone agrees to be friends",
+    note: "You asked to connect and they said yes.",
+    default: true, // a decline says nothing, so silence would read as one
+  },
 } as const;
 
 export type NotifyKind = keyof typeof NOTIFY_EVENTS;

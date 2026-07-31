@@ -7,6 +7,7 @@ import {
   linkTo,
   NOTIFY_LABELS,
   noticeForBookingChange,
+  noticeForConnectAccepted,
   noticeForConnectRequest,
   noticeForNewBooking,
   notifyFromForm,
@@ -215,6 +216,34 @@ describe("a connect request", () => {
   it("survives a sender with no name at all", () => {
     const notice = noticeForConnectRequest({});
     expect(notice.subject).toBe("Someone wants to connect on kip");
+  });
+});
+
+// The mirror of the one above, and the pair is easy to get backwards: this one
+// is read by whoever ASKED, and names the person who said yes.
+describe("a connect request accepted", () => {
+  it("tells the sender who agreed", () => {
+    const notice = noticeForConnectAccepted({
+      uid: "u_priya",
+      displayName: "Priya Raman",
+      photoURL: HOST_PHOTO,
+    });
+    expect(notice.to).toBe("sender");
+    expect(notice.kind).toBe("connectAccepted");
+    expect(notice.subject).toBe("Priya agreed to be friends");
+    expect(notice.body).toContain("Priya Raman");
+    expect(notice.person.photoURL).toBe(HOST_PHOTO);
+  });
+
+  it("points at the new friend, not at Friends", () => {
+    const notice = noticeForConnectAccepted({ uid: "u/1 2" });
+    expect(notice.path).toBe("#/person/u%2F1%202");
+    expect(notice.cta).toBe("See their profile");
+  });
+
+  it("survives an accepter with no name at all", () => {
+    const notice = noticeForConnectAccepted({ uid: "u_priya" });
+    expect(notice.subject).toBe("Someone agreed to be friends");
   });
 });
 
@@ -535,6 +564,7 @@ describe("the page a link lands on", () => {
       "bookingRequested",
       "bookingDecision",
       "connectRequest",
+      "connectAccepted",
     ]);
   });
 
@@ -679,6 +709,7 @@ describe("what a posted form asks for", () => {
       bookingDecision: false,
       stayCancelled: true,
       connectRequest: false,
+      connectAccepted: false,
     });
     expect(notifyFromForm({ action: "set" })).toEqual(ALL_OFF);
   });
@@ -745,7 +776,11 @@ describe("the page a POST lands on", () => {
   // point of the wider form is that somebody chose a set.
   it("names what is left on after a set", () => {
     const saved = renderNotifySaved(
-      notifyStateFrom({ bookingTaken: false, connectRequest: false }),
+      notifyStateFrom({
+        bookingTaken: false,
+        connectRequest: false,
+        connectAccepted: false,
+      }),
       SETTINGS,
     );
     expect(saved).toContain("Choices saved");

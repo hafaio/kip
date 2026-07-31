@@ -864,10 +864,10 @@ Rules: [firebase/firestore.rules](./firebase/firestore.rules), [firebase/storage
 ## Notifications (email, sent by Cloud Functions)
 
 `functions/src/messages.ts` decides WHAT to say and to WHOM — pure, no Firebase — and
-`functions/src/index.ts` holds the three Firestore triggers plus the I/O (resolve an address from
+`functions/src/index.ts` holds the four Firestore triggers plus the I/O (resolve an address from
 Auth, read preferences, send). They're split because the triggers need emulators, real Auth accounts
 and an SMTP server to exercise, so in practice they were never run at all; the decisions need none
-of that and are covered by `web/tests/notifications.test.ts` (39 cases, incl. the two mirror-image
+of that and are covered by `web/tests/notifications.test.ts` (74 cases, incl. the two mirror-image
 cancellations, which are the easiest pair to get backwards).
 
 Each notice carries a **`path`, a `cta` label and the OTHER party's `person`**, so every email links
@@ -889,6 +889,20 @@ can't ask for an email at all, only cause a real state change that warrants one.
 - `onBookingCreated` — someone asked to stay (or instant-booked) → the host.
 - `onBookingChanged` — confirmed / declined / cancelled → whichever side didn't act.
 - `onConnectRequested` — someone asked to be friends → the recipient.
+- `onConnectAnswered` — they said yes → whoever asked.
+
+**An acceptance has no event of its own, so it is read off the friend edge.** `acceptRequest` is one
+batch that writes both edges and DELETES the request, and declining or withdrawing deletes the same
+document — so the trigger is `onDocumentDeleted` on `connectRequests`, and what tells a yes from a
+no is whether `users/{from}/friends/{to}` now exists. That one read also supplies the accepter's name
+and photo, already pinned by `edgeMatchesWriter` to their real profile, so nothing further is read.
+
+The edge must also POSTDATE the ask (`since > createdAt`, both server timestamps). Two people who
+are already friends can still send and drop a request — a friend opening your share link is offered
+one — and their standing edge would otherwise report that withdrawal as an acceptance.
+
+A decline sends nothing, deliberately: the person who asked learns it by the row disappearing, and
+"they said no" is not a message worth delivering to an inbox.
 
 **Why triggers and not a client-written queue.** The old design had the client enqueue into a `mail`
 collection with a rule allowing it only between two parties of a shared booking. That could gate
@@ -928,7 +942,8 @@ from you (off, and requests sit unanswered); `bookingTaken` is only news, which 
 from the ask rather than sharing a switch — it's the most reasonable one to turn off;
 `bookingDecision` decides whether you have somewhere to stay; `stayCancelled` is the one you'd
 genuinely regret missing, and Settings warns when it's switched off; `connectRequest` is lower
-stakes but is the only route in for a stranger holding your link.
+stakes but is the only route in for a stranger holding your link; `connectAccepted` answers
+something you asked for, and since a decline says nothing at all, silence would read as one.
 
 Stored as **nothing** until changed: a user who never opens Settings has no `notify` field, and
 reads merge over the defaults — so absence means the default, signup writes nothing, and an event
