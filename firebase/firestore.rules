@@ -453,6 +453,30 @@ service cloud.firestore {
       }
     }
 
+    // Write-only diagnostics. Nothing can read one back, which is what separates
+    // it from the `mail` collection below — no recipient, so no channel to a
+    // person. Anonymous callers may write because that is who a share link has.
+    // The shape checks bound one write; the TTL on `expires` bounds the pile.
+    match /debug/{eventId} {
+      allow read, update, delete: if false;
+      allow create: if isSignedIn()
+        && request.resource.data.keys().hasOnly(['uid', 'kind', 'detail', 'at', 'expires'])
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.kind is string
+        && request.resource.data.kind.size() <= 40
+        && request.resource.data.detail is string
+        && request.resource.data.detail.size() <= 2000
+        // Unforgeable, so an event can't be lodged as having happened earlier.
+        && request.resource.data.at == request.time
+        // Bounded at BOTH ends. The upper bound carries slack over the 7 days
+        // the client asks for, since that arithmetic runs on a clock we don't
+        // control; the lower one is what stops an event being written already
+        // expired, which the TTL would then sweep before anyone read it.
+        && request.resource.data.expires is timestamp
+        && request.resource.data.expires > request.time
+        && request.resource.data.expires <= request.time + duration.value(14, 'd');
+    }
+
     // There is deliberately no `mail` collection: a client-written queue could
     // gate who you write to but never what, and couldn't express a connect
     // request at all. Email is sent by triggers on the events themselves.

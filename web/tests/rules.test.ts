@@ -7,6 +7,7 @@ import {
 } from "@firebase/rules-unit-testing";
 import { afterAll, beforeAll, beforeEach, describe, it } from "bun:test";
 import {
+  addDoc,
   collection,
   deleteDoc,
   writeBatch,
@@ -15,7 +16,9 @@ import {
   getDoc,
   getDocs,
   query,
+  serverTimestamp,
   setDoc,
+  Timestamp,
   updateDoc,
   where,
 } from "firebase/firestore";
@@ -2680,5 +2683,107 @@ describe("the calls the client really makes", () => {
         status: "REQUESTED",
       }),
     );
+  });
+});
+
+// Write-only diagnostics: any signed-in caller may add one, nobody may read any
+// back, and the shape is pinned so one crafted write can't be an arbitrary blob.
+describe("debug events", () => {
+  const event = (uid: string) => ({
+    uid,
+    kind: "portal-ask",
+    detail: '{"reason":"stalled"}',
+    at: serverTimestamp(),
+    expires: Timestamp.fromMillis(Date.now() + 7 * 86_400_000),
+  });
+
+  it("a signed-in caller records their own event", async () => {
+    await assertSucceeds(
+      addDoc(collection(authed(STRANGER), "debug"), event(STRANGER)),
+    );
+  });
+
+  // The population this exists to diagnose is anonymous for most of the flow.
+  it("an anonymous visitor records one too", async () => {
+    await assertSucceeds(
+      addDoc(collection(authed("anon-visitor"), "debug"), event("anon-visitor")),
+    );
+  });
+
+  it("nobody records one in another user's name", async () => {
+    await assertFails(
+      addDoc(collection(authed(STRANGER), "debug"), event(OWNER)),
+    );
+  });
+
+  it("signed out records nothing", async () => {
+    await assertFails(addDoc(collection(anon(), "debug"), event(STRANGER)));
+  });
+
+  // The cap is what bounds one write, so it is the whole abuse story.
+  it("an oversized detail is refused", async () => {
+    await assertFails(
+      addDoc(collection(authed(STRANGER), "debug"), {
+        ...event(STRANGER),
+        detail: "x".repeat(2001),
+      }),
+    );
+  });
+
+  it("an extra field is refused", async () => {
+    await assertFails(
+      addDoc(collection(authed(STRANGER), "debug"), {
+        ...event(STRANGER),
+        note: "smuggled",
+      }),
+    );
+  });
+
+  // Unforgeable, or an event could be lodged as having happened at any time.
+  it("a client-chosen timestamp is refused", async () => {
+    await assertFails(
+      addDoc(collection(authed(STRANGER), "debug"), {
+        ...event(STRANGER),
+        at: Timestamp.fromMillis(0),
+      }),
+    );
+  });
+
+  // TTL is the only thing bounding the pile, so an expiry far out defeats it.
+  it("an expiry beyond the retention window is refused", async () => {
+    await assertFails(
+      addDoc(collection(authed(STRANGER), "debug"), {
+        ...event(STRANGER),
+        expires: Timestamp.fromMillis(Date.now() + 30 * 86_400_000),
+      }),
+    );
+  });
+
+  // The other end of the same bound: born expired, swept before anyone reads it.
+  it("an expiry already in the past is refused", async () => {
+    await assertFails(
+      addDoc(collection(authed(STRANGER), "debug"), {
+        ...event(STRANGER),
+        expires: Timestamp.fromMillis(Date.now() - 86_400_000),
+      }),
+    );
+  });
+
+  // Nothing reads these back, which is what keeps them from being a channel to
+  // a person — the distinction from the `mail` collection this schema refused.
+  it("nobody reads one back, including its author", async () => {
+    await seed((db) =>
+      setDoc(doc(db, "debug", "d1"), { ...event(STRANGER), at: Timestamp.now() }),
+    );
+    await assertFails(getDoc(doc(authed(STRANGER), "debug", "d1")));
+    await assertFails(getDocs(collection(authed(STRANGER), "debug")));
+  });
+
+  it("nobody edits or removes one", async () => {
+    await seed((db) =>
+      setDoc(doc(db, "debug", "d2"), { ...event(STRANGER), at: Timestamp.now() }),
+    );
+    await assertFails(updateDoc(doc(authed(STRANGER), "debug", "d2"), { kind: "x" }));
+    await assertFails(deleteDoc(doc(authed(STRANGER), "debug", "d2")));
   });
 });
