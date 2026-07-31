@@ -208,17 +208,13 @@ export default function PortalPage(): ReactElement {
   const needsName =
     ask !== null && identified && profileReady && !profile?.displayName;
   // A held ask spins the control it came from, so a tap is never a no-op. The
-  // two sheets above cover "no account" and "no name"; neither covers the gap
-  // between signed in and profile loaded, where a tap set `ask`, opened nothing,
-  // and left the effect waiting — no sheet, no spinner, no error.
+  // sheets cover "no account" and "no name"; neither covers the gap between
+  // signed in and profile loaded, where a tap used to show nothing at all.
   const holding = ask === null ? busy : (ask.window?.id ?? FRIEND_ONLY);
 
-  // An ask held with NEITHER sheet up is waiting on the profile, and if that
-  // never arrives the spinner keeps claiming work is in progress when none is.
-  // Scoped to exactly that state: a sheet up means the visitor is being asked
-  // for something, and once the send starts the write belongs to Firestore,
-  // which queues offline and lands on reconnect — so reporting a failure there
-  // would be wrong rather than merely early.
+  // An ask held with NEITHER sheet up is waiting on the profile, and nothing
+  // else would ever stop the spinner. Deliberately not extended to the send:
+  // that write is Firestore's, which queues offline and lands on reconnect.
   useEffect(() => {
     if (ask === null || needsAccount || needsName) return;
     const timer = setTimeout(() => {

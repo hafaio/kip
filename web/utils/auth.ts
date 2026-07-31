@@ -45,10 +45,8 @@ export function authSettled(): Promise<User | null> {
     });
   });
   // Only the WAIT is one-shot; the ANSWER is read fresh every call. Caching the
-  // first callback's argument reported whoever was signed in at load forever
-  // after — so opening a second share link in the same tab (a fragment change,
-  // which is not a reload) told the caller nobody was signed in, and
-  // `ensureAnonymous` replaced a real account with an empty one.
+  // first callback's argument told a second share link in the same tab — a
+  // fragment change, not a reload — that nobody was signed in.
   return restored.then(() => auth().currentUser);
 }
 
