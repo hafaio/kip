@@ -35,6 +35,8 @@ portals/{uuid}                     { scope: "USER"|"LISTING"|"SLOT", ownerId, ow
                                      listings: [{ listingId, title, ... windowIds }]?,  # SLOT only
                                      createdAt }   # public get-by-id; rooms+dates otherwise read live
 portals/{uuid}/grants/{uid}        { expires }   # visitor's proof they hold the token; unlocks live dates
+debug/{autoId}                     { uid, kind, detail (JSON string), at, expires }  # write-only diagnostics;
+                                     # create by any signed-in caller, NO read by anyone, TTL on expires
 ```
 
 Rules: [firebase/firestore.rules](./firebase/firestore.rules), [firebase/storage.rules](./firebase/storage.rules).
@@ -174,7 +176,15 @@ Rules: [firebase/firestore.rules](./firebase/firestore.rules), [firebase/storage
   belongs to Firestore, which queues offline and lands on reconnect — so reporting a failure there
   would be wrong rather than merely early. `failed` is a reason (`refused` | `stalled`) and not a
   boolean, because the advice differs: a refusal may mean a revoked link, a stall never reached the
-  server at all.
+  server at all. Either one keeps the ask it came from and offers **Try again**, since the button it
+  was tapped on may now be scrolled away or covered by the error.
+
+  **That timeout stopped being the primary answer, because the wait it was guessing about is now
+  reported.** A real visitor hit it in production: signed in, no sheet, ten seconds, "Couldn't reach
+  kip". The message was true — nothing was sent — but the cause was a gate that could not settle, not
+  a connection that had failed, and the page had no way to tell them apart. See the profile-gate
+  note under the store bullet; the timer is now a backstop for a stall nobody named, and
+  `profileUnreachable` answers the common case outright.
 
   **Nothing automated covers any of this**, and that is a standing risk rather than an oversight. A
   share-link path needs two accounts, a live sign-in and a browser, so it can't be reached from the
@@ -634,6 +644,59 @@ Rules: [firebase/firestore.rules](./firebase/firestore.rules), [firebase/storage
   Firestore, not the Auth user, so own-profile views read them live (a display-name edit in Settings
   reflects immediately). `completeOnboarding`/`updateDisplayName` also mirror the name onto the Auth
   user for any fallback reader.
+
+  **The gate settles off that one listener, because a metadata listener is a complete signal.**
+  Every wait it can be in ends in something visible: an answer opens the gate, silence names itself,
+  and both arrive on the SDK's own bounded timers. The pivot is that a cached absence is the one
+  unbelievable snapshot — byte-identical for "no profile" and "offline with nothing cached", and
+  believing it would put a returning user through onboarding, whose `createProfile` write merges
+  over the name they already have. (A plain listener swallowing it is how a share-link visitor
+  wedged on a permanent splash in production.) So `classifySnapshot` (`utils/profile-gate.ts`)
+  sorts every snapshot into an ANSWER — the profile from cache or server, or a server-confirmed
+  absence — or SILENCE, an absence from cache. What makes one listener sufficient is
+  `includeMetadataChanges: true`, load-bearing twice over and probed against the SDK rather than
+  reasoned (a previous note here claimed metadata events raise nothing useful; the probe said
+  otherwise):
+  - **The absent-from-cache event IS the SDK's offline verdict.** Online with a cold cache the
+    listener raises nothing until the server answers; the cached miss is raised only once the SDK
+    concludes it is offline — first stream failure, or its 10s handshake timer. Three latencies
+    prove the reading: ~1ms after `disableNetwork`, ~40ms against a connection-refused backend,
+    never on a healthy one.
+  - **Recovery re-raises.** Confirming a cached absence changes no document DATA, so a plain
+    listener sits on its cached miss forever — that silence is why the old design raced a
+    `getDocFromServer` against it. Metadata events turn the `fromCache` flip into an event, so the
+    listener that reported silence delivers the real answer ~30ms after the network returns. The
+    raced read is deleted; there is no second code path to reconcile.
+
+  **Silence is a third state, and it is never terminal.** `profileUnreachable` renders "Can't reach
+  kip right now" in place of the splash, BEHIND the gate — the other reading of an unanswered
+  profile is onboarding and an overwrite. It self-heals: a late answer opens the gate and the screen
+  unmounts, so **Try again** (a reload) is a fallback, not the mechanism. It also offers **Sign
+  out**, the only exit that changes anything when the server is refusing the SESSION itself (a
+  disabled account, a revoked token) and a reload hits the same wall. Listener errors count as
+  silence too — otherwise a refusal loop exhausting the re-attach budget while the gate is shut
+  splashes forever, since the `listenersLost` notice renders only inside the app. The first flip
+  records a `profile-unreachable` debug event; retries repeat the failure, not the incident.
+
+  **The one timer of ours guards against the SDK not running, not against the network.**
+  `GATE_BACKSTOP_MS` (15s, past the SDK's 10s handshake) fires silence for the case where no verdict
+  can arrive because the machinery itself is stalled — a frozen primary tab holding the multi-tab
+  cache lease. Firing late or spuriously costs a no-op event: it can never shut an open gate, and a
+  later answer still opens a shut one.
+
+  **The transitions are a pure reducer** — `gateStep` in `utils/profile-gate.ts`, pinned by
+  `tests/profile-gate.test.ts`, the same split as `reattach.ts`: the effect needs React, Firebase
+  and a live session to exercise, the state machine needs none of them. Its invariants are each a
+  bug that existed or nearly did:
+  - **An opening belongs to a session.** A `generation` re-attach for the uid the gate is open for
+    repairs silently — shutting it would splash over an open sheet and any half-typed form — while a
+    new uid starts over, since a stale open would render the app around the LAST session's profile.
+  - **A verdict belongs to an attempt.** A retry for the same uid keeps a standing `unreachable`
+    until something answers; clearing it on each attach flashed error → splash → error at every
+    step of the 500ms/2s/6s ladder. A new uid starts clean.
+  - **Silence once the gate is open changes nothing** — that is the re-attach machinery's problem.
+  - **Never open and unreachable at once**, which is what entitles `page.tsx` to render Unreachable
+    only behind a shut gate.
 - **Friends-only, multi-provider sign-in + a one-field onboarding gate.** Nothing is public, so an
   unauthenticated visitor only ever sees `components/sign-in-screen.tsx` — **email/password OR
   Google** (`utils/auth.ts` wraps both plus password reset; `emailSignUp` fires
@@ -765,6 +828,38 @@ Rules: [firebase/firestore.rules](./firebase/firestore.rules), [firebase/storage
   `RoomCard`/`ListingCard` are retired. Browse's filters live in the store's `criteria` (so they
   survive navigation) behind a filter `Sheet`. Listings have **no tags** (a marketplace pattern that
   doesn't fit a friends app); the free-text `description` carries any detail.
+- **Failures that throw nothing report themselves, to a collection nobody can read.** The failures
+  worth diagnosing here are silences — a wait that ended, a listener that went quiet — so there is no
+  exception and a stack trace would be empty. What matters is the STATE that made the decision, which
+  is why `debug` carries a `detail` JSON blob (`utils/debug.ts`, `recordDebugEvent` + `clientState`)
+  rather than an error. Three sites write one: the portal ask when it is refused or stalls, the store
+  when the re-attach budget runs out, and the profile gate when it turns unreachable. The latter two
+  fire once per incident rather than once per retry, since the retries behind them are automatic and
+  say nothing new. A portal ask is a person tapping, so every attempt is its own event.
+
+  **The guard vector is snapshotted during render, not read in the effect.** A timer fires up to ten
+  seconds after it armed, and reporting the state the effect closed over would describe the moment
+  the visitor tapped rather than the moment it failed.
+
+  **It is client-writable and nobody can read it back, which is exactly what separates it from the
+  `mail` collection this schema refused.** No recipient, no delivery, nothing to read — so it can't
+  be a channel to a person, which was that design's fatal problem. What it CAN do is cost money: any
+  signed-in caller may create, anonymous included, and that is deliberate, since a share-link visitor
+  is anonymous for most of the flow this exists to diagnose. So the rule pins the writer, the key
+  set, both string lengths, `at == request.time`, and an `expires` inside the retention window; the
+  TTL bounds the pile. There is **no App Check** (deliberate, project-wide), so a determined script
+  can still burn writes — the budget alert is the backstop, and deleting the rules block turns the
+  whole facility off with nothing else to unpick.
+
+  **Its worst case is the case it most wants to cover**, and that is worth stating plainly: the write
+  goes to the same Firestore that may be what's broken. Firestore queues writes locally and flushes
+  on reconnect, so a stall that later clears does report itself — but a tab closed first loses it.
+  Best-effort is the whole contract, which is why `recordDebugEvent` swallows its own errors: a
+  diagnostic that can fail the thing it is diagnosing is worse than no diagnostic.
+
+  This was chosen over a copy-diagnostics button and over gating on a Firebase Auth custom claim. A
+  claim can't attach to a visitor who has no account yet, and doesn't appear client-side until the
+  token refreshes — wrong population, on the one page where the population is the whole point.
 
 ## Notifications (email, sent by Cloud Functions)
 
@@ -1016,7 +1111,10 @@ TODAY stays editable, which pins the deliberate UTC-vs-local slack); **friend ed
 but not the booking, sharing off closes it and back on reopens it, absent prefs counts as NOT sharing,
 a request or cancellation is never shared, planting a friend edge on your own side proves nothing,
 and the feed's query is refused without its status filter); and
-the **browse lookup budget** (20 distinct friends passes, 25 fails).
+the **browse lookup budget** (20 distinct friends passes, 25 fails); and **debug events** (anyone
+signed in may add one including an anonymous visitor, nobody may add one in another's name, the
+shape and size caps hold, the timestamp can't be chosen, an expiry past the retention window is
+refused, and nobody — the author included — can read, edit or delete one).
 
 Any fixture the expiry rule touches uses `isoIn(days)`, not a date literal — a hard-coded date
 silently changes meaning as the calendar walks past it, and "the host can freely edit an open slot"
@@ -1039,7 +1137,8 @@ If port 8080 is already held by another project's emulator, switch both `firebas
 6. Deploy rules: `firebase deploy --only firestore:rules` (add `storage` once photos are on, and
    `functions` once notifications land). Public share links need **Anonymous** sign-in enabled and a
    Firestore **TTL policy** on the `grants` collection group, field `expires` (housekeeping only —
-   an expired grant is already inert).
+   an expired grant is already inert). The `debug` collection wants the same policy on the same
+   field, and there it is the only thing bounding the pile.
 7. **Authentication → Settings → Authorized domains:** add the deployed domain (e.g.
    `<user>.github.io`) so sign-in works in production.
 
@@ -1091,7 +1190,8 @@ by both without editing either. `ci.yml` runs the script rather than its own cop
 reason. Note the exclusion has to be the `--path-ignore-patterns` FLAG and not a `bunfig.toml`
 `[test]` entry — bunfig's version also wins over an explicitly named file, which makes `test:rules`
 match nothing at all. The suites: the notification
-decisions above; the re-attach decision (`decideReattach`, see Known limitations); the
+decisions above; the re-attach decision (`decideReattach`, see Known limitations); the profile-gate
+decision (`gateStep`, when the gate opens, shuts and gives up — see the store bullet); the
 saved-search arithmetic (`countNewSince` ignoring slots written before
 `createdAt` existed and counting slots rather than places; `sameCriteria` treating one place
 geocoded twice as one search); and a drift
@@ -1156,9 +1256,9 @@ expect when it does.
   **A re-attach must not reset `profileReady`.** `page.tsx` renders a full-screen splash whenever
   that is false, so resetting it mid-session blanks the whole app — unmounting an open sheet and any
   half-typed form — which is the exact opposite of the invisible repair this mechanism exists to be.
-  The profile effect therefore tracks `readyFor` (whose profile the flag is about) and only reloads
-  the gate when the SESSION changes, not when `generation` bumps. This was live for one commit and
-  is the kind of thing that only shows up by driving the real UI.
+  Which session an opening belongs to is now `gateStep`'s job (see the store bullet) — it reopens
+  the gate only when the SESSION changes, never when `generation` bumps. This was live for one
+  commit and is the kind of thing that only shows up by driving the real UI.
 
   The two benign races the old comment named are still benign and now heal on the first retry (auth
   tearing down on sign-out; a windows listener racing a just-created listing — the windows effect
@@ -1202,6 +1302,16 @@ expect when it does.
   visit slides the expiry forward, so a returning visitor's note never ages out — deletion is for
   people who stop coming back. Deletion is best-effort within ~24h of expiry, which is fine because
   an expired note already authorises nothing.
+- **The `debug` TTL is configured too** and is ACTIVE on `hafaio-kip-dev`
+  (`gcloud firestore fields ttls update expires --collection-group=debug --enable-ttl`). Unlike the
+  grants one it is load-bearing rather than hygiene: nothing else removes an event, and nobody can
+  delete one by hand — the rules refuse it to every client. Retention is **7 days**, set by the
+  client (`KEEP_DAYS`) and capped at 14 by the rule, which is enough to still be there when someone
+  reports a problem and short enough that this isn't a standing record of who visited. Reading them
+  needs the Admin SDK or the console, by design.
+
+  (`gcloud firestore fields ttls list` also shows an ACTIVE policy on `viewers`, left over from the
+  `listings/{id}/viewers/{uid}` collection that photos retired. Harmless — it matches nothing.)
 - **Rotating the unsubscribe key is unbuilt and deliberately deferred.** Each user has an
   unguessable key in their prefs; a one-click unsubscribe link carries it, so knowing it IS the
   permission (the same shape as a share link). It does NOT rotate. Rotating on a settings change
