@@ -1,10 +1,15 @@
 import { randomUUID } from "node:crypto";
 import { initializeApp } from "firebase-admin/app";
 import { getAuth } from "firebase-admin/auth";
-import { type DocumentData, getFirestore } from "firebase-admin/firestore";
+import {
+  type DocumentData,
+  getFirestore,
+  Timestamp,
+} from "firebase-admin/firestore";
 import { defineSecret, projectID } from "firebase-functions/params";
 import {
   onDocumentCreated,
+  onDocumentDeleted,
   onDocumentUpdated,
 } from "firebase-functions/v2/firestore";
 import { onRequest } from "firebase-functions/v2/https";
@@ -22,6 +27,7 @@ import {
   type NotifyState,
   type Person,
   noticeForBookingChange,
+  noticeForConnectAccepted,
   noticeForConnectRequest,
   noticeForNewBooking,
   notifyFromForm,
@@ -309,6 +315,43 @@ export const onConnectRequested = onDocumentCreated(
 
     const notice = noticeForConnectRequest(request as never);
     const to = await recipientFor(request.to, notice.kind);
+    if (to) await send(to, notice);
+  },
+);
+
+// Both are server timestamps written by Firestore, so the order between them is
+// exact rather than a comparison of two clients' clocks.
+function later(after: unknown, before: unknown): boolean {
+  return (
+    after instanceof Timestamp &&
+    before instanceof Timestamp &&
+    after.toMillis() > before.toMillis()
+  );
+}
+
+// Accepting deletes the request in the same batch that writes both friend
+// edges, so the delete is the only event there is — and declining or
+// withdrawing deletes the same document. The edge is what tells them apart, and
+// it has to POSTDATE the ask: two people who are already friends can still send
+// and drop a request (a friend opening your share link is offered one), and
+// their edge would otherwise report that withdrawal as a yes.
+export const onConnectAnswered = onDocumentDeleted(
+  { document: "connectRequests/{requestId}", region: REGION, secrets },
+  async (event) => {
+    const request = event.data?.data();
+    if (!request) return;
+
+    const edge = (
+      await db.doc(`users/${request.from}/friends/${request.to}`).get()
+    ).data();
+    if (!edge || !later(edge.since, request.createdAt)) return;
+
+    const notice = noticeForConnectAccepted({
+      uid: request.to,
+      displayName: edge.displayName,
+      photoURL: edge.photoURL,
+    });
+    const to = await recipientFor(request.from, notice.kind);
     if (to) await send(to, notice);
   },
 );

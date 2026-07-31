@@ -7,9 +7,10 @@ export type NotifyKind =
   | "bookingTaken"
   | "bookingDecision"
   | "stayCancelled"
-  | "connectRequest";
+  | "connectRequest"
+  | "connectAccepted";
 
-export type Party = "host" | "guest" | "recipient";
+export type Party = "host" | "guest" | "recipient" | "sender";
 
 // The OTHER party — never the person being emailed.
 export type Person = {
@@ -58,6 +59,10 @@ export const SETTINGS_PATH = "#/settings";
 
 function bookingPath(bookingId: string): string {
   return `#/booking/${encodeURIComponent(bookingId)}`;
+}
+
+function personPath(uid: string): string {
+  return `#/person/${encodeURIComponent(uid)}`;
 }
 
 const MONTHS = [
@@ -236,6 +241,29 @@ export function noticeForConnectRequest(request: RequestLike): Notice {
   };
 }
 
+// The friend edge the accept wrote, which the rules pin to the accepter's own
+// profile — so this is their real name, not the sender's guess at it.
+export type FriendLike = {
+  uid: string;
+  displayName?: string;
+  photoURL?: string | null;
+};
+
+// Only the yes is announced. A decline deletes the same document and is not
+// something the person who asked needs told.
+export function noticeForConnectAccepted(friend: FriendLike): Notice {
+  const who = friend.displayName || "Someone";
+  return {
+    to: "sender",
+    kind: "connectAccepted",
+    subject: `${firstName(who)} agreed to be friends`,
+    body: `You and ${who} are connected on kip now, so you can see each other's places and ask to stay.`,
+    path: personPath(friend.uid),
+    cta: "See their profile",
+    person: { name: who, photoURL: friend.photoURL },
+  };
+}
+
 // Light values from the web palette; the dark ones sit in a media query below.
 const TERRA = {
   canvas: "#f6f1ea",
@@ -292,6 +320,7 @@ export const NOTIFY_LABELS: Record<NotifyKind, string> = {
   bookingDecision: "Your request is answered",
   stayCancelled: "A confirmed stay is called off",
   connectRequest: "Someone asks to be friends",
+  connectAccepted: "Someone agrees to be friends",
 };
 
 // Unrecognised is null, never a default — silencing the wrong thing is worse
