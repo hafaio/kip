@@ -12,7 +12,7 @@ import Chip from "../../components/ui/chip";
 import FieldNote from "../../components/ui/field-note";
 import Input from "../../components/ui/input";
 import Sheet from "../../components/ui/sheet";
-import Wordmark from "../../components/wordmark";
+import Wordmark, { Mark } from "../../components/wordmark";
 import {
   fetchMyBookingsWith,
   requestStayViaPortal,
@@ -245,9 +245,7 @@ export default function PortalPage(): ReactElement {
         {state === "loading" ? (
           // The same mark the app boots behind.
           <div className="flex min-h-[60vh] items-center justify-center">
-            <span className="bg-gradient-accent grid h-16 w-16 animate-pulse place-items-center rounded-3xl text-3xl font-extrabold text-white shadow-glow">
-              k
-            </span>
+            <Mark />
           </div>
         ) : state === "missing" ? (
           <div className="mx-auto max-w-md pt-12 text-center">

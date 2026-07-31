@@ -708,9 +708,19 @@ Rules: [firebase/firestore.rules](./firebase/firestore.rules), [firebase/storage
   — for body AND headings; headings just heavier + tighter (`font-extrabold tracking-[-0.03em]`;
   `.font-heading` is repointed to that, not a serif). Base font size **16px**; quiet section labels
   are `text-sm font-semibold text-muted`; dates/counters use `tabular-nums`. The brand lockup is
-  `components/wordmark.tsx` — a gradient rounded-square tile holding a white "k" beside "kip"
-  extrabold — used in the mobile top bar (Home), the desktop top bar, sign-in, portal, and (as a
-  pulsing gradient "k" tile) the splash. The warm terracotta→amber gradient is the accent, applied
+  `components/wordmark.tsx` — a gradient disc holding a white "k" beside "kip" extrabold — used in
+  the mobile top bar (Home), the desktop top bar, sign-in and portal; its `Mark` export is the same
+  disc alone, pulsing, on the splash and the share-link page's loading state.
+
+  **Every mark is a circle, and the classes now say so.** They always rendered as circles — Terra's
+  radii exceed half of a box this small and CSS clamps border-radius there, so `rounded-xl` on an
+  `h-8` tile WAS one. Exactly two missed the clamp and so looked wrong beside everything else: the
+  favicon (`rx=18` on 64) and the splash (`rounded-3xl` on `h-16`), which is how the mismatch got
+  noticed. They read `rounded-full` now, because a class that disagrees with what it draws is one
+  radius-scale change away from squaring every mark off at once — and it already cost two wrong
+  answers to "is that a circle or a square?", read off the class instead of the screen.
+
+  The warm terracotta→amber gradient is the accent, applied
   only where it earns attention (CTAs, rings, Instant, badges); elevation comes from layered soft
   shadows in light and tonal lightening in dark. Chrome is borderless canvas: a **mobile top bar**
   (back + screen title or wordmark + `AuthMenu`) and, on `≥md`, a **sticky desktop top app bar**
