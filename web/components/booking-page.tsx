@@ -167,7 +167,7 @@ export default function BookingPage({ id }: { id: string }): ReactElement {
   // Every row in this card leads with an icon, so dropping it for the place
   // alone left the title out of line with the rows beneath.
   const placeThumb = (
-    <span className="bg-accent-soft grid h-10 w-10 shrink-0 place-items-center rounded-2xl text-accent-ink">
+    <span className="bg-accent-soft grid h-10 w-10 shrink-0 place-items-center rounded-full text-accent-ink">
       <PlaceIcon size={18} />
     </span>
   );
@@ -272,7 +272,7 @@ export default function BookingPage({ id }: { id: string }): ReactElement {
           </Row>
         )}
         <Row>
-          <span className="bg-accent-soft grid h-10 w-10 shrink-0 place-items-center rounded-2xl text-accent-ink">
+          <span className="bg-accent-soft grid h-10 w-10 shrink-0 place-items-center rounded-full text-accent-ink">
             <LuCalendarDays size={18} />
           </span>
           <div className="min-w-0 flex-1">

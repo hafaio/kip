@@ -19,7 +19,7 @@ import ThemeButton from "../components/theme-button";
 import TripsView from "../components/trips-view";
 import Button from "../components/ui/button";
 import IconButton from "../components/ui/icon-button";
-import Wordmark from "../components/wordmark";
+import Wordmark, { Mark } from "../components/wordmark";
 import { historyScroll, rememberScroll, useKip } from "../utils/store";
 import type { Screen, View } from "../utils/types";
 
@@ -83,9 +83,7 @@ function StaleDataNotice(): ReactElement {
 function Splash(): ReactElement {
   return (
     <div className="flex min-h-dvh items-center justify-center">
-      <span className="bg-gradient-accent grid h-16 w-16 animate-pulse place-items-center rounded-3xl text-3xl font-extrabold text-white shadow-glow">
-        k
-      </span>
+      <Mark />
     </div>
   );
 }
