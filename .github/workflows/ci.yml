@@ -42,6 +42,7 @@ jobs:
       - name: Install Firebase CLI
         run: npm install -g firebase-tools
 
-      - run: bun test tests/drift.test.ts tests/notifications.test.ts
+      # The script, never a copy of its file list: that copy silently drifted.
+      - run: bun run test
 
       - run: bun run test:rules
