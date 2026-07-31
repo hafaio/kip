@@ -1,7 +1,9 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
-  <!-- The Terra wordmark tile: the same terracotta-to-amber gradient square and
-       white "k" as components/wordmark.tsx. The letter is drawn as strokes rather
-       than set as text, so it renders identically without Plus Jakarta Sans. -->
+  <!-- The Terra mark, matching components/wordmark.tsx. It was an rx=18 square
+       on a 64 box — the one mark that missed the border-radius clamp every other
+       one clears, so the tab icon was the odd one out. The letter is the real
+       Plus Jakarta Sans ExtraBold outline, inlined because set as text it would
+       fall back to whatever font the browser had and stop matching. -->
   <defs>
     <linearGradient id="terra" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0" stop-color="#e2582f" />
@@ -9,10 +11,7 @@
       <stop offset="1" stop-color="#f6b24a" />
     </linearGradient>
   </defs>
-  <rect width="64" height="64" rx="18" fill="url(#terra)" />
-  <g fill="none" stroke="#ffffff" stroke-width="7" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M20 14 V50" />
-    <path d="M42 25 L20 40" />
-    <path d="M28 34.5 L44 50" />
-  </g>
+  <circle cx="32" cy="32" r="32" fill="url(#terra)" />
+  <path fill="#ffffff" transform="translate(17.85 49) scale(0.044914 -0.044914)"
+        d="M55 0V757H205V272L149 290L390 546H575L377 326L574 0H404L239 277L326 299L159 117L205 204V0Z" />
 </svg>

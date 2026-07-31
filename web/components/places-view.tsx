@@ -49,7 +49,7 @@ function ListingRow({ listing }: { listing: Listing }): ReactElement {
         photo={listing.photos[0]}
         className="h-10 w-10 shrink-0"
         fallback={
-          <span className="bg-accent-soft grid h-10 w-10 shrink-0 place-items-center rounded-2xl text-accent-ink">
+          <span className="bg-accent-soft grid h-10 w-10 shrink-0 place-items-center rounded-full text-accent-ink">
             <TypeIcon size={18} />
           </span>
         }

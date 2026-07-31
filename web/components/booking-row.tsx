@@ -65,7 +65,7 @@ export default function BookingRow({
           photo={known?.photos[0]}
           className="h-10 w-10 shrink-0"
           fallback={
-            <span className="bg-accent-soft grid h-10 w-10 shrink-0 place-items-center rounded-2xl text-accent-ink">
+            <span className="bg-accent-soft grid h-10 w-10 shrink-0 place-items-center rounded-full text-accent-ink">
               <PlaceIcon size={18} />
             </span>
           }
