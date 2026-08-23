@@ -3,20 +3,86 @@
 import { useTheme } from "next-themes";
 import { type ReactElement, useEffect, useState } from "react";
 import { LuChevronRight } from "react-icons/lu";
+import { leaveKip, StaleSession } from "../utils/leave";
 import { useKip } from "../utils/store";
 import { asThemeChoice, type ThemeChoice } from "../utils/theme";
 import { NOTIFY_EVENTS, type NotifyKind } from "../utils/types";
 import { useDialog } from "./dialog";
+import { useNameGate } from "./name-gate";
 import Button from "./ui/button";
 import FieldNote from "./ui/field-note";
 import { Group, Row, Section } from "./ui/list";
 import Segmented from "./ui/segmented";
 import Switch from "./ui/switch";
+import { useLeave } from "./use-leave";
 
 // Your name and handle are edited on your profile, where they're actually shown;
 // this section is what's left — the address you sign in with, and a way through.
 function AccountSection(): ReactElement | null {
-  const { user, navigate } = useKip();
+  const {
+    user,
+    anonymous,
+    navigate,
+    myListings,
+    trips,
+    incomingBookings,
+    friends,
+  } = useKip();
+  const { confirm, alert } = useDialog();
+  // Shared with the menu, so the two exits cannot say different things or do
+  // different amounts of work.
+  const { leave, leaving: leavingDevice } = useLeave();
+  const [leaving, setLeaving] = useState(false);
+
+  // Deletion, not sign-out, and it says what other people lose too — a host
+  // cancelling stays and a guest cancelling trips is what step one of this does,
+  // and nobody should discover that after the fact.
+  async function deleteAccount(): Promise<void> {
+    // Same reason as `useLeave`: a second run re-cancels what the first already
+    // cancelled, and the rules refusing that reads as a failure.
+    if (!user || leaving) return;
+    const sure = await confirm({
+      title: "Delete your kip?",
+      body: "Your stays and any stays at your places will be cancelled, and your friends will lose you from their lists. Past visits stay as a record, without your name. This can't be undone.",
+      confirmLabel: "Delete everything",
+      tone: "danger",
+    });
+    if (!sure) return;
+    await teardown();
+  }
+
+  // Shared by both exits, because both must dismantle rather than merely leave.
+  // Every step is a no-op on what is already gone, so pressing again after a
+  // failure finishes the job rather than starting a second one.
+  async function teardown(then?: () => Promise<void>): Promise<void> {
+    if (!user) return;
+    setLeaving(true);
+    try {
+      await leaveKip(
+        user.uid,
+        myListings,
+        trips,
+        incomingBookings,
+        friends.map((friend) => friend.uid),
+      );
+      await then?.();
+    } catch (error) {
+      console.error(error);
+      setLeaving(false);
+      await alert(
+        error instanceof StaleSession
+          ? {
+              title: "Almost done",
+              body: "Your places, stays and friends are gone. Firebase needs a fresh sign-in to remove the account itself — come back in and press it once more.",
+            }
+          : {
+              // Silence here left someone half dismantled with no idea of it.
+              title: "That didn't finish",
+              body: "Some of it went through. Check your connection and press it again — it picks up where it stopped.",
+            },
+      );
+    }
+  }
 
   if (!user) return null;
 
@@ -49,11 +115,41 @@ function AccountSection(): ReactElement | null {
             <span className="truncate">{user.email}</span>
           </div>
           <FieldNote>
-            Used only to sign in — it lives on your account, never on your kip
-            profile, and is never shown to other users or used to find you.
+            Used only to reach you and to get you back into kip — never shown to
+            other users or used to find you.
           </FieldNote>
         </div>
       ) : null}
+
+      {/* The deliberate exit, and the ONLY one an account with no credential is
+          offered. It is destruction rather than sign-out — the uid lives in this
+          browser and nowhere else — so it says so, twice, and never sits in a
+          casual menu. */}
+      <Group>
+        {anonymous ? (
+          <Row onClick={leave} ariaLabel="Leave kip">
+            <span className="flex min-w-0 flex-1 flex-col">
+              <span className="truncate font-medium text-danger">
+                {leavingDevice ? "Leaving…" : "Leave kip"}
+              </span>
+              <span className="truncate text-sm text-muted">
+                Cancels your stays and removes you from friends' lists
+              </span>
+            </span>
+          </Row>
+        ) : (
+          <Row onClick={deleteAccount} ariaLabel="Delete your kip">
+            <span className="flex min-w-0 flex-1 flex-col">
+              <span className="truncate font-medium text-danger">
+                {leaving ? "Deleting…" : "Delete your kip"}
+              </span>
+              <span className="truncate text-sm text-muted">
+                Cancels your stays and removes you from friends' lists
+              </span>
+            </span>
+          </Row>
+        )}
+      </Group>
     </Section>
   );
 }
@@ -63,8 +159,10 @@ function AccountSection(): ReactElement | null {
 // unreachable until you choose to be found. Both switches are mirrors: the handle
 // itself is claimed on your profile, and the link is copied there.
 function DiscoverabilitySection(): ReactElement | null {
+  const { askIdentity } = useNameGate();
   const {
     profile,
+    anonymous,
     setSearchable,
     setShareStays,
     prefs,
@@ -125,16 +223,29 @@ function DiscoverabilitySection(): ReactElement | null {
   return (
     <Section title="Privacy">
       <Group>
+        {/* A username is permanent, so it needs an account someone can get
+            back into — the rule refuses the claim outright, and this says why
+            rather than letting the switch fail. */}
         <Switch
           checked={profile.searchable}
           onChange={toggle}
+          disabled={anonymous}
           label="Findable by username"
           description={
-            handle
-              ? `Anyone who knows @${handle} can send you a friend request.`
-              : "Claim a username on your profile first — it's permanent, so you pick it there."
+            anonymous
+              ? "Add an email or a number first — a username is permanent, so it needs an account you can get back into."
+              : handle
+                ? `Anyone who knows @${handle} can send you a friend request.`
+                : "Claim a username on your profile first — it's permanent, so you pick it there."
           }
         />
+        {anonymous ? (
+          <div className="px-4 pb-4">
+            <Button variant="secondary" onClick={askIdentity}>
+              Add email or number
+            </Button>
+          </div>
+        ) : null}
       </Group>
 
       <Group>
@@ -178,6 +289,7 @@ function DiscoverabilitySection(): ReactElement | null {
 // unverified account would silently receive nothing. That has to be said here,
 // with a way to fix it, or it just looks broken.
 function NotificationsSection(): ReactElement | null {
+  const { askIdentity } = useNameGate();
   const { user, emailVerified, prefs, setNotify, resendVerification } =
     useKip();
   const [sent, setSent] = useState(false);
@@ -198,23 +310,43 @@ function NotificationsSection(): ReactElement | null {
 
   return (
     <Section title="Notifications">
-      {emailVerified ? null : (
-        <div className="flex flex-col gap-3 rounded-3xl bg-surface p-4 shadow-card">
+      {/* Two different gaps, and they used to be one. An address kip has but
+          can't trust is a confirm; no address at all is an ask — and without
+          this split the second rendered "Confirm undefined", which nobody saw
+          only because these sessions could not reach Settings. */}
+      {user.email ? (
+        emailVerified ? null : (
+          <div className="flex flex-col gap-3 rounded-3xl bg-surface p-4 shadow-card">
+            <p className="text-sm text-muted">
+              kip only emails an address that's been confirmed — otherwise
+              anyone could enter someone else's and have kip mail them. Confirm{" "}
+              {user.email} to start receiving these.
+            </p>
+            {sent ? (
+              <FieldNote tone="success">
+                Sent. Check your inbox, then reload kip.
+              </FieldNote>
+            ) : (
+              <Button
+                variant="secondary"
+                onClick={resend}
+                className="self-start"
+              >
+                Send confirmation email
+              </Button>
+            )}
+            {error ? <FieldNote tone="danger">{error}</FieldNote> : null}
+          </div>
+        )
+      ) : (
+        <div className="flex flex-col items-start gap-3 rounded-3xl bg-surface p-4 shadow-card">
           <p className="text-sm text-muted">
-            kip only emails a verified address — otherwise anyone could sign up
-            with someone else's and have mail sent to them. Verify {user.email}{" "}
-            to start receiving these.
+            kip can only reach you by email. Add an address to hear when things
+            happen without opening kip.
           </p>
-          {sent ? (
-            <FieldNote tone="success">
-              Sent. Check your inbox, then reload kip.
-            </FieldNote>
-          ) : (
-            <Button variant="secondary" onClick={resend} className="self-start">
-              Send verification email
-            </Button>
-          )}
-          {error ? <FieldNote tone="danger">{error}</FieldNote> : null}
+          <Button variant="secondary" onClick={askIdentity}>
+            Add email
+          </Button>
         </div>
       )}
 

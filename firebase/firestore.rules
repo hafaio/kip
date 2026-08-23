@@ -6,6 +6,13 @@ service cloud.firestore {
       return request.auth != null;
     }
 
+    // Does this ACCOUNT hold a way back in? An anonymous session carries an empty
+    // `identities` map; linking any provider fills it, on the next token mint, for
+    // every session including the anonymous-born one that did the linking.
+    function hasCredential() {
+      return isSignedIn() && request.auth.token.firebase.identities.size() > 0;
+    }
+
     // Friendship is bijective — both edges are written — so one exists() answers it.
     function isFriendOf(ownerId) {
       return isSignedIn()
@@ -199,6 +206,10 @@ service cloud.firestore {
             || get(/databases/$(database)/documents/usernames/$(request.resource.data.username)).data.uid == userId)
         && (request.resource.data.get('searchable', false) == false
             || request.resource.data.get('username', '') != '');
+      // Explicit, because the rule above can never pass for one: a delete has no
+      // `request.resource.data`, so every clause it names errors, and an error
+      // is a denial. Leaving was therefore impossible rather than forbidden.
+      allow delete: if isSignedIn() && request.auth.uid == userId;
 
       match /settings/{doc} {
         allow read, write: if isSignedIn() && request.auth.uid == userId;
@@ -252,10 +263,13 @@ service cloud.firestore {
     match /usernames/{handle} {
       allow get: if isSignedIn();
       allow list: if false;
-      // Never anonymous: those accounts are reaped after 30 days and a handle is
-      // permanent, so one script could take every good name for a dead uid.
+      // Needs a credential: a handle is permanent and an account nobody can sign
+      // back into would park a name for good. `identities` reports what the
+      // ACCOUNT holds and repopulates on every token mint; `sign_in_provider`
+      // reports how this SESSION started and never changes, so it would refuse
+      // someone who asked anonymously and attached an email from another browser.
       allow create: if isSignedIn()
-        && request.auth.token.firebase.sign_in_provider != 'anonymous'
+        && hasCredential()
         && request.resource.data.uid == request.auth.uid
         && request.resource.data.keys().hasOnly(['uid'])
         && handle.matches('^[a-z][a-z0-9_]{2,19}$')
@@ -306,7 +320,13 @@ service cloud.firestore {
         || portalGrant(get(/databases/$(database)/documents/users/$(resource.data.ownerId)/settings/prefs).data.get('profilePortalId', null))
         || portalGrant(resource.data.get('publicPortalId', null))
         || guestOfListing(listingId);
-      allow create: if isSignedIn() && request.auth.uid == request.resource.data.ownerId;
+      // Hosting needs a credential. A host who loses their only browser strands
+      // guests holding confirmed stays: every cancel path is owner-only and no
+      // server can step in. Create only — an account that somehow holds a listing
+      // must always be able to take it down.
+      allow create: if isSignedIn()
+        && hasCredential()
+        && request.auth.uid == request.resource.data.ownerId;
       allow update, delete: if isSignedIn() && request.auth.uid == resource.data.ownerId;
 
       // Self-issued by the guest, because neither confirm path can write it:

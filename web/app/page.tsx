@@ -9,16 +9,15 @@ import FriendsPanel from "../components/friends-panel";
 import HomeView from "../components/home-view";
 import ListingFormScreen from "../components/listing-form-screen";
 import { FloatingDock, TopBar } from "../components/nav";
-import OnboardingScreen from "../components/onboarding-screen";
 import PersonPage from "../components/person-page";
 import PlacesView from "../components/places-view";
 import RoomPage from "../components/room-page";
 import SettingsView from "../components/settings-view";
-import SignInScreen from "../components/sign-in-screen";
 import ThemeButton from "../components/theme-button";
 import TripsView from "../components/trips-view";
 import Button from "../components/ui/button";
 import IconButton from "../components/ui/icon-button";
+import WelcomeScreen from "../components/welcome-screen";
 import Wordmark, { Mark } from "../components/wordmark";
 import { historyScroll, rememberScroll, useKip } from "../utils/store";
 import type { Screen, View } from "../utils/types";
@@ -84,7 +83,7 @@ function StaleDataNotice(): ReactElement {
 // something is still on its way. Deliberately BEHIND the gate: the other reading
 // of an unanswered profile is "no profile", which is onboarding and an overwrite.
 // Nothing here is terminal: a late answer opens the gate and this unmounts itself.
-function Unreachable(): ReactElement {
+function Unreachable({ canSignOut }: { canSignOut: boolean }): ReactElement {
   const { signOut } = useKip();
 
   async function doSignOut() {
@@ -101,7 +100,7 @@ function Unreachable(): ReactElement {
         Can't reach kip right now
       </h1>
       <p className="text-sm text-muted">
-        Your account is fine — this device just can't get through. Check your
+        Nothing is lost — this device just can't get through to kip. Check your
         connection and try again.
       </p>
       <div className="flex gap-2">
@@ -109,10 +108,14 @@ function Unreachable(): ReactElement {
           Try again
         </Button>
         {/* A session the server refuses outright — a disabled account, a
-            revoked token — lands here too, and reloading hits the same wall. */}
-        <Button variant="ghost" onClick={doSignOut}>
-          Sign out
-        </Button>
+            revoked token — lands here too, and reloading hits the same wall.
+            Withheld from a session with nothing to sign back in with: there it
+            destroys the account outright, dressed as recovery advice. */}
+        {canSignOut ? (
+          <Button variant="ghost" onClick={doSignOut}>
+            Sign out
+          </Button>
+        ) : null}
       </div>
     </div>
   );
@@ -154,7 +157,6 @@ export default function Page(): ReactElement {
     anonymous,
     profileReady,
     profileUnreachable,
-    needsOnboarding,
     screen,
     canGoBack,
     popped,
@@ -222,14 +224,17 @@ export default function Page(): ReactElement {
     };
   }, [screenKey, popped]);
 
-  // Two splashes, so "needs a name" is never confused with "still loading".
   if (!authReady) return <Splash />;
-  // An anonymous session is a share-link visitor's ticket, not an account — it
-  // has no profile, so without this the gate would ask a passer-by to name
-  // themselves.
-  if (!user || anonymous) return <SignInScreen />;
-  if (!profileReady) return profileUnreachable ? <Unreachable /> : <Splash />;
-  if (needsOnboarding) return <OnboardingScreen />;
+  // Only a session-less visitor is turned away. An anonymous one is a
+  // participant or about to be: they may hold a name, an ask, even friendships,
+  // and every rule they meet is blind to how they signed in.
+  if (!user) return <WelcomeScreen />;
+  if (!profileReady)
+    return profileUnreachable ? (
+      <Unreachable canSignOut={!anonymous} />
+    ) : (
+      <Splash />
+    );
 
   // The wordmark stands in for the title only where the title IS the app.
   const isHome = screen.kind === "tab" && screen.tab === "home";

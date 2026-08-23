@@ -10,6 +10,7 @@ import type {
 } from "../utils/types";
 import Avatar from "./avatar";
 import { useAction, useDialog } from "./dialog";
+import { useNameGate } from "./name-gate";
 import Button from "./ui/button";
 import Chip from "./ui/chip";
 
@@ -66,6 +67,7 @@ export default function RequestCard({
     revokeSlotPortal,
   } = useKip();
   const { confirm } = useDialog();
+  const { runNamed } = useNameGate();
   const run = useAction();
   const [busy, setBusy] = useState(false);
   const viaLink = request.portalId !== null;
@@ -79,10 +81,13 @@ export default function RequestCard({
     myWindows,
   );
 
+  // Accepting writes an edge into the REQUESTER's list, pinned by the rules to
+  // the accepter's own profile — so a nameless accept would either be refused or
+  // install a blank where a name belongs. The name is collected first.
   async function accept(): Promise<void> {
     setBusy(true);
     try {
-      await acceptRequest(request);
+      await runNamed(() => acceptRequest(request), "Accept");
     } catch (error) {
       console.error(error);
     } finally {

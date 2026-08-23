@@ -7,7 +7,7 @@ import BookingRow from "./booking-row";
 import { useAction, useDialog } from "./dialog";
 import { Group, Section } from "./ui/list";
 
-export default function TripsView(): ReactElement {
+export default function TripsView(): ReactElement | null {
   const { user, trips, hideCancelledTrips } = useKip();
   const run = useAction();
   const { confirm } = useDialog();
@@ -25,7 +25,7 @@ export default function TripsView(): ReactElement {
   }
 
   if (!user) {
-    return <p className="text-muted">Sign in to see your trips.</p>;
+    return null;
   }
 
   const upcoming = trips

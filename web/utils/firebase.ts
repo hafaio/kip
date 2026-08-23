@@ -1,8 +1,9 @@
 "use client";
 
 import { type FirebaseApp, getApps, initializeApp } from "firebase/app";
-import { type Auth, getAuth } from "firebase/auth";
+import { type Auth, connectAuthEmulator, getAuth } from "firebase/auth";
 import {
+  connectFirestoreEmulator,
   type Firestore,
   type FirestoreError,
   getFirestore,
@@ -15,7 +16,7 @@ import { type FirebaseStorage, getStorage } from "firebase/storage";
 
 // Public by design — security is in the rules, not in hiding this. Blanking
 // `appId` makes `firebaseConfigured()` false, so the app still runs unconfigured.
-const firebaseConfig = {
+export const firebaseConfig = {
   apiKey: "AIzaSyDvsK-HqXYuHuYlxO_IFh8aGWly6c7_yDI",
   authDomain: "hafaio-kip-dev.firebaseapp.com",
   projectId: "hafaio-kip-dev",
@@ -37,7 +38,25 @@ function app(): FirebaseApp {
 }
 
 export function auth(): Auth {
-  if (!cachedAuth) cachedAuth = getAuth(app());
+  if (cachedAuth) return cachedAuth;
+  cachedAuth = getAuth(app());
+  // Opt-in, and only in dev: the Auth emulator is the one way to exercise the
+  // phone door automatically, because it skips reCAPTCHA — which exists to stop
+  // exactly the automation a test is. It sends no message and bills nothing.
+  //
+  // The NODE_ENV half is what keeps it out of a production bundle. Next inlines
+  // that one as a literal, so the whole condition folds to false and the branch
+  // is eliminated; the public flag alone compiles to a RUNTIME read, which ships
+  // the emulator's address in the bundle and leaves a build one env var away
+  // from pointing at localhost.
+  if (
+    process.env.NODE_ENV !== "production" &&
+    process.env.NEXT_PUBLIC_AUTH_EMULATOR === "1"
+  ) {
+    connectAuthEmulator(cachedAuth, "http://127.0.0.1:9099", {
+      disableWarnings: true,
+    });
+  }
   return cachedAuth;
 }
 
@@ -56,6 +75,15 @@ export function db(): Firestore {
     console.warn("firestore: reusing existing instance", e);
     cachedDb = getFirestore(app());
   }
+  // Both or neither: an emulator-issued token is scoped to the emulator's
+  // project, so leaving Firestore on the real backend would refuse every write
+  // the flow under test makes.
+  if (
+    process.env.NODE_ENV !== "production" &&
+    process.env.NEXT_PUBLIC_AUTH_EMULATOR === "1"
+  ) {
+    connectFirestoreEmulator(cachedDb, "127.0.0.1", 8080);
+  }
   return cachedDb;
 }
 
@@ -68,6 +96,17 @@ export function storage(): FirebaseStorage {
 export function functions(): Functions {
   if (!cachedFunctions) cachedFunctions = getFunctions(app(), "us-central1");
   return cachedFunctions;
+}
+
+// True when this build is talking to local emulators rather than the real
+// project. Exposed so the UI can SAY so: an emulated Firestore is empty, which
+// makes every real share link read as revoked — a symptom with no visible cause
+// unless something on screen admits which backend is behind it.
+export function usingEmulators(): boolean {
+  return (
+    process.env.NODE_ENV !== "production" &&
+    process.env.NEXT_PUBLIC_AUTH_EMULATOR === "1"
+  );
 }
 
 export function firebaseConfigured(): boolean {

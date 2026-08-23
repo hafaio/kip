@@ -135,10 +135,14 @@ Rules: [firebase/firestore.rules](./firebase/firestore.rules), [firebase/storage
      only the fragment, which is not a reload, so the load effect re-ran, `authSettled()` handed back
      a stale `null`, and `signInAnonymously` replaced the visitor's real account with an empty one —
      the very bug this function exists to prevent, reintroduced by its own cache.
-  2. **An anonymous session counts as signed out inside the app.** `app/page.tsx` gates on
-     `!user || anonymous`, because a visitor's ticket is not an account — it has no profile
-     and can see nothing, so the gate would otherwise read "authenticated, no profile" and put a
-     passer-by through onboarding. `AuthMenu` hides itself for the same reason.
+  2. **An anonymous session is a participant, not a signed-out one.** This USED to gate on
+     `!user || anonymous`, on the reasoning that a ticket is not an account. It no longer holds:
+     an anonymous account can carry a display name, a live ask and friendships, and every rule it
+     meets is blind to how it signed in. `app/page.tsx` gates on `!user` alone. What replaced the
+     old reasoning is `displayName` — `AuthMenu` hides until there is one, because a nameless
+     visitor has no profile to show. The one thing still withheld is the EXIT: signing out of an
+     account with no credential destroys it, so `signOut` refuses without `force` and only the
+     Settings row (behind a confirm) passes it.
 
   **The store watches `onIdTokenChanged`, not `onAuthStateChanged`, and that is load-bearing.**
   `onAuthStateChanged` fires only when the **uid** changes — `notifyAuthListeners` in the SDK pushes
@@ -186,13 +190,17 @@ Rules: [firebase/firestore.rules](./firebase/firestore.rules), [firebase/storage
   note under the store bullet; the timer is now a backstop for a stall nobody named, and
   `profileUnreachable` answers the common case outright.
 
-  **Nothing automated covers any of this**, and that is a standing risk rather than an oversight. A
-  share-link path needs two accounts, a live sign-in and a browser, so it can't be reached from the
-  unit or rules suites; a headless-Chrome suite against the Auth + Firestore emulators was written,
-  shown to fail on the unfixed code, and then deleted as more cruft than it was worth given it could
-  never gate CI. So the two guards above are held in place by nothing but this note. `holding`
-  especially reads as pointless indirection next to `busy` — it is not, and removing it brings the
-  dead button straight back with every other check still green.
+  **This path IS covered, and it has to be** — see *Driving the share link* below. A previous pass
+  wrote a headless-Chrome suite against the emulators, proved it caught the bug, then deleted it as
+  cruft because it could never gate CI, and left a note saying the guards were held by prose alone.
+  That reasoning was wrong and it cost real bugs: a share link that resolved for nobody, a code step
+  that swallowed a wrong code, a returning door that never signed anyone in — every one of them past
+  lint, the unit suite and the rules suite, because none of those can open a page.
+
+  **"It can't gate CI" is not a reason not to have it.** A check that has to be run by hand still
+  turns a bug nobody can see into one anybody can reproduce, and that is the whole difference on
+  this path. `holding` especially reads as pointless indirection next to `busy` — it is not, and
+  removing it brings the dead button straight back with every other check still green.
 
   `emailVerified` rides along for the same structural reason, but note what that does NOT fix:
   nothing in `web/` calls `user.reload()`, the proactive token refresh doesn't reload either, and the
@@ -372,8 +380,9 @@ Rules: [firebase/firestore.rules](./firebase/firestore.rules), [firebase/storage
   because the recipient can't verify it and it goes into an email, whereas the `to` copy is rendered
   only in the sender's own list, on a document only the two parties can read. Nobody to mislead.
 - **Discovery is opt-in, and a handle is optional.** A fresh account is **unreachable**: onboarding
-  asks for a *display name only* (`OnboardingScreen`; `needsOnboarding` gates on `displayName`, not
-  a handle), and nobody can initiate contact until you turn on one of **two independent avenues**
+  asks for a *display name only* — collected just in time by the identity sheet
+  (`components/name-gate.tsx`, and the portal page's own copy), never a blocking screen — and
+  nobody can initiate contact until you turn on one of **two independent avenues**
   in Settings → *Who can find you*:
   - **Searchable** (`users/{uid}.searchable`) — findable by handle. Requires a username, so the
     switch reveals the claim form when there isn't one; `claimUsername` writes the handle and
@@ -697,19 +706,65 @@ Rules: [firebase/firestore.rules](./firebase/firestore.rules), [firebase/storage
   - **Silence once the gate is open changes nothing** — that is the re-attach machinery's problem.
   - **Never open and unreachable at once**, which is what entitles `page.tsx` to render Unreachable
     only behind a shut gate.
-- **Friends-only, multi-provider sign-in + a one-field onboarding gate.** Nothing is public, so an
-  unauthenticated visitor only ever sees `components/sign-in-screen.tsx` — **email/password OR
-  Google** (`utils/auth.ts` wraps both plus password reset; `emailSignUp` fires
-  `sendEmailVerification`; `authErrorMessage`/`authErrorCode` map Firebase codes to friendly copy;
-  password reset shows a neutral "if an account exists…" notice so it never leaks whether an email
-  is registered — Identity Platform's `enableImprovedEmailPrivacy` backs the same guarantee
-  server-side), with a theme toggle. Phone auth is intentionally deferred: SMS needs Blaze +
-  reCAPTCHA + an SMS region allowlist, and a number would re-tie an account to a contact detail.
-  `app/page.tsx` gates in order: `authReady` splash → `SignInScreen` (no user) → `profileReady`
-  splash → **`OnboardingScreen`** (authenticated but no profile yet: **just a display name**,
-  prefilled from Google) → the app. The onboarding write is `createProfile`; the store's own-profile
-  listener advancing past `needsOnboarding` closes the gate. A handle is NOT asked for here — see
-  the discovery bullet. `AuthMenu` is the signed-in profile/sign-out menu only.
+- **Friends-only, and nothing blocks on enrolment.** Nothing is public, so a visitor with no
+  session at all only ever sees `components/welcome-screen.tsx`, which says a friend's link is the
+  way in and discloses a returning door. **There is no password**, and nothing anywhere says "sign
+  up". Three doors, all passwordless, all wrapped by `utils/auth.ts`: an emailed one-time link
+  (`sendReturnLink` to come back, `sendAttachLink` to add an address to the account already
+  asking), a texted one-time code (US numbers only — that is the SMS region allowlist, and
+  `parseDestination` refuses anything else rather than letting the server bill for a refusal), and
+  Google.
+
+  Retiring the password took the whole reset flow with it, including the careful "if an account
+  exists…" notice: a one-time link goes to an address whether or not kip has met it, so the flow
+  has no branch that could leak, and Identity Platform's `enableImprovedEmailPrivacy` backs the
+  same guarantee server-side. An address that still HAS a password from before is reached by the
+  same link and lands on the same account, so nothing was stranded.
+
+  **A texted code that turns out to belong to an existing account signs INTO it rather than
+  linking**, and the uid changes. `confirmPhoneCode` reports that as `sameAccount: false`, and
+  callers must branch on it: the account they have just landed in has its own name and photo, so
+  writing the sheet's over them is destructive, and a held action belongs to the uid they left.
+  Returned and ignored, it silently overwrote a real profile with whatever was typed in a sheet.
+
+  `app/page.tsx` gates in order: `authReady` splash → **`WelcomeScreen`** (no session at all) →
+  `profileReady` splash → the app. There is **no onboarding screen**: a missing display name is
+  collected by the identity sheet (`components/name-gate.tsx`, and the portal page's own copy) at
+  the first action that puts your name in front of someone, so nothing blocks. `AuthMenu` renders
+  once there is a name, minus the exit — see the sign-out note in the anonymous bullet.
+- **Leaving is possible, and it dismantles rather than departs.** `utils/leave.ts` cancels every
+  live stay in both directions, unfriends from your side, deletes requests both ways, removes
+  listing photos and the avatar (Storage objects outlive their documents, and afterwards nobody is
+  permitted to delete them), then the profile portal, then the profile, then the Auth account. The
+  order is load-bearing: the notification triggers read the profile, so it must survive the writes
+  that fire them. Client + rules throughout — an Admin-SDK callable that dismantled an account on
+  request would be the client-triggerable destructive server path this schema keeps refusing. It
+  needed one new rule: `users` had no `delete`, and the `write` rule can never pass for one because
+  it names `request.resource.data`, which a delete has none of — so leaving was impossible rather
+  than forbidden. Every step is a no-op on what is already gone, so an interrupted teardown is
+  finished by running it again, which is what `auth/requires-recent-login` asks for.
+
+  **The handle does not come back**, and that is the one leftover worth saying out loud:
+  `usernames/{handle}` has no delete rule by design, so the entry outlives the account it named.
+  Nobody else can take that name — but neither can the same person returning with a new uid, since
+  `users` write requires the registry entry to point at them. Retired rather than released, which
+  is the same trade going private makes, applied permanently.
+
+- **A reaper collects tickets, and Firebase's own must stay off.** `functions/src/reap.ts` runs
+  weekly and deletes an anonymous Auth account only when it is idle 30 days AND has no current
+  edges — no profile, no live booking either side, no request, no friend edge, no listing, no
+  portal. "Current" excludes cancelled and finished stays, or one visit from years ago would keep
+  an abandoned account alive forever; the booking window runs to `endedWithin(60d)` so it never
+  reaps someone the rules still let a host look up. Any check that errors keeps the account.
+  Deleting a real ticket is invisible — the capability was the URL, not the uid, so they come back
+  and get a fresh one. **It is armed**, by `REAP_DRY_RUN` in `index.ts` — a plain constant, because
+  the env var it replaces defaulted to a dry run when unset and `functions/` has no `.env`, so it
+  had never once deleted anything while the privacy page promised that abandoned sessions were
+  collected after thirty days. A rehearsal is that line flipped and redeployed: visible in review,
+  and impossible to be in without meaning to. Two limits bite: `getUsers` caps at 100 identifiers and
+  THROWS past it, and the queries are single-equality with the rest filtered in memory because
+  `firestore.indexes.json` is empty and nothing deploys a composite index.
+
 - **No secrets, runs unconfigured.** The Firebase web config is inlined in `utils/firebase.ts`
   (values are public — security is in the rules). The repo currently **ships a populated
   `hafaio-kip-dev` config**, so `firebaseConfigured()` is true and the real sign-in flow runs.
@@ -1115,6 +1170,69 @@ links included — runs on rules alone, and adding a second function should requ
 rules genuinely can't express. This one has one: it needs the Admin SDK to read an address off the
 Auth account, which is what keeps email out of Firestore entirely.
 
+## Driving the auth flows locally
+
+The phone door cannot be tested against the real project: reCAPTCHA challenges automation by
+design, so a headless run stops at an image puzzle. The **Auth emulator** exists for this — it
+skips reCAPTCHA entirely, sends no message, bills nothing, and publishes the code it would have
+texted at `GET /emulator/v1/projects/{project}/verificationCodes`.
+
+```sh
+cd web && bun dev:emulated
+```
+
+One command, and the emulators live only as long as it does — so a plain `bun dev` can never
+quietly be talking to a fake backend, and nothing is left listening after Ctrl-C.
+
+**An emulated Firestore starts EMPTY**, which is the one thing worth knowing before using it: real
+share links point at portal docs that do not exist there, so every one of them reads as "this link
+isn't active". Nothing has been revoked — switching back to `bun dev` restores them. `EmulatorBadge`
+says so on screen for exactly this reason; the symptom is otherwise indistinguishable from a bug in
+the portal. (Its string is present in a production bundle but unreachable: `usingEmulators()` folds
+to false there, so the badge cannot render.)
+
+`utils/firebase.ts` reads that flag and points BOTH auth and Firestore at the emulators — both or
+neither, since an emulator-issued token is scoped to the emulator's project and would be refused by
+the real database. The condition is ANDed with `NODE_ENV !== "production"`, and that half is what
+keeps it out of a shipped bundle: a `NEXT_PUBLIC_*` flag alone compiles to a runtime read, so the
+emulator's address travels into the build and only an env var stands between production and
+localhost auth. With NODE_ENV in the condition the whole thing folds to a constant and the branch
+is eliminated — verified by grepping the export, not assumed.
+
+What this is for, and what it caught: the phone path's whole point is that linking preserves the
+uid, and the only way to see that is to count the accounts afterwards. One account with the number
+on it means the link worked; two means it silently forked, which is the failure the design exists
+to prevent. It also surfaced that a number belonging to someone else is refused at **send** with
+`auth/account-exists-with-different-credential` — before any message goes out, which is what makes
+falling back to a plain sign-in free rather than a second SMS.
+
+## Driving the share link
+
+`bun run check:portal` seeds a USER-scope portal into the emulator, opens it in headless Chrome and
+asserts what a visitor actually sees AND what it leaves behind: the link resolves, the host and
+room render, the ask opens the identity sheet, submitting it sends a `REQUESTED` booking — never a
+confirmed one, since a link is not friendship — carrying the dates that were shown, and the guest's
+profile ends up holding the name they typed. A booking carries no name by design, so the two are
+checked separately; that split IS the `knownBy` design, asserted. It exits non-zero on the
+first failure, so it reads like a test even though it cannot gate CI — it needs a browser and a
+running dev server:
+
+```sh
+cd web && bun run dev:emulated      # one shell
+bun run check:portal                # another
+```
+
+Run it after touching the portal page, the identity sheet, or `utils/auth.ts`. Everything this path
+has broken — a link that resolved for nobody, a code step that swallowed a wrong code, a returning
+door that never signed anyone in — passed lint, the unit suite and the rules suite while broken,
+because none of those can open a page.
+
+**One trap it teaches, worth knowing before writing any emulator fixture:** `connectFirestoreEmulator`
+does NOT change the project the SDK thinks it is talking to, and the emulator namespaces data per
+project. So a fixture seeded under `--project demo-kip` is invisible to a client configured for
+`hafaio-kip-dev`, and every link reads as revoked. Seed under the CLIENT's project id. This cost an
+hour and looked exactly like the product being broken.
+
 ## Security-rules tests
 
 `firestore.rules` is the only enforcement, so the security-critical paths are tested against the
@@ -1160,7 +1278,8 @@ If port 8080 is already held by another project's emulator, switch both `firebas
 ## Firebase setup (do once)
 
 1. Create a project named **`hafaio-kip`** (or rename in `.firebaserc`) at console.firebase.google.com.
-2. **Authentication → Sign-in method →** enable **Email/Password** and **Google**.
+2. **Authentication → Sign-in method →** enable **Google**, and **Email/Password** — the latter
+   only because email-link sign-in rides on that provider; kip asks for no password anywhere.
 3. **Firestore Database →** create (production mode).
 4. **Project settings → Your apps → Web →** register an app; copy the config object into the
    `firebaseConfig` in `web/utils/firebase.ts` (replacing the shipped `hafaio-kip-dev` dev
@@ -1168,17 +1287,31 @@ If port 8080 is already held by another project's emulator, switch both `firebas
    unconfigured fallback — so keep a real `appId` for a working build.
 5. **Blaze plan** — required for Cloud Functions, which public share links now depend on. Set a
    Cloud Billing budget alert while you're there.
-6. Deploy rules: `firebase deploy --only firestore:rules` (add `storage` once photos are on, and
+6. **Auth providers, and the one switch that must stay off.** Authentication → Sign-in method:
+   enable **Email link (passwordless sign-in)** (it rides on the Email/Password provider) and
+   **Phone**; set the **SMS region policy** to allowlist with **United States** only — the primary
+   toll-fraud control, and adding a region later is the same page with nothing to redeploy. Add
+   fictional **test phone numbers** there too, since phone auth refuses localhost and there is no
+   other way to exercise it locally outside the Auth emulator. Optionally turn on **reCAPTCHA SMS
+   defense** in audit mode; with US-only plus the per-IP caps, audit is likely enough indefinitely.
+   Confirm `hafaio.github.io` and `localhost` are authorized domains — the sign-in link redirects
+   there. And **anonymous account auto-deletion must be OFF** (it lives on the Anonymous provider,
+   not under Settings): it cannot read Firestore, so it cannot tell a one-visit ticket from someone
+   carrying a name, a live ask and friendships, and re-enabling it deletes real people on a timer
+   with nothing failing loudly. `reapAnonymousTickets` is what collects tickets instead.
+7. Deploy rules: `firebase deploy --only firestore:rules` (add `storage` once photos are on, and
    `functions` once notifications land). Public share links need **Anonymous** sign-in enabled and a
    Firestore **TTL policy** on the `grants` collection group, field `expires` (housekeeping only —
    an expired grant is already inert). The `debug` collection wants the same policy on the same
    field, and there it is the only thing bounding the pile.
-7. **Authentication → Settings → Authorized domains:** add the deployed domain (e.g.
+8. **Authentication → Settings → Authorized domains:** add the deployed domain (e.g.
    `<user>.github.io`) so sign-in works in production.
 
 `hafaio-kip-dev` is already on Blaze and already upgraded to **Identity Platform**
-(`subtype: IDENTITY_PLATFORM`), with anonymous sign-in enabled, `autodeleteAnonymousUsers: true`,
-and `enableImprovedEmailPrivacy: true`. Sign-up volume is deliberately NOT capped: kip has no public
+(`subtype: IDENTITY_PLATFORM`), with anonymous sign-in enabled and
+`enableImprovedEmailPrivacy: true`. **`autodeleteAnonymousUsers` must be OFF** — it cannot read
+Firestore, so it cannot tell a one-visit ticket from a participant with a name, a live ask and
+friendships, and re-enabling it deletes real people on a timer with nothing failing loudly. Sign-up volume is deliberately NOT capped: kip has no public
 discovery surface, so an account nobody has friended can see nothing and growth is invite-shaped by
 construction. If that ever changes, a `beforeUserCreated` blocking function plus a counter doc is
 the additive fix (note anonymous auth bypasses blocking functions).
@@ -1355,6 +1488,66 @@ expect when it does.
   for one user", undoable in Settings in a tap, so there's little to protect. If it's ever wanted it
   belongs as an explicit "invalidate my links" control, the way regenerating a share link is
   explicit — not as a side effect of unrelated edits.
+- **Share links want a revisit, and it is mostly a UI question.** A link today is a bare
+  capability: one per scope, no name, no message, and control buried in the surface that owns it
+  (a room's Sharing section, a slot's sheet, your own PersonPage). Three things to think about
+  together, since they interact:
+
+  **Several links per thing, each named.** One per scope means revoking is all-or-nothing — kill
+  the link you sent your sister and you kill the one you sent your colleague. Named links make
+  revocation precise and make an inbox of them legible. The schema barely resists: `portals/{uuid}`
+  is already keyed by an unguessable id, so the constraint is the single `publicPortalId` field on
+  the thing being shared, which would become a list and force the rules' `portalGrant(...)` checks
+  to iterate — and a rule cannot iterate a list. That is the real obstacle and it needs a design,
+  not just a field change.
+
+  **A message from the host.** The largest remaining gap in FEEL: a share link reads as a database
+  view someone unlocked rather than an invitation from a person. Partiful's warmth is mostly host
+  expression, and that part transfers to kip's quiet register cheaply — one optional line on the
+  portal doc, rendered under the host block. It pairs naturally with naming: the message is
+  per-link, which is another argument for several.
+
+  **Sharing should start where the thing is.** Erik's instinct: a **share icon on each date range**
+  that opens the link controls in place, rather than making someone find the slot's sheet. The
+  general shape is that sharing is an action ON a room or a set of dates, and today it is a
+  section you navigate to. Worth thinking about whether the same treatment belongs on a room card
+  and on your own profile.
+
+- **SMS notifications are the obvious next step, and the long pole is paperwork.** A phone-only
+  account is durable but unreachable: every notification kip sends is email, so someone who proved
+  a number and never added an address hears nothing until they open the app. The reach card is the
+  standing answer; SMS is the real one.
+
+  It needs no new function — it rides the four triggers that already exist, and the number is read
+  per send off the Auth account exactly as the address is, so it never touches Firestore. Twilio
+  keeps its own message logs, which is the honest caveat: the confinement is a shade weaker than
+  email's.
+
+  **The gotcha that decides the schedule: US A2P 10DLC registration.** Unregistered
+  application-to-person traffic to US numbers from a 10-digit number is a HARD BLOCK, not
+  degraded delivery — [blocked since 1 September 2023](https://www.twilio.com/en-us/changelog/-u-s--a2p-10dlc--full-blocking-of-traffic-sent-from-unregistered),
+  returning [error 30034](https://www.twilio.com/docs/api/errors/30034), and Twilio still bills for
+  the blocked send. Brand and campaign registration runs through TCR with a vetting fee, monthly
+  campaign fees, and a review measured in days — so file it FIRST; the code is not the long pole.
+  Worth addressing the "but I've sent Twilio texts instantly" memory head-on, because it is a
+  reasonable one: a trial account texting its own verified numbers still works, as does non-US.
+  One thing this gets right that kip's email does not: a blocked SMS fails loudly with an error
+  code, where Gmail accepts everything and silently files it as spam.
+
+  **Four events would justify one**, not all six: `bookingRequested` (a decision is wanted),
+  `bookingDecision` (answers your dates), `connectAccepted` (the share-link visitor's first ask,
+  and they are exactly the no-address population), `stayCancelled` (the one you would regret
+  missing). Out: `bookingTaken` and `connectRequest`, which are news, to people who have an
+  address anyway.
+
+  **Preferences become event × channel**, still derived from the single `NOTIFY_EVENTS` table.
+  Stored as a SECOND merge-over-defaults map beside `notify`, so nothing migrates — absence
+  already means the default. The cross-package drift test must then pin kind × channel, since the
+  fail-open failure it exists to catch gets twice the surface.
+
+  Also: **STOP is carrier-enforced and outranks kip's Settings**, and TCPA consent lands on the
+  sheet's number field — neither maps onto the `List-Unsubscribe` machinery already built.
+
 - **Emailing a saved-search digest is deferred, and the reasons are specific.** Saved searches ship
   without any notification: the in-app count and "new" badge are free, and the email is the
   expensive 20%. Two things to know before building it.

@@ -7,28 +7,34 @@ import {
   useRef,
   useState,
 } from "react";
+import { FaGoogle } from "react-icons/fa";
 import { LuLoaderCircle, LuMapPin } from "react-icons/lu";
-import AuthMenu from "../../components/auth-menu";
-import AuthPanel from "../../components/auth-panel";
 import Avatar from "../../components/avatar";
 import { PhotoGallery } from "../../components/cover-photo";
+import ReachField, {
+  confirmReach,
+  EMPTY_REACH,
+  type ReachState,
+  reachError,
+  sendReach,
+} from "../../components/reach-field";
 import ThemeButton from "../../components/theme-button";
 import Button from "../../components/ui/button";
 import Chip from "../../components/ui/chip";
-import FieldNote from "../../components/ui/field-note";
 import Input from "../../components/ui/input";
 import Sheet from "../../components/ui/sheet";
 import Wordmark, { Mark } from "../../components/wordmark";
 import {
   fetchMyBookingsWith,
   requestStayViaPortal,
+  SlotGone,
 } from "../../utils/bookings";
 import {
   clientState,
   type DebugDetail,
   recordDebugEvent,
 } from "../../utils/debug";
-import { errorCode } from "../../utils/firebase";
+import { auth, errorCode } from "../../utils/firebase";
 import { formatDateRange, nights } from "../../utils/format";
 import { areFriends } from "../../utils/friends";
 import { listingTypeIcon, listingTypeLabel } from "../../utils/listings";
@@ -55,9 +61,24 @@ const FRIEND_ONLY = "__friend__";
 // they asked to connect rather than for specific dates.
 type Ask = { listingId: string | null; window: PortalWindow | null };
 
-// Why an ask never went out. Two causes, because the advice differs: a refused
-// write may mean a revoked link, whereas a stall never reached the server.
-type Failure = "refused" | "stalled";
+// Why an ask never went out, and the advice differs for every one: a refused
+// write may mean a revoked link, a stall never reached the server, and the four
+// slot causes are the world having moved rather than anything being wrong.
+type Failure = "refused" | "stalled" | "taken" | "moved" | "removed" | "past";
+
+// Said in the visitor's terms, never the rule's. The four slot causes read as
+// news about the dates rather than as something they did wrong, because that is
+// what they are — and each names what happened, since "unavailable" would leave
+// someone wondering whether to wait or ask for something else.
+const FAILURE_COPY: Record<Failure, string> = {
+  refused: "That didn't go through — the link may have been turned off.",
+  stalled:
+    "Couldn't reach kip just now, so nothing was sent. Check your connection.",
+  taken: "Someone else took those dates while you were deciding.",
+  moved: "Those dates changed, so nothing was sent. Take another look.",
+  removed: "Those dates aren't offered any more.",
+  past: "Those dates have already been and gone.",
+};
 
 // The only timeout in the flow: this page is outside the app's gate, so the
 // Unreachable screen never renders here. A stall nobody else names ends here.
@@ -83,9 +104,9 @@ type Standing = {
 // the lookup not having answered yet, where drawing an ask would be a guess.
 type Connect = "ask" | "sent" | "none" | "unknown";
 
-// The one screen outside the auth gate. Browsing needs no account; asking does,
-// but the account comes AFTER the tap — the buttons are live signed out, and
-// tapping one holds the ask and opens sign-up in place.
+// The one screen outside the auth gate. Nothing here needs an account: browsing
+// needs no identity at all, and asking needs only a name. The buttons are live
+// from the first paint; tapping one holds the ask and asks who they are in place.
 export default function PortalPage(): ReactElement {
   const {
     user,
@@ -110,6 +131,10 @@ export default function PortalPage(): ReactElement {
   const [failed, setFailed] = useState<{ reason: Failure; ask: Ask } | null>(
     null,
   );
+  // Lifted out of the form: the form unmounts the moment the profile lands, and
+  // these are the two things that still have something to say afterwards.
+  const [sentTo, setSentTo] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   // The rooms didn't load, but the host block did — a different failure from a
   // link that never resolved, and it must not overwrite what's already on screen.
   const [roomsFailed, setRoomsFailed] = useState(false);
@@ -177,7 +202,7 @@ export default function PortalPage(): ReactElement {
   // would otherwise run this, and its three reads, twice on every load.
   const hostId = portal?.ownerId ?? null;
   useEffect(() => {
-    if (!user || anonymous || !hostId) return;
+    if (!user || !hostId) return;
     Promise.all([
       fetchMyBookingsWith(user.uid, hostId),
       fetchMyConnectRequest(user.uid, hostId),
@@ -195,9 +220,11 @@ export default function PortalPage(): ReactElement {
         });
       })
       .catch((error: unknown) => console.error(error));
-    // `anonymous` earns its place in the deps: linking keeps the uid, so `user`
-    // never changes identity for someone who made their account on this page.
-  }, [user, anonymous, hostId]);
+    // Runs for an anonymous visitor too, and must: they are the ones who ask.
+    // Someone returning to their own pending ask hours later is signed in as the
+    // same account (Firebase persists to IndexedDB), so this is what recognises
+    // them instead of offering an ask they already made.
+  }, [user, hostId]);
 
   // Written during render so a failure reports the state it actually failed in,
   // rather than whatever the effect closed over when it armed — for the timer
@@ -265,21 +292,26 @@ export default function PortalPage(): ReactElement {
       )
       .catch((error: unknown) => {
         console.error(error);
-        report("refused", { code: errorCode(error) });
-        setFailed({ reason: "refused", ask: { listingId, window: slot } });
+        // A slot that moved is not a refusal — it is news, and the visitor is
+        // owed which news. Everything else reaching here really was refused.
+        const gone = error instanceof SlotGone ? error.why : null;
+        report(gone ?? "refused", { code: errorCode(error) });
+        setFailed({
+          reason: gone ?? "refused",
+          ask: { listingId, window: slot },
+        });
       })
       .finally(() => setBusy(null));
   }, [ask, portal, user, profileReady, profile, report]);
 
-  // Anonymous counts as signed out here — a ticket is not an account.
-  const identified = Boolean(user) && !anonymous;
-  const isOwner = identified && user?.uid === portal?.ownerId;
-  // A signed-out visitor has no edge and no request, so there is nothing to
-  // look up and the ask is live from the first paint — which is the visitor
-  // this whole page exists for.
+  // A name is what an ask needs — not an account. Someone who has never typed
+  // one has nothing to look up either, so their ask is live from the first
+  // paint, which is the visitor this whole page exists for.
+  const named = Boolean(profile?.displayName);
+  const isOwner = Boolean(user) && user?.uid === portal?.ownerId;
   const connect: Connect = isOwner
     ? "none"
-    : !identified
+    : !named
       ? "ask"
       : standing === null
         ? "unknown"
@@ -288,19 +320,17 @@ export default function PortalPage(): ReactElement {
           : standing.connectPending
             ? "sent"
             : "ask";
-  const needsAccount = ask !== null && !identified;
-  const needsName =
-    ask !== null && identified && profileReady && !profile?.displayName;
+  const needsName = ask !== null && profileReady && !named;
   // A held ask spins the control it came from, so a tap is never a no-op. The
-  // sheets cover "no account" and "no name"; neither covers the gap between
-  // signed in and profile loaded, where a tap used to show nothing at all.
+  // sheet covers "no name"; it does not cover the gap between the page loading
+  // and the profile answering, where a tap used to show nothing at all.
   const holding = ask === null ? busy : (ask.window?.id ?? FRIEND_ONLY);
 
   // An ask held with NEITHER sheet up is waiting on the profile. Deliberately
   // not extended to the send: that write is Firestore's, which queues offline
   // and lands on reconnect.
   useEffect(() => {
-    if (ask === null || needsAccount || needsName) return;
+    if (ask === null || needsName) return;
     const give = (): void => {
       report("stalled");
       setAsk(null);
@@ -312,7 +342,7 @@ export default function PortalPage(): ReactElement {
     }
     const timer = setTimeout(give, ASK_TIMEOUT_MS);
     return () => clearTimeout(timer);
-  }, [ask, needsAccount, needsName, profileUnreachable, report]);
+  }, [ask, needsName, profileUnreachable, report]);
 
   return (
     <div className="flex min-h-dvh flex-col">
@@ -327,7 +357,6 @@ export default function PortalPage(): ReactElement {
         </a>
         <div className="ml-auto flex items-center gap-1">
           <ThemeButton />
-          <AuthMenu />
         </div>
       </header>
 
@@ -357,13 +386,18 @@ export default function PortalPage(): ReactElement {
             connect={connect}
             standing={standing}
             busy={holding}
+            notice={notice}
             failed={failed?.reason ?? null}
             onRetry={() => {
               if (!failed) return;
+              setNotice(null);
               setAsk(failed.ask);
               setFailed(null);
             }}
             onAsk={(listingId, slot) => {
+              // Both clear: a fresh ask must not sit under the explanation of
+              // why the last one didn't go.
+              setNotice(null);
               setFailed(null);
               setAsk({ listingId, window: slot });
             }}
@@ -371,52 +405,170 @@ export default function PortalPage(): ReactElement {
         ) : null}
       </main>
 
+      {/* Closing it abandons the held ask, which is the only way out and needs
+          no separate control. */}
+      {/* Held open past the profile write when an address was given: writing it
+          flips `named` and the ask flies, but a one-time send has no other
+          guard against a typo than the address read back. */}
       <Sheet
-        open={needsAccount || needsName}
-        onClose={() => setAsk(null)}
-        title={
-          needsAccount
-            ? `Create an account to ask ${portal?.ownerName.split(" ")[0] ?? "them"}`
-            : "What should we call you?"
-        }
+        open={needsName || sentTo !== null}
+        onClose={() => {
+          setAsk(null);
+          setSentTo(null);
+        }}
+        title={sentTo ? "Check your email" : "What should we call you?"}
       >
-        {needsAccount ? (
-          <>
-            <p className="mb-5 text-sm text-muted">
-              kip is friends-only, so you'll need an account before you can ask.
-              It takes a moment, and your request is sent as soon as you're in.
+        {sentTo ? (
+          <div className="flex flex-col gap-3">
+            <p className="text-sm text-muted">
+              Your request is already on its way. Open the link at {sentTo} and
+              your kip will work on any device — nothing here is waiting on it.
             </p>
-            <AuthPanel />
-          </>
+            <Button size="lg" onClick={() => setSentTo(null)}>
+              Done
+            </Button>
+          </div>
         ) : (
-          <NameForm />
+          <NameForm
+            host={portal?.ownerName.split(" ")[0] ?? null}
+            onSent={setSentTo}
+            onAbandon={(why) => {
+              setAsk(null);
+              setNotice(why);
+            }}
+          />
         )}
       </Sheet>
     </div>
   );
 }
 
-// The host has to see a name rather than a blank. No handle — that's optional.
-function NameForm(): ReactElement {
-  const { user, completeOnboarding } = useKip();
+// The host has to see a name rather than a blank. No handle, and no account —
+// the ask goes out on this alone, and keeping it is a separate offer made after.
+function NameForm({
+  host,
+  onSent,
+  onAbandon,
+}: {
+  host: string | null;
+  onSent: (email: string) => void;
+  // Drops the held ask AND carries the reason up. Needed when the visitor turns
+  // out to already have an account: the send effect would otherwise lodge the
+  // request from an identity they never asked as — and dropping it unmounts
+  // this form, so anything said down here would never be read.
+  onAbandon: (why: string) => void;
+}): ReactElement {
+  const { user, signIn, completeOnboarding } = useKip();
   const [name, setName] = useState(user?.displayName ?? "");
+  const [reach, setReach] = useState<ReachState>(EMPTY_REACH);
+  const recaptcha = useRef<HTMLDivElement>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const invalid = name ? validateDisplayName(name) : null;
+  const reachInvalid = reachError(reach.raw);
+  const problem = invalid ?? reachInvalid ?? error;
 
-  async function submit(): Promise<void> {
-    if (validateDisplayName(name)) return;
+  // The one path that identifies you BEFORE the ask, and the only one that needs
+  // no name typed: Google already knows it. The other two send on the name in the
+  // field and prove the address or number afterwards.
+  async function googleAsk(): Promise<void> {
     setBusy(true);
     setError(null);
+    try {
+      const { sameAccount } = await signIn();
+      // Landing in an account they already had: it has its own name and photo,
+      // which must not be overwritten, and the ask must not fly from it as a
+      // side effect of adding a way to be reached.
+      if (!sameAccount) {
+        onAbandon(
+          "That Google account is already on kip — you're in it now. Ask again and it'll go from this account.",
+        );
+        return;
+      }
+      const known = auth().currentUser?.displayName?.trim();
+      if (!known) {
+        // Nothing to write, so fall back to the field rather than sending an ask
+        // that would reach the host as a blank.
+        setError("Google didn't share a name. Type one and send.");
+        return;
+      }
+      await completeOnboarding(known);
+    } catch (caught) {
+      console.error(caught);
+      setError("That didn't work. Try again, or use an email or number.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function submit(): Promise<void> {
+    if (validateDisplayName(name) || reachInvalid) return;
+    setBusy(true);
+    setError(null);
+    let emailed: string | null = null;
+    // Two failures, two remedies: a bad destination is corrected here, a failed
+    // write is retried. One catch blamed the destination for both.
+    if (reach.pending) {
+      try {
+        const { sameAccount } = await confirmReach(reach.pending, reach.code);
+        // That number already had a kip account, so they are in it now — with
+        // its own name and photo, which the sheet's must not overwrite. The ask
+        // stays with the account that made it; only that browser can act on it.
+        if (!sameAccount) {
+          // Dropping the held ask is what makes this true: otherwise the send
+          // effect fires the moment the new account's profile lands, lodging
+          // the request from an identity they never asked as. The message goes
+          // UP, because dropping the ask unmounts this form.
+          setBusy(false);
+          onAbandon(
+            "That number is already on kip — you're in it now. Ask again and it'll go from this account.",
+          );
+          return;
+        }
+      } catch (caught) {
+        console.error(caught);
+        setError("That code didn't work. Check it, or ask for another.");
+        setBusy(false);
+        return;
+      }
+    } else if (reach.raw) {
+      try {
+        // Sent FIRST, and an emailed address handed UP before the profile write,
+        // which unmounts this form the moment it lands.
+        const holder = recaptcha.current;
+        if (!holder) throw new Error("no element for the check to bind to");
+        const sent = await sendReach(reach.raw, host ?? "your host", holder);
+        if (sent.pending) {
+          // A code is on its way; the ask waits for it to be typed.
+          setReach({ ...reach, pending: sent.pending, sentTo: sent.sentTo });
+          setBusy(false);
+          return;
+        }
+        // NOT handed up yet: doing so swaps the sheet's body and unmounts this
+        // form, so a profile write that then failed would have nowhere to say
+        // so — under a line claiming the request was already on its way.
+        emailed = sent.sentTo;
+      } catch (caught) {
+        console.error(caught);
+        // The profile is unwritten, so the ask has not gone: they can correct
+        // it or clear it and send without one.
+        setError("Couldn't send that. Check it, or clear it and carry on.");
+        setBusy(false);
+        return;
+      }
+    }
+
     try {
       await completeOnboarding(name.trim());
     } catch (caught) {
       console.error(caught);
       setError("Couldn't save that. Check your connection and try again.");
-    } finally {
       setBusy(false);
+      return;
     }
+    setBusy(false);
+    if (emailed) onSent(emailed);
   }
 
   return (
@@ -427,9 +579,6 @@ function NameForm(): ReactElement {
         submit();
       }}
     >
-      <p className="text-sm text-muted">
-        This is the name your host will see. You can change it later.
-      </p>
       <Input
         autoComplete="name"
         autoFocus
@@ -437,14 +586,45 @@ function NameForm(): ReactElement {
         onChange={(event) => setName(event.target.value)}
         placeholder="Your name"
       />
-      {invalid ? <FieldNote tone="danger">{invalid}</FieldNote> : null}
-      {error ? <FieldNote tone="danger">{error}</FieldNote> : null}
+      <ReachField
+        state={reach}
+        onChange={(next) => {
+          setError(null);
+          setReach(next);
+        }}
+        hostRef={recaptcha}
+      />
+      {/* Below both fields and above the button: it describes the reach field
+          it follows, and carries whatever is wrong. Nothing sits between the
+          two inputs, and the name needs no caption — the title asks for it. */}
+      <p className={`text-sm ${problem ? "text-danger" : "text-muted"}`}>
+        {problem ??
+          `Only so kip can reach you — ${host ?? "they"} never sees it.`}
+      </p>
       <Button
         type="submit"
         size="lg"
-        disabled={busy || Boolean(validateDisplayName(name))}
+        disabled={busy || Boolean(validateDisplayName(name) || reachInvalid)}
       >
         {busy ? <LuLoaderCircle className="animate-spin" /> : "Send request"}
+      </Button>
+
+      {/* Below the button it replaces, because that is what it is: the same ask
+          sent a different way. Above it, it read as the preferred route. */}
+      <div className="flex items-center gap-3 py-0.5">
+        <span className="h-px flex-1 bg-border" />
+        <span className="text-xs text-faint">or</span>
+        <span className="h-px flex-1 bg-border" />
+      </div>
+      <Button
+        type="button"
+        variant="secondary"
+        size="lg"
+        disabled={busy}
+        onClick={googleAsk}
+      >
+        <FaGoogle />
+        Request with Google
       </Button>
     </form>
   );
@@ -459,6 +639,7 @@ function PortalView({
   connect,
   standing,
   busy,
+  notice,
   failed,
   onRetry,
   onAsk,
@@ -469,6 +650,10 @@ function PortalView({
   // can be drawn honestly.
   roomsPending: boolean;
   roomsFailed: boolean;
+  // Why an ask was dropped rather than sent — the visitor turned out to have an
+  // account already. Lives up here because dropping the ask unmounts the sheet
+  // that would otherwise have said so.
+  notice: string | null;
   failed: Failure | null;
   isOwner: boolean;
   connect: Connect;
@@ -557,18 +742,24 @@ function PortalView({
         </p>
       ) : null}
 
+      {notice ? (
+        <p className="px-1 text-center text-sm text-muted">{notice}</p>
+      ) : null}
+
       {/* Without this the button just reappears and a failure is invisible. The
           retry re-sends the ask that failed, so nothing has to be found again. */}
       {failed ? (
         <div className="flex flex-col items-center gap-3 px-1">
           <p className="text-center text-sm text-danger">
-            {failed === "refused"
-              ? "That didn't go through — the link may have been turned off."
-              : "Couldn't reach kip just now, so nothing was sent. Check your connection."}
+            {FAILURE_COPY[failed]}
           </p>
-          <Button variant="secondary" onClick={onRetry}>
-            Try again
-          </Button>
+          {/* Retrying a slot that has gone would only fail again the same way,
+              so the four of those offer nothing and say so instead. */}
+          {failed === "refused" || failed === "stalled" ? (
+            <Button variant="secondary" onClick={onRetry}>
+              Try again
+            </Button>
+          ) : null}
         </div>
       ) : null}
     </div>

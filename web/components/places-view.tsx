@@ -8,6 +8,7 @@ import { useKip } from "../utils/store";
 import type { Listing } from "../utils/types";
 import BookingRow from "./booking-row";
 import CoverPhoto from "./cover-photo";
+import { useNameGate } from "./name-gate";
 import Button from "./ui/button";
 import Chip from "./ui/chip";
 import { Group, Row, Section } from "./ui/list";
@@ -70,11 +71,12 @@ function ListingRow({ listing }: { listing: Listing }): ReactElement {
   );
 }
 
-export default function PlacesView(): ReactElement {
-  const { user, myListings, incomingBookings, navigate } = useKip();
+export default function PlacesView(): ReactElement | null {
+  const { user, anonymous, myListings, incomingBookings, navigate } = useKip();
+  const { askIdentity } = useNameGate();
 
   if (!user) {
-    return <p className="text-muted">Sign in to list a room or your place.</p>;
+    return null;
   }
 
   // Places is the host's side of kip, so it carries the two things that happen
@@ -96,7 +98,7 @@ export default function PlacesView(): ReactElement {
       <Section
         title="My places"
         action={
-          myListings.length > 0 ? (
+          myListings.length > 0 && !anonymous ? (
             <button
               type="button"
               onClick={() => navigate({ kind: "listing-form", id: null })}
@@ -108,7 +110,21 @@ export default function PlacesView(): ReactElement {
           ) : null
         }
       >
-        {myListings.length === 0 ? (
+        {/* Hosting is the one thing a browser-local account can't do, and the
+            reason belongs to the guest rather than to us: a host who can't be
+            reached leaves people holding stays nobody can call off. Mirrors the
+            rule; the rule is the enforcement. */}
+        {anonymous ? (
+          <div className="flex flex-col items-start gap-3 rounded-3xl bg-surface p-5 shadow-card">
+            <p className="text-sm text-muted">
+              Hosting starts with an email — your guests need a host kip can
+              reach. Add yours and you can list a place.
+            </p>
+            <Button variant="secondary" onClick={askIdentity}>
+              Add email
+            </Button>
+          </div>
+        ) : myListings.length === 0 ? (
           <div className="flex flex-col items-start gap-3 rounded-3xl bg-surface p-5 shadow-card">
             <p className="text-sm text-muted">
               You haven't listed anything yet. Add a room you're not using or
