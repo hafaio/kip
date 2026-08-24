@@ -11,6 +11,7 @@ import {
   onDocumentCreated,
   onDocumentDeleted,
   onDocumentUpdated,
+  onDocumentWritten,
 } from "firebase-functions/v2/firestore";
 import { onRequest } from "firebase-functions/v2/https";
 import { onSchedule } from "firebase-functions/v2/scheduler";
@@ -29,6 +30,7 @@ import {
   type NotifyKind,
   type NotifyState,
   type Person,
+  checkStep,
   noticeForBookingChange,
   noticeForConnectAccepted,
   noticeForConnectRequest,
@@ -341,7 +343,7 @@ async function sendText(
   uid: string,
   to: string,
   body: string,
-  kind: NotifyKind,
+  kind: NotifyKind | "check",
   stopped: boolean,
 ): Promise<void> {
   // Outside the try, so a credential that can't be read leaves this the way a
@@ -801,3 +803,102 @@ export const reapAnonymousTickets = onSchedule(
     await reapTickets(REAP_DRY_RUN);
   },
 );
+
+// One segment of GSM-7, and it has to earn being sent: this is the only text
+// kip sends that nobody's stay or friendship caused.
+const CHECK_BODY = "kip: texts are working again.";
+
+// The owner pressing "Check now" in Settings, which is a WRITE and not a call —
+// so this is a trigger like every other one here, reacting to something that
+// already happened, and not a server sitting in a request path.
+//
+// It exists because a carrier STOP lifts SILENTLY. Twilio tells kip nothing when
+// someone texts START; the only way to find out is to try, and without this the
+// answer to "did it work?" is "wait until kip next has something to text you
+// about", which through a quiet week is indistinguishable from still being
+// blocked.
+//
+// It cannot be made to spend money, and that rests on a RULE rather than on this
+// function: it acts only while `smsStopped` stands, `firestore.rules` refuses any
+// client write that SETS that field, and while it stands Twilio refuses every
+// send with 21610 BEFORE creating a message, so nothing is billed. The first
+// attempt that gets through clears the flag — after which this returns at the
+// guard below. The ceiling is one message per block actually lifted. Without the
+// rule the guard is a field the client owns, and alternating it with the success
+// that clears it bills a message per round trip.
+export const onTextCheckRequested = onDocumentWritten(
+  // No `secrets`: the Twilio credential is read at send time from Secret
+  // Manager, and this never sends email, so there is nothing to resolve at
+  // deploy and nothing here can hold a release up.
+  //
+  // `retry` because the answer is the ONLY thing that stops the button
+  // spinning: without it, one failed write leaves the control disabled across
+  // reloads until some unrelated setting is changed.
+  { document: "users/{uid}/settings/prefs", region: REGION, retry: true },
+  async (event) => {
+    const stale = event.data?.after.data();
+    if (!stale) return;
+    // On the event first, and cheaply: every ordinary prefs write lands here,
+    // and only a real ask should pay for a read.
+    const claimed = millis(stale.smsProbeAt);
+    if (claimed <= millis(stale.smsProbeDoneAt)) return;
+
+    const uid = event.params.uid;
+    // A retry replays the SAME event, so what it carries is a snapshot of the
+    // past — and acting on it is precisely how a retry sends a second text.
+    // Everything from here reads the document as it is now.
+    const fresh = (await db.doc(prefsPath(uid)).get()).data();
+    if (!fresh) return;
+    const asked = millis(fresh.smsProbeAt);
+    const step = checkStep(asked, millis(fresh.smsProbeDoneAt), Date.now());
+    // Also what stops this re-triggering itself: the answer is written into the
+    // very document being watched, and lands with the two equal.
+    if (step === "skip") return;
+
+    if (step === "abandon") {
+      logger.info("check abandoned: nobody is still waiting for it", { uid });
+    }
+    try {
+      if (step === "probe") await attemptCheck(uid, fresh);
+    } finally {
+      // In a finally, so a throw still moves the control out of its waiting
+      // state. A button that spins for ever is a worse answer than a wrong one.
+      await db
+        .doc(prefsPath(uid))
+        .set({ smsProbeDoneAt: asked }, { merge: true });
+    }
+  },
+);
+
+// The stamps are plain clock readings — the client picks one and this writes the
+// same one back — so "still checking" needs no clock agreement between the two.
+function millis(value: unknown): number {
+  return typeof value === "number" ? value : 0;
+}
+
+async function attemptCheck(
+  uid: string,
+  prefs: DocumentData,
+): Promise<void> {
+  if (!smsConfigured()) {
+    logger.info("check skipped: no SMS provider configured", { uid });
+    return;
+  }
+  // Only meaningful while the carrier is refusing, and only free while it is.
+  if (prefs.smsStopped !== true) return;
+
+  const user = await getAuth()
+    .getUser(uid)
+    .catch(() => null);
+  const number = user?.phoneNumber ?? "";
+  // The same gates the sender makes, for the same reasons — a check that
+  // bypassed them would text a number nobody agreed to be texted at.
+  if (!number || !number.startsWith("+1")) return;
+  if (!prefs.smsConsentAt || prefs.smsConsentNumber !== number) return;
+  // The sender asks this per kind; a probe has no kind, so the question is
+  // whether ANY text is wanted. Someone who turned every kind off has said they
+  // want no texts, and unblocking is not a reason to send them one.
+  if (!Object.values(prefs.notifySms ?? {}).some(Boolean)) return;
+
+  await sendText(uid, number, CHECK_BODY, "check", true);
+}

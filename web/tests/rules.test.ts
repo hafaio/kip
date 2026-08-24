@@ -2781,6 +2781,78 @@ describe("bookings (dates that have already gone)", () => {
 
 // Private notes about what you're looking for. Nothing else resolves them, so
 // the only thing to prove is that the boundary is the owner.
+describe("a carrier's STOP is the sender's to record", () => {
+  const prefs = (uid: string) => ["users", uid, "settings", "prefs"] as const;
+
+  beforeEach(async () => {
+    await seed((db) =>
+      setDoc(doc(db, ...prefs(OWNER)), {
+        shareStaysWithFriends: false,
+        notifySms: { bookingRequested: true },
+        smsConsentNumber: "+15555550100",
+      }),
+    );
+  });
+
+  // The text check acts only while `smsStopped` stands, and while it stands
+  // every send is refused before it is billed. A client able to SET the field
+  // could alternate it with the success that clears it and spend a message a
+  // round trip, which is why the guard has to live here and not in the trigger.
+  it("nobody can tell kip their own number is blocked", async () => {
+    const owner = authed(OWNER);
+    await assertFails(
+      setDoc(doc(owner, ...prefs(OWNER)), { smsStopped: true }, { merge: true }),
+    );
+  });
+
+  it("but clearing it is how turning texts on works", async () => {
+    await seed((db) =>
+      setDoc(doc(db, ...prefs(OWNER)), { smsStopped: true }, { merge: true }),
+    );
+    const owner = authed(OWNER);
+    await assertSucceeds(
+      setDoc(
+        doc(owner, ...prefs(OWNER)),
+        { smsStopped: false, smsConsentAt: 1 },
+        { merge: true },
+      ),
+    );
+  });
+
+  // `request.resource.data` is the document AFTER the write, so a merge that
+  // never mentions the field still carries the stored value. Phrased as "may
+  // not be true" rather than "may not become true", this refused every other
+  // control in Settings the moment a block stood — including the one that
+  // clears it.
+  it("an unrelated setting still saves while a block stands", async () => {
+    await seed((db) =>
+      setDoc(doc(db, ...prefs(OWNER)), { smsStopped: true }, { merge: true }),
+    );
+    const owner = authed(OWNER);
+    await assertSucceeds(
+      setDoc(
+        doc(owner, ...prefs(OWNER)),
+        { shareStaysWithFriends: true },
+        { merge: true },
+      ),
+    );
+  });
+
+  it("and asking for a check is not itself a way to claim a block", async () => {
+    const owner = authed(OWNER);
+    await assertSucceeds(
+      setDoc(doc(owner, ...prefs(OWNER)), { smsProbeAt: 5 }, { merge: true }),
+    );
+    await assertFails(
+      setDoc(
+        doc(owner, ...prefs(OWNER)),
+        { smsProbeAt: 6, smsStopped: true },
+        { merge: true },
+      ),
+    );
+  });
+});
+
 describe("saved searches", () => {
   const path = (uid: string) => ["users", uid, "searches", "s1"] as const;
 

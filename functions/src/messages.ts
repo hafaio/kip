@@ -813,3 +813,25 @@ export function renderSms(notice: Notice, origin: string): string | null {
   const summary = fitLeadingName(notice.subject, SMS_SEGMENT - url.length - 1);
   return summary ? `${summary} ${url}` : url;
 }
+
+// How long a text check may go on being retried. Comfortably past the deadline
+// the CLIENT gives up at, because the server must never abandon a question
+// while a spinner is still claiming it is being answered — but bounded, or a
+// persistent failure (a credential that cannot be read is the realistic one)
+// retries for days on a question nobody is waiting for. Same shape as the
+// teardown's attempt budget: failure is capped and says so.
+export const CHECK_ABANDON_MS = 600_000;
+
+export type CheckStep = "skip" | "abandon" | "probe";
+
+// A retried delivery replays the SAME event, so the snapshot it carries is
+// stale — acting on it is exactly how a retry sends a second text. The caller
+// therefore re-reads and asks again with fresh values.
+export function checkStep(
+  askedAt: number,
+  answeredAt: number,
+  now: number,
+): CheckStep {
+  if (askedAt <= answeredAt) return "skip";
+  return now - askedAt > CHECK_ABANDON_MS ? "abandon" : "probe";
+}

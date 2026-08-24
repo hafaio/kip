@@ -1402,13 +1402,15 @@ site in `web/out/`.
 `functions/` (Node 22, npm — NOT bun; it targets the Cloud Functions runtime). `cd functions && npm
 install`, `npm run build`, `firebase deploy --only functions`.
 
-It holds three things, and each had to argue for itself, because everything user-facing — share
+It holds four things, and each had to argue for itself, because everything user-facing — share
 links included — runs on rules alone. **Notification email** needs the Admin SDK to read an address
 off the Auth account, which is what keeps email out of Firestore entirely. **The reaper** enumerates
 and deletes Auth accounts, which rules categorically cannot do, and runs on a timer in nobody's
 request path. **The teardown** (`teardown.ts`, `onAccountDeletionRequested`) needs something rules
-can't express at all: to RETRY without the person being there. None of the three sits between a user
-and their data — each reacts to a write that already happened, or to a clock.
+can't express at all: to RETRY without the person being there. **The text check**
+(`onTextCheckRequested`) needs the Twilio credential, which a browser must never hold — see the STOP
+note under SMS. None of the four sits between a user and their data — each reacts to a write that
+already happened, or to a clock.
 
 ## Driving the auth flows locally
 
@@ -1586,6 +1588,33 @@ so does the function's Admin SDK (`GCLOUD_PROJECT`) — seed `demo-kip`, not the
 the trigger fires against an empty database and every assertion fails for the wrong reason. And
 there is no Storage emulator configured, so the photo sweep fails on every run: that is the
 non-blocking path working as designed, and the run passing THROUGH it is itself the assertion.
+
+## Driving a change of number
+
+`bun run check:consent` is the only check that can see a consent record at all: it signs someone in
+through the email door, then works the phone door and the Texts switch in Settings, reading the
+stored prefs document back after every step.
+
+```sh
+cd web && bun run dev:emulated      # one shell, serves on 3001
+bun run check:consent               # another
+```
+
+Five states, each of which passes lint, the unit suite and the rules suite while broken: an account
+that has never wanted texts adds a number and is **not asked** (the opt-in guard); turning the switch
+on records a consent naming that number; removing the number stops the texts and **keeps** the
+record; re-adding the SAME number asks rather than resuming; and a NEW number asks once, with
+accepting writing a fresh record naming it and keeping the superseded one, declining writing nothing
+operative. It reads the DOCUMENT rather than the screen for each, since a switch drawn from state
+nobody has read back proves the render and not the write.
+
+Two traps it teaches, both of which cost a run here. The emulator keeps its **Auth accounts** for as
+long as it is up, so a fixed test number belongs to the previous run's account by the second run and
+adding it signs you INTO that account — a real product path, arriving as a run that quietly drives
+somebody else's data. Use a fresh number per run. And a headless Chrome left behind by a failed run
+holds both the debugging port and the **signed-in session**, so the next run attaches to it and never
+sees a sign-in form; the check kills its own profile's browser first, and `pkill -f` needs a pattern
+with no leading dashes or it matches nothing while looking like it worked.
 
 ## Security-rules tests
 
@@ -1884,8 +1913,11 @@ expect when it does.
   standing answer; SMS is the real one.
 
   It rides the four triggers that already exist and needs no new function, and the number is read per
-  send off the Auth account (`user.phoneNumber`, E.164) exactly as the address is, so it never
-  touches Firestore. Twilio keeps its own message logs, which is the honest caveat: the confinement
+  send off the Auth account (`user.phoneNumber`, E.164) exactly as the address is, so no number is
+  stored in order to REACH anyone. One IS stored, for a different reason: `smsConsentNumber` names
+  the phone a consent was given for, since a record that cannot say which number it covers cannot
+  stop kip texting a different one. Owner-private, and the privacy page now says so — it claimed the
+  opposite in two places until a review caught it. Twilio keeps its own message logs, which is the honest caveat: the confinement
   is a shade weaker than email's.
 
   **`recipientFor` is gone, and it was wrong rather than merely incomplete.** It bundled four
@@ -1993,12 +2025,32 @@ expect when it does.
   needs no rules change. `notify` thereby becomes email-specific under a generic name; renaming it
   would migrate, so it keeps the name and this sentence is the documentation.
 
-  **The UI is ONE switch, not a second column.** `Switch` is a full-width row carrying a label and a
-  description; two per row means bare checkboxes, a lost label→channel binding, and a screen reader
-  saying "Someone asks to stay, switch, switch". What people actually decide is "text me the
-  important stuff", so: one "Also text me" switch governing all four, reading
-  `Object.values(prefs.notifySms).some(Boolean)`. The storage is already per-kind, so per-event
-  granularity later is a UI change with no migration.
+  **The UI is channel-major: two groups, never a second column.** The thing being refused is two
+  controls on one row — `Switch` is a full-width row carrying a label and a description, so a second
+  column means bare checkboxes, a lost label→channel binding, and a screen reader saying "Someone
+  asks to stay, switch, switch". Splitting by CHANNEL pays none of that: Settings → Notifications is
+  a **SectionHeading "Email"** over the six events, then a **SectionHeading "Texts"** over one Group
+  holding the consent switch and the four `sms: true` events. Every control is still a full-width
+  row with one meaning.
+
+  What that costs is a name collision — the same four labels appear in both groups, and a heading is
+  not part of any accessible name — so `Switch` takes an `srSuffix`, rendered `sr-only` after the
+  label: "by email" upstairs, "by text" down here. Without it the two halves are announced
+  identically.
+
+  The **master switch is still one deliberate control**, because it is the consent act (below) and
+  cannot be four. It reads `Object.values(prefs.notifySms).some(Boolean)` AND the number it was
+  agreed for; `setTexts` writes the whole map plus the record. Each per-event row is
+  `setTextNotify(uid, kind, on)` — a one-key merge into `notifySms`, writing no consent and clearing
+  no STOP, since a row can only narrow what the master turned on. The rows are `disabled={!texting}`
+  and drawn `checked={texting && …}`: one condition covers no phone, no consent and consent about a
+  number that has since changed, and the stored map may still hold `true` through all three — a
+  greyed-out row rendered ON would be claiming kip texts about this.
+
+  The per-event rows carry **no descriptions**: each is the same event as a row forty pixels up whose
+  note already says what it is. The two `sms: false` kinds get **no rows at all**, and one muted line
+  derived from the table's own `!sms` entries says why — that is how the two impossible cells read as
+  "not applicable" rather than as an omission.
 
   **TCPA consent is collected on that switch, NOT on the sheet's number field** — the reverse of what this
   note used to say, and the reason matters: consent to marketing-adjacent automated texts must be
@@ -2016,21 +2068,114 @@ expect when it does.
   number later resumed texting on an agreement given about the first. Settings reads the switch as on
   only while `smsConsentNumber` equals the number on the account, `textIfWanted` refuses a send whose
   recipient the consent doesn't name (which also fails closed for every consent stored before the
-  field existed), and removing the phone door clears the record outright — taking a number off the
-  account is the plainest way there is of saying stop texting me, so re-adding the same one asks
-  again. The sender's check is pinned by `tests/drift.test.ts`, since nothing else can see it. `reach-field.tsx` carries one line for it:
-  the code step appends "Standard message rates apply."
+  field existed), and removing the phone door stops the texts, so re-adding the same one asks
+  again — taking a number off the account is the plainest way there is of saying stop texting me.
+  The sender's check is pinned by `tests/drift.test.ts`, since nothing else can see it.
+  `reach-field.tsx` carries one line for it: the code step appends "Standard message rates apply."
+
+  **Changing your number re-asks in one tap; it does not transfer anything.** Bound to a number, the
+  consent otherwise lapses the moment the number changes — the switch goes off and stays off until
+  someone notices, which is a bad way to lose the messages you asked for. So the phone sheet offers
+  the disclosures again the moment a new number lands (`offerTexts` in `DoorsSection`), and what
+  accepting writes is a FRESH consent naming the new phone. Not a transfer: "the record names a
+  different number" is exactly the objection the sender raises, and re-presenting the wording answers
+  it instead of arguing with it. It comes AFTER the number is added and gates nothing, since consent
+  to be texted must not ride along with a way of signing in.
+
+  It asks **only where a consent already stands**, which is the guard that keeps this from being an
+  opt-in nag: an account that has never wanted texts sees no dialog at all. That is what makes the
+  record outlive the number it names — `stopTexts` zeroes the `notifySms` map and leaves the triple
+  alone, where it used to null it. Nulling stopped nothing (`textIfWanted` already finds no number,
+  and the map is off) and destroyed the two things the record is for: explaining texts ALREADY SENT,
+  and telling a change of number from someone who never wanted texts. Zeroing the map is what stops
+  re-adding the SAME number resuming silently; the dialog is what makes resuming one tap.
+
+  The superseded triple is appended to `smsConsentLog` (`arrayUnion`, and only when it named another
+  number or agreed to other wording), which is the least that leaves already-sent texts explainable.
+  No `transferredFrom` field: a log entry naming the old number beside a fresh operative record
+  naming the new one already tells that story. Number changes are rare, so the array is bounded in
+  practice; prefs are owner-private and the sender reads as admin, so no rules change.
+
+  **`textIfWanted` is unchanged, and that is the point** — every state here fails closed on the
+  checks it already makes: no number on the account, a consent naming another phone, or a map with
+  nothing switched on.
 
   **STOP is carrier-enforced, outranks kip's Settings, and needs no webhook.** Twilio absorbs
   STOP/START/HELP before kip's code sees them. kip finds out at the next send, which is rejected
   synchronously with [error 21610](https://www.twilio.com/docs/api/errors/21610) before a message is
   created, so it is not billed. "Sooner" buys nothing, since nothing was going to be sent in the
-  interval — so no inbound webhook and no second HTTP function. Catch 21610, write `smsStopped` into
-  prefs, and CLEAR it on the next successful send so a START self-heals: the same re-derive-rather-
-  than-sweep shape as guest markers and portal grants. Settings must then render the switch off AND
-  disabled with an honest line — kip cannot undo a carrier block, and a switch that flips back on and
-  does nothing is the worst available answer. None of this touches `List-Unsubscribe`, which is an
-  email header pointing at a public function; STOP is a fact kip only ever observes.
+  interval — so no inbound webhook and no second HTTP function. `sendText` catches 21610, writes
+  `smsStopped` into prefs, and CLEARS it on the next successful send so a START self-heals: the same
+  re-derive-rather-than-sweep shape as guest markers and portal grants. None of this touches
+  `List-Unsubscribe`, which is an email header pointing at a public function; STOP is a fact kip
+  only ever observes.
+
+  **The switch stays ENABLED while blocked, and an earlier version of this note said the opposite.**
+  Disabling it stranded anyone whose STOP landed while they were switching texts off: kip learns a
+  block has lifted only by ATTEMPTING a send, attempting one needs the switch left on, and so there
+  was nothing to try, nothing to clear the flag, and a dead control. Turning it on clears
+  `smsStopped`; the next refused send writes it straight back.
+
+  **A carrier STOP lifts silently, so Settings offers a check.** Twilio says nothing when someone
+  texts START, which leaves "did it work?" answered only by whatever kip next has to text about —
+  through a quiet week, indistinguishable from still being blocked. So the blocked note names the
+  number, links it as `sms:…?&body=START` (the one form both iOS and Android prefill from), and
+  offers **Check now**.
+
+  That is a WRITE and not a call: `requestTextCheck` stamps `smsProbeAt` into prefs,
+  `onTextCheckRequested` notices and tries one text, and the answer arrives on the prefs listener the
+  app already holds — so it reacts to a write that already happened, like every other trigger here,
+  rather than sitting in a request path. "Still checking" is `smsProbeAt > smsProbeDoneAt`, and the
+  trigger stamping the two EQUAL is also what stops it re-triggering on its own write, since the
+  answer lands in the document it watches. The stamp is written in a `finally`: a throw must still
+  move the control out of its waiting state, because a button that spins for ever is a worse answer
+  than a wrong one.
+
+  **It cannot be made to spend money, and that rests on a RULE rather than on the function.** It acts
+  only while `smsStopped` stands; `firestore.rules` refuses any client write that SETS that field
+  (clearing stays allowed, since turning texts on does exactly that); and while it stands Twilio
+  refuses every attempt with 21610 BEFORE creating a message. The first one that gets through clears
+  the flag, after which the guard returns immediately. The ceiling is one message per block actually
+  lifted. Without the rule the guard is a field the client owns, and alternating it with the success
+  that clears it bills a message per round trip — which is exactly what a review found the first
+  version doing, while its comment claimed the opposite.
+
+  The rule has to forbid the TRANSITION and not the value: `request.resource.data` is the document
+  after the write, so a merge that never mentions the field still carries the stored one, and "may
+  not be true" refused every other control in Settings the moment a block stood — the switch that
+  clears it included. Four cases in `rules.test.ts`, and reverting the rule fails two of them.
+
+  It also asks what the sender asks: a consent naming this number, and at least one kind still
+  wanted. Someone who turned every kind off has said they want no texts, and unblocking is not a
+  reason to send them one.
+
+  **A check that never comes back says so, and the server outlasts the screen.** The trigger's
+  answer is the only thing that stops the spinner, so a single failed write left the button disabled
+  across reloads until some unrelated setting was changed. Two halves. `probeState`
+  (`utils/sms.ts`, pinned in `tests/sms.test.ts`) derives `idle | checking | stalled | answered` from
+  the two stamps and the clock — nothing stored, so a reload can't lose a check in flight — and
+  `CHECK_STALL_MS` is 30s rather than the portal ask's 10, because this wait legitimately contains a
+  cold start, Twilio's own 10s timeout and a second write. A stall is not terminal: a late answer
+  arrives on the prefs listener and moves it on, the same self-healing shape as `profileUnreachable`.
+  And the trigger takes `retry: true`, made safe by RE-READING before it acts — a retried delivery
+  replays the same event, so its snapshot is of the past, and acting on it is precisely how a retry
+  sends a second text. `checkStep` (`functions/src/messages.ts`) bounds that with `CHECK_ABANDON_MS`,
+  and `CHECK_ABANDON_MS > CHECK_STALL_MS` is pinned across the two packages: if the server gave up
+  first, the button would claim a question was being answered that nothing was working on.
+
+  **The probe stamps are plain clock readings, deliberately.** The client picks the value and the
+  trigger writes the SAME one back, so "still checking" is one comparison needing no clock agreement
+  — but `watchPrefs` read them through `epoch`, which answers null for anything that isn't a
+  Firestore `Timestamp`, so both fields read null for ever: the spinner could not persist and the
+  "still blocked" line could not render at all. That line is the whole reason the check is legible,
+  since the note is otherwise identical before and after.
+
+  **The number is in both packages and pinned.** `SMS_FROM` (`utils/sms.ts`) is a second copy of
+  `TWILIO_FROM`, since neither package can import from the other, and `tests/drift.test.ts` pins
+  them. Wrong, Settings would tell someone to text START to a phone kip has never sent from — the
+  message goes through, nothing changes, and nobody can see why. Both are empty until a number is
+  provisioned, which is also what keeps the whole control invisible: no `SMS_FROM`, no number named
+  and no Check button, so the note falls back to the wording it had before.
 
   **One segment, always, and that is an assertion rather than an aspiration.** `renderSms` belongs in
   `messages.ts` beside `renderEmail`, returning `string | null` — null for a kind with no SMS, so

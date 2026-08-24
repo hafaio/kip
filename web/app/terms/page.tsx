@@ -9,7 +9,7 @@ export const metadata: Metadata = {
   description: "The rules for using kip, written to be read.",
 };
 
-const UPDATED = "August 22, 2026";
+const UPDATED = "August 23, 2026";
 
 export default function TermsPage(): ReactElement {
   return (
@@ -93,9 +93,9 @@ export default function TermsPage(): ReactElement {
       <H2>Text messaging program</H2>
       <Card>
         <p>
-          kip offers optional account-notification texts (“kip notifications”),
-          sent by kip via its messaging provider to the phone number on your
-          account.
+          kip offers optional automated account-notification texts (“kip
+          notifications”), sent by kip via its messaging provider to the phone
+          number on your account.
         </p>
         <List>
           <li>
@@ -105,10 +105,10 @@ export default function TermsPage(): ReactElement {
             or someone agrees to be friends. No marketing, ever.
           </li>
           <li>
-            <strong>Opting in:</strong> you consent by turning on “Also text me”
-            in Settings, where these disclosures are shown. Consent is specific
-            to this program, and is never a condition of using kip or any part
-            of it.
+            <strong>Opting in:</strong> you consent by turning on “Text me” in
+            Settings, where these disclosures are shown. Consent is specific to
+            this program, is not a condition of any purchase, and is never a
+            condition of using kip or any part of it.
           </li>
           <li>
             <strong>Message frequency varies.</strong> How often you're texted
@@ -159,14 +159,14 @@ export default function TermsPage(): ReactElement {
 
       <H2>The honest disclaimers</H2>
       <P>
-        kip is provided as it is, free. It's built with care, but it comes with
-        no warranty of any kind — not that it will be available, uninterrupted,
-        or error-free. To the fullest extent permitted by law, kip and its
-        operator are not liable for indirect, incidental, or consequential
-        damages arising from the service or from any stay arranged through it;
-        where liability can't be excluded, it is limited to the amount you paid
-        to use kip, which is nothing. Nothing in these terms excludes liability
-        that cannot lawfully be excluded.
+        kip is provided as it is, free of charge. It's built with care, but it
+        comes with no warranty of any kind — not that it will be available,
+        uninterrupted, or error-free. To the fullest extent permitted by law,
+        kip and its operator are not liable for indirect, incidental, or
+        consequential damages arising from the service or from any stay arranged
+        through it; where liability can't be excluded, it is limited to the
+        amount you paid to use kip, which is nothing. Nothing in these terms
+        excludes liability that cannot lawfully be excluded.
       </P>
       <P>
         These terms are governed by the laws of New York, and any dispute that
@@ -177,8 +177,8 @@ export default function TermsPage(): ReactElement {
       <H2>Changes</H2>
       <P>
         If these terms change in substance, this page and its date change, and
-        material changes will be flagged in the app. Previous versions are
-        public in kip's repository history.
+        material changes will be called out. Previous versions are public in
+        kip's repository history.
       </P>
 
       <H2>Contact</H2>

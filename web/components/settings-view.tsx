@@ -22,9 +22,21 @@ import {
 } from "../utils/auth";
 import { parseDestination } from "../utils/destination";
 import { requestDeletion } from "../utils/leave";
+import { standingConsent } from "../utils/settings";
+import {
+  CHECK_STALL_MS,
+  formatUsNumber,
+  probeState,
+  SMS_FROM,
+  startTextLink,
+} from "../utils/sms";
 import { useKip } from "../utils/store";
 import { asThemeChoice, type ThemeChoice } from "../utils/theme";
-import { NOTIFY_EVENTS, type NotifyKind } from "../utils/types";
+import {
+  NOTIFY_EVENTS,
+  type NotifyKind,
+  type NotifySmsKind,
+} from "../utils/types";
 import { useDialog } from "./dialog";
 import { otherAccountAlert, useNameGate } from "./name-gate";
 import ReachField, {
@@ -117,7 +129,7 @@ const LOSES: Record<string, string> = {
 // unlinking change those fields without changing the uid — Firebase hands React
 // the same object and a row reading it never re-renders.
 function DoorsSection(): ReactElement {
-  const { doors, dropTexts, emailVerified, signIn } = useKip();
+  const { doors, emailVerified, keepTexts, prefs, setTexts, signIn } = useKip();
   const { confirm, alert } = useDialog();
   // Which sheet is up, rather than one flag each: they draw over the same note
   // and only one can be answered at a time.
@@ -190,10 +202,14 @@ function DoorsSection(): ReactElement {
       if (reach.pending) {
         const { sameAccount } = await confirmReach(reach.pending, reach.code);
         setSheet(null);
-        // The number was already on kip, so they are IN that account now — a
-        // different uid, with its own places, friends and stays. Nothing here
-        // can merge the two.
-        if (!sameAccount) await alert(otherAccountAlert("number"));
+        if (!sameAccount) {
+          // The number was already on kip, so they are IN that account now — a
+          // different uid, with its own places, friends and stays. Nothing here
+          // can merge the two.
+          await alert(otherAccountAlert("number"));
+        } else if (reach.sentTo && standingConsent(prefs)) {
+          await offerTexts(reach.sentTo);
+        }
         return;
       }
       const holder = recaptcha.current;
@@ -235,6 +251,33 @@ function DoorsSection(): ReactElement {
     }
   }
 
+  // Changing your number is remove-then-add, and the texts you had turned on
+  // must not just stop without you noticing. Not a transfer: the disclosures are
+  // shown again, so what this writes is a fresh consent naming the NEW phone.
+  // Only where a consent already stands — otherwise adding a number would nag
+  // about texts nobody asked for, which is the bundling this design refuses.
+  async function offerTexts(number: string): Promise<void> {
+    const keep = await confirm({
+      title: "Keep texts on?",
+      body: `You had kip's texts turned on for your old number. kip can text ${number} instead — the same kinds you chose, as automated texts. Message frequency varies, and message and data rates may apply. Reply STOP to stop, HELP for help.`,
+      confirmLabel: "Text this number",
+      cancelLabel: "No texts",
+    });
+    try {
+      if (keep) {
+        await keepTexts(number);
+      } else if (Object.values(prefs.notifySms).some(Boolean)) {
+        // Removing the old number already zeroed the map, but a number can
+        // change by routes this screen doesn't own. Declining has to mean off
+        // wherever it was reached from.
+        await setTexts(false);
+      }
+    } catch (caught) {
+      console.error(caught);
+      setError("Couldn't save that. Try again.");
+    }
+  }
+
   async function remove(providerId: string, name: string): Promise<void> {
     const sure = await confirm({
       title: `Remove ${name}?`,
@@ -247,9 +290,11 @@ function DoorsSection(): ReactElement {
     setError(null);
     try {
       await removeDoor(providerId);
-      // The number is gone from the account, so the consent given about it is
-      // withdrawn rather than left pointing at a phone kip no longer has.
-      if (providerId === PHONE_DOOR) await dropTexts();
+      // Taking a number off the account is the plainest way there is of saying
+      // stop texting me, so re-adding one asks again rather than resuming. The
+      // consent record stays: it is what explains texts already sent, and what
+      // tells a change of number from someone who never wanted texts at all.
+      if (providerId === PHONE_DOOR) await setTexts(false);
     } catch (caught) {
       console.error(caught);
       if (caught instanceof StaleSession) {
@@ -651,13 +696,16 @@ function DiscoverabilitySection(): ReactElement | null {
   );
 }
 
-// The kinds a text can carry, read off the one table rather than listed again —
-// naming them is part of the consent, so a fifth added there says so here. The
-// count comes off the same list, or the sentence starts contradicting it.
-const TEXTED_EVENTS = Object.values(NOTIFY_EVENTS).filter((event) => event.sms);
-const TEXTED_KINDS = TEXTED_EVENTS.map((event) =>
-  event.label.toLowerCase(),
-).join(", ");
+// The kinds a text can carry and the kinds it can't, both read off the one table
+// rather than listed again: the texted ones become rows, and the rest become the
+// sentence explaining why they have none.
+const TEXTED_EVENTS = Object.entries(NOTIFY_EVENTS).filter(
+  ([, event]) => event.sms,
+);
+const EMAIL_ONLY_KINDS = Object.values(NOTIFY_EVENTS)
+  .filter((event) => !event.sms)
+  .map((event) => event.label.toLowerCase())
+  .join(", ");
 
 // Two channels, each with its own way of reaching nobody: email needs a verified
 // address, and a text needs a number on the account plus consent that was given
@@ -672,11 +720,28 @@ function NotificationsSection(): ReactElement | null {
     prefs,
     setNotify,
     setTexts,
+    checkTexts,
+    setTextNotify,
     resendVerification,
   } = useKip();
   const [sent, setSent] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [textError, setTextError] = useState<string | null>(null);
+  // Derived from the two stamps and the clock rather than held in state, so a
+  // reload can't lose a check in flight and a second press still means "ask
+  // again". One timer, armed only while a check could still turn into a stall —
+  // an interval would re-render the section to advance a clock nothing reads.
+  const [now, setNow] = useState(() => Date.now());
+  const probe = probeState(prefs.smsProbeAt, prefs.smsProbeDoneAt, now);
+  const askedAt = prefs.smsProbeAt;
+  useEffect(() => {
+    if (probe !== "checking" || askedAt === null) return;
+    const timer = setTimeout(
+      () => setNow(Date.now()),
+      askedAt + CHECK_STALL_MS - now,
+    );
+    return () => clearTimeout(timer);
+  }, [probe, askedAt, now]);
 
   if (!user) return null;
 
@@ -703,11 +768,37 @@ function NotificationsSection(): ReactElement | null {
   // clear the flag, and a dead control. Turning it on clears it instead, and the
   // next refused send writes it straight back.
   const blocked = prefs.smsStopped;
+  const checking = probe === "checking";
+  // Only once the sender has actually answered. Gated on the state rather than
+  // on the stamp being non-null, or a STALL would show "kip tried a text" over
+  // an older answer while this ask was still unaccounted for.
+  const checkedStillBlocked = probe === "answered" && blocked;
+
+  async function runCheck(): Promise<void> {
+    setTextError(null);
+    setNow(Date.now());
+    try {
+      await checkTexts();
+    } catch (caught) {
+      console.error(caught);
+      setTextError("Couldn't check just now. Try again.");
+    }
+  }
 
   async function toggleTexts(next: boolean): Promise<void> {
     setTextError(null);
     try {
       await setTexts(next);
+    } catch (caught) {
+      console.error(caught);
+      setTextError("Couldn't save that. Try again.");
+    }
+  }
+
+  async function toggleKind(kind: NotifySmsKind, next: boolean): Promise<void> {
+    setTextError(null);
+    try {
+      await setTextNotify(kind, next);
     } catch (caught) {
       console.error(caught);
       setTextError("Couldn't save that. Try again.");
@@ -726,108 +817,187 @@ function NotificationsSection(): ReactElement | null {
   }
 
   return (
-    <Section title="Notifications">
-      {/* Two different gaps, and they used to be one. An address kip has but
+    // Channel-major: two labelled blocks, each heading tight against the group
+    // it names. Nested so the outer gap separates the channels while the inner
+    // one keeps a heading with its list.
+    <Section title="Notifications" className="gap-4">
+      <Section title="Email">
+        {/* Two different gaps, and they used to be one. An address kip has but
           can't trust is a confirm; no address at all is an ask — and without
           this split the second rendered "Confirm undefined", which nobody saw
           only because these sessions could not reach Settings. */}
-      {email ? (
-        emailVerified ? null : (
-          <div className="flex flex-col gap-3 rounded-3xl bg-surface p-4 shadow-card">
+        {email ? (
+          emailVerified ? null : (
+            <div className="flex flex-col gap-3 rounded-3xl bg-surface p-4 shadow-card">
+              <p className="text-sm text-muted">
+                kip only emails an address that's been confirmed — otherwise
+                anyone could enter someone else's and have kip mail them.
+                Confirm {email} to start receiving these.
+              </p>
+              {sent ? (
+                <FieldNote tone="success">
+                  Sent. Check your inbox, then reload kip.
+                </FieldNote>
+              ) : (
+                <Button
+                  variant="secondary"
+                  onClick={resend}
+                  className="self-start"
+                >
+                  Send confirmation email
+                </Button>
+              )}
+              {error ? <FieldNote tone="danger">{error}</FieldNote> : null}
+            </div>
+          )
+        ) : (
+          <div className="flex flex-col items-start gap-3 rounded-3xl bg-surface p-4 shadow-card">
             <p className="text-sm text-muted">
-              kip only emails an address that's been confirmed — otherwise
-              anyone could enter someone else's and have kip mail them. Confirm{" "}
-              {email} to start receiving these.
+              {phone
+                ? "kip has no address for you, so none of this arrives by email. A text can still reach you — turn those on below."
+                : "kip has no way to reach you when you're not looking at it. Add an address to hear when things happen."}
             </p>
-            {sent ? (
-              <FieldNote tone="success">
-                Sent. Check your inbox, then reload kip.
-              </FieldNote>
-            ) : (
-              <Button
-                variant="secondary"
-                onClick={resend}
-                className="self-start"
-              >
-                Send confirmation email
-              </Button>
-            )}
-            {error ? <FieldNote tone="danger">{error}</FieldNote> : null}
+            <Button variant="secondary" onClick={askIdentity}>
+              Add email
+            </Button>
           </div>
-        )
-      ) : (
-        <div className="flex flex-col items-start gap-3 rounded-3xl bg-surface p-4 shadow-card">
-          <p className="text-sm text-muted">
-            {phone
-              ? "kip has no address for you, so none of this arrives by email. A text can still reach you — that's the switch below."
-              : "kip has no way to reach you when you're not looking at it. Add an address to hear when things happen."}
-          </p>
-          <Button variant="secondary" onClick={askIdentity}>
-            Add email
-          </Button>
-        </div>
-      )}
+        )}
 
-      {/* Consent to be texted is collected here and nowhere else: it must not
-          ride along with signing in or with adding a number, which is what
-          bundling it onto the reach field would have done. Off by default, and
-          the disclosures are on the row being turned on. */}
-      <Group>
-        <Switch
-          checked={texting}
-          onChange={toggleTexts}
-          disabled={!phone}
-          label="Also text me"
-          description={
-            phone
-              ? `Automated texts to ${phone} when something needs you. Message frequency varies, and message and data rates may apply. Reply STOP to stop, HELP for help.`
-              : "kip texts the number on your account, and this one has none. Add a phone under How you get in."
-          }
-        />
-      </Group>
+        <Group>
+          {Object.entries(NOTIFY_EVENTS).map(([key, event]) => (
+            <Switch
+              key={key}
+              checked={prefs.notify[key as NotifyKind]}
+              onChange={(next) => setNotify(key as NotifyKind, next)}
+              label={event.label}
+              description={event.note}
+              srSuffix="by email"
+            />
+          ))}
+        </Group>
+      </Section>
 
-      {textError ? <FieldNote tone="danger">{textError}</FieldNote> : null}
+      <Section title="Texts">
+        {/* Consent to be texted is collected on the first row and nowhere else: it
+          must not ride along with signing in or with adding a number, which is
+          what bundling it onto the reach field would have done. Off by default,
+          and the disclosures are on the row being turned on.
 
-      {blocked ? (
-        <FieldNote tone="danger">
-          Your carrier is blocking kip's texts: STOP was replied from{" "}
-          {phone ?? "your number"}. kip can't lift that — text START to the
-          number kip texted you from, and this clears the next time a text gets
-          through.
-        </FieldNote>
-      ) : null}
-
-      <FieldNote>
-        Texts cover {TEXTED_EVENTS.length} of the kinds below: {TEXTED_KINDS}.
-        See our{" "}
-        <Link className="font-semibold text-accent-ink" href="/privacy/">
-          Privacy Policy
-        </Link>{" "}
-        and{" "}
-        <Link className="font-semibold text-accent-ink" href="/terms/">
-          Terms
-        </Link>
-        .
-      </FieldNote>
-
-      <Group>
-        {Object.entries(NOTIFY_EVENTS).map(([key, event]) => (
+          The rows under it carry no descriptions. Each is the same event as a
+          row forty pixels up, whose note already says what it is, and four more
+          paragraphs would double the section to repeat them. */}
+        <Group>
           <Switch
-            key={key}
-            checked={prefs.notify[key as NotifyKind]}
-            onChange={(next) => setNotify(key as NotifyKind, next)}
-            label={event.label}
-            description={event.note}
+            checked={texting}
+            onChange={toggleTexts}
+            disabled={!phone}
+            label="Text me"
+            description={
+              phone
+                ? `Automated texts to ${phone} for the kinds below. Message frequency varies, and message and data rates may apply. Reply STOP to stop, HELP for help.`
+                : "kip texts the number on your account, and this one has none. Add a phone under How you get in, above."
+            }
           />
-        ))}
-      </Group>
+          {TEXTED_EVENTS.map(([key, event]) => (
+            <Switch
+              key={key}
+              // Not the stored map alone: consent bound to a number that has since
+              // changed leaves trues standing that nothing will act on, and a
+              // greyed-out row drawn ON would be saying kip texts about this.
+              checked={texting && prefs.notifySms[key as NotifySmsKind]}
+              // One condition for no phone, no consent and consent about another
+              // number — all three are answered by the row above, which is why
+              // none of them needs its own line here.
+              disabled={!texting}
+              onChange={(next) => toggleKind(key as NotifySmsKind, next)}
+              label={event.label}
+              srSuffix="by text"
+            />
+          ))}
+        </Group>
 
-      {!prefs.notify.stayCancelled ? (
-        <FieldNote tone="danger">
-          With this off, nobody will tell you if a stay you're counting on is
-          called off — you'd only find out by opening kip.
+        {textError ? <FieldNote tone="danger">{textError}</FieldNote> : null}
+
+        {/* kip can only ever OBSERVE this: the carrier holds the block, and the
+          only way out is the person texting START themselves. So the number is
+          named and made tappable rather than described — "the number kip texted
+          you from" is in a message they may well have deleted.
+
+          The check is here because nothing else would tell them it worked: the
+          block lifts silently, and kip finds out only by trying. Without it the
+          answer is "wait until kip next has something to text you about", which
+          for a quiet week is indistinguishable from still being blocked. */}
+        {blocked ? (
+          <FieldNote tone="danger">
+            <span>
+              Your carrier is blocking kip's texts: STOP was replied from{" "}
+              {phone ?? "your number"}. kip can't lift that.{" "}
+              {SMS_FROM ? (
+                <>
+                  Text START to{" "}
+                  <a
+                    className="font-semibold underline"
+                    href={startTextLink(SMS_FROM)}
+                  >
+                    {formatUsNumber(SMS_FROM)}
+                  </a>
+                  , then check below.
+                </>
+              ) : (
+                <>
+                  Text START to the number kip texted you from, and this clears
+                  the next time a text gets through.
+                </>
+              )}
+            </span>
+            {SMS_FROM ? (
+              <span className="mt-3 flex items-center gap-3">
+                <Button
+                  variant="secondary"
+                  onClick={runCheck}
+                  disabled={checking}
+                >
+                  {checking ? (
+                    <LuLoaderCircle className="animate-spin" />
+                  ) : (
+                    "Check now"
+                  )}
+                </Button>
+                {checkedStillBlocked ? (
+                  <span>kip tried a text; the block is still there.</span>
+                ) : probe === "stalled" ? (
+                  <span>That check didn't run. Try again.</span>
+                ) : null}
+              </span>
+            ) : null}
+          </FieldNote>
+        ) : null}
+
+        {/* How the two impossible cells read as "not applicable": there are no
+          rows for them, and this says why there aren't. */}
+        <FieldNote>
+          These arrive by email only: {EMAIL_ONLY_KINDS}. They're news rather
+          than something waiting on you. See our{" "}
+          <Link className="font-semibold text-accent-ink" href="/privacy/">
+            Privacy Policy
+          </Link>{" "}
+          and{" "}
+          <Link className="font-semibold text-accent-ink" href="/terms/">
+            Terms
+          </Link>
+          .
         </FieldNote>
-      ) : null}
+
+        {/* Across both channels: an email switch left on still tells you, and a
+          text switch is no comfort while texts are off as a whole. */}
+        {!prefs.notify.stayCancelled &&
+        !(texting && prefs.notifySms.stayCancelled) ? (
+          <FieldNote tone="danger">
+            Nothing will tell you if a stay you're counting on is called off —
+            no email, no text. You'd only find out by opening kip.
+          </FieldNote>
+        ) : null}
+      </Section>
     </Section>
   );
 }

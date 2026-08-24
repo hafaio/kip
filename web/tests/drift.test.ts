@@ -4,6 +4,7 @@ import {
   NOTIFY_DEFAULTS,
   NOTIFY_SMS_DEFAULTS,
 } from "../../functions/src/messages";
+import { SMS_FROM } from "../utils/sms";
 import {
   DEFAULT_NOTIFY,
   DEFAULT_NOTIFY_SMS,
@@ -76,6 +77,18 @@ describe("web and functions share a vocabulary", () => {
   // In ORDER, not as a set: the deletion screen draws a determinate bar over
   // these and numbers the steps, so a phase the web side has never heard of
   // renders as a blank one, and a reordering renumbers someone's progress.
+  // Settings tells someone whose carrier is blocking kip to text START to this
+  // number, and that instruction is only true of the number kip actually sends
+  // from. Wrong, it sends them to a phone kip has never texted from, where the
+  // message goes through and changes nothing — worse than saying nothing, and
+  // invisible until someone is already stuck. Both are empty until a number is
+  // provisioned, so this holds today and starts biting the moment one is.
+  it("the number Settings names is the number the sender texts from", () => {
+    const declared = TRIGGERS_SOURCE.split("const TWILIO_FROM = ")[1];
+    if (!declared) throw new Error("no TWILIO_FROM in the triggers source");
+    expect(declared.split(";")[0].trim()).toBe(JSON.stringify(SMS_FROM));
+  });
+
   it("the teardown phases match, in order", () => {
     expect(arrayMembers(TEARDOWN_SOURCE, "DELETION_PHASES")).toEqual([
       ...DELETION_PHASES,
