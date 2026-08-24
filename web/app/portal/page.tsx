@@ -493,13 +493,13 @@ function NameForm({
       if (!known) {
         // Nothing to write, so fall back to the field rather than sending an ask
         // that would reach the host as a blank.
-        setError("Google didn't share a name. Type one and send.");
+        setError("Google didn't share a name. Type one.");
         return;
       }
       await completeOnboarding(known);
     } catch (caught) {
       console.error(caught);
-      setError("That didn't work. Try again, or use an email or number.");
+      setError("That didn't work. Try again, or use email.");
     } finally {
       setBusy(false);
     }
@@ -531,7 +531,7 @@ function NameForm({
         }
       } catch (caught) {
         console.error(caught);
-        setError("That code didn't work. Check it, or ask for another.");
+        setError("Wrong code. Check it, or ask for another.");
         setBusy(false);
         return;
       }
@@ -556,7 +556,7 @@ function NameForm({
         console.error(caught);
         // The profile is unwritten, so the ask has not gone: they can correct
         // it or clear it and send without one.
-        setError("Couldn't send that. Check it, or clear it and carry on.");
+        setError("Couldn't send that. Check it, or clear it.");
         setBusy(false);
         return;
       }
@@ -566,7 +566,7 @@ function NameForm({
       await completeOnboarding(name.trim());
     } catch (caught) {
       console.error(caught);
-      setError("Couldn't save that. Check your connection and try again.");
+      setError("Couldn't save that. Check your connection.");
       setBusy(false);
       return;
     }
@@ -585,6 +585,7 @@ function NameForm({
       <Input
         autoComplete="name"
         autoFocus
+        invalid={Boolean(invalid)}
         value={name}
         onChange={(event) => setName(event.target.value)}
         placeholder="Your name"
@@ -596,11 +597,20 @@ function NameForm({
           setReach(next);
         }}
         hostRef={recaptcha}
+        invalid={Boolean(reachInvalid || error)}
       />
       {/* Below both fields and above the button: it describes the reach field
           it follows, and carries whatever is wrong. Nothing sits between the
-          two inputs, and the name needs no caption — the title asks for it. */}
-      <p className={`text-sm ${problem ? "text-danger" : "text-muted"}`}>
+          two inputs, and the name needs no caption — the title asks for it.
+
+          Two lines are reserved so the swap never resizes the sheet, which
+          grows upward and would shove the fields off the thumb. Two rather
+          than one because the host's first name is in the standing copy, so
+          its length is not kip's to promise. */}
+      <p
+        aria-live="polite"
+        className={`min-h-10 text-sm leading-5 ${problem ? "text-danger" : "text-muted"}`}
+      >
         {problem ??
           `Only so kip can reach you — ${host ?? "they"} never sees it.`}
       </p>

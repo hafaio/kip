@@ -748,8 +748,17 @@ Rules: [firebase/firestore.rules](./firebase/firestore.rules), [firebase/storage
   - **Never open and unreachable at once**, which is what entitles `page.tsx` to render Unreachable
     only behind a shut gate.
 - **Friends-only, and nothing blocks on enrolment.** Nothing is public, so a visitor with no
-  session at all only ever sees `components/welcome-screen.tsx`, which says a friend's link is the
-  way in and discloses a returning door. **There is no password**, and nothing anywhere says "sign
+  session at all only ever sees `components/welcome-screen.tsx` — the landing page, which is one
+  screen, fits without scrolling at 390×844 (measured, not eyeballed), and carries no photograph,
+  no feature list and no second section. **The smallness is the design.** Almost everyone who
+  arrives was sent a link by a friend, so they are already half-invited: the page's job is to
+  confirm this is the thing their friend meant and get out of the way, not to persuade. The
+  wordmark IS the headline; the only interactive object is the door. Two other directions were
+  drawn and rejected — a field-guide page that explained the deal, and a first-person letter — and
+  the letter is worth remembering as About copy if that page is ever rewritten.
+
+  It says a friend's link is how most people start, and offers ONE door for both arriving and
+  returning. **There is no password**, and nothing anywhere says "sign
   up". Three doors, all passwordless, all wrapped by `utils/auth.ts`: an emailed one-time link
   (`sendReturnLink` to come back, `sendAttachLink` to add an address to the account already
   asking), a texted one-time code (US numbers only — that is the SMS region allowlist, and

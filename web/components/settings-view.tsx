@@ -205,11 +205,11 @@ function DoorsSection(): ReactElement {
     } catch (caught) {
       console.error(caught);
       if (reach.pending) {
-        setError("That code didn't work. Check it, or ask for another.");
+        setError("Wrong code. Check it, or ask for another.");
       } else if (caught instanceof PhoneAlreadySet) {
         // The row offered Add, so this account grew a number somewhere else —
         // another tab, or the sheet that collects one beside an ask.
-        setError("This account already has a number. Reload kip to see it.");
+        setError("A number was added. Reload kip to see it.");
       } else {
         setError(authErrorMessage(caught));
       }
@@ -336,6 +336,7 @@ function DoorsSection(): ReactElement {
               autoComplete="email"
               inputMode="email"
               autoFocus
+              invalid={Boolean(error)}
               value={address}
               onChange={(event) => {
                 setError(null);
@@ -343,10 +344,6 @@ function DoorsSection(): ReactElement {
               }}
               placeholder="you@example.com"
             />
-            <p className={`text-sm ${error ? "text-danger" : "text-muted"}`}>
-              {error ??
-                "kip sends a one-time link. Opening it adds the address to this account."}
-            </p>
             <Button type="submit" size="lg" disabled={busy || !address}>
               {busy ? (
                 <LuLoaderCircle className="animate-spin" />
@@ -354,6 +351,19 @@ function DoorsSection(): ReactElement {
                 "Send the link"
               )}
             </Button>
+            {/* Under the control, like the door's — the field and the button
+                are the form, and anything about them is a footnote to it.
+                Reserved at one line even when empty: a bottom sheet is
+                anchored at the bottom and grows upward, so a line appearing
+                here still lifts the field out from under the thumb. Nothing
+                stands in it — the button says what the step does, and the
+                screen after sending says the rest. */}
+            <p
+              aria-live="polite"
+              className={`min-h-5 text-sm leading-5 ${error ? "text-danger" : "text-muted"}`}
+            >
+              {error}
+            </p>
           </form>
         )}
       </Sheet>
@@ -374,19 +384,8 @@ function DoorsSection(): ReactElement {
             }}
             hostRef={recaptcha}
             only="phone"
+            invalid={Boolean(error || numberProblem)}
           />
-          {/* The code step names itself, so the line below it is only ever a
-              refusal — leaving the muted copy up there would describe a step
-              already taken. */}
-          {error || numberProblem || !reach.pending ? (
-            <p
-              className={`text-sm ${error || numberProblem ? "text-danger" : "text-muted"}`}
-            >
-              {error ??
-                numberProblem ??
-                "kip texts a code to check the number is yours. It's a way back in, not a subscription — being texted when things happen is its own switch."}
-            </p>
-          ) : null}
           <Button
             type="submit"
             size="lg"
@@ -404,6 +403,22 @@ function DoorsSection(): ReactElement {
               "Text me a code"
             )}
           </Button>
+          {/* Under the control, like the door's. The code step names itself,
+              so this is only ever a refusal by then — leaving the muted copy
+              up would describe a step already taken. Only the TEXT goes: the
+              node stays one line tall, or a wrong code lifts the sheet at the
+              moment a keypad is under the thumb. What stands is the one thing
+              said nowhere else, since the button already names the step:
+              adding a number is not agreeing to be texted, which is the
+              switch in Notifications. */}
+          <p
+            aria-live="polite"
+            className={`min-h-5 text-sm leading-5 ${error || numberProblem ? "text-danger" : "text-muted"}`}
+          >
+            {error ??
+              numberProblem ??
+              (reach.pending ? null : "A way back in, not a subscription.")}
+          </p>
         </form>
       </Sheet>
     </Section>
