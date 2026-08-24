@@ -18,6 +18,7 @@ import { useKip } from "../utils/store";
 import { validateDisplayName } from "../utils/username";
 import { useDialog } from "./dialog";
 import ReachField, {
+  codeReady,
   confirmReach,
   EMPTY_REACH,
   type ReachState,
@@ -355,6 +356,7 @@ export default function NameGateProvider({
               disabled={
                 busy ||
                 Boolean(reachInvalid) ||
+                Boolean(reach.pending && !codeReady(reach)) ||
                 (needsName && Boolean(validateDisplayName(name)))
               }
             >

@@ -12,6 +12,7 @@ import { LuLoaderCircle, LuMapPin } from "react-icons/lu";
 import Avatar from "../../components/avatar";
 import { PhotoGallery } from "../../components/cover-photo";
 import ReachField, {
+  codeReady,
   confirmReach,
   EMPTY_REACH,
   type ReachState,
@@ -617,7 +618,11 @@ function NameForm({
       <Button
         type="submit"
         size="lg"
-        disabled={busy || Boolean(validateDisplayName(name) || reachInvalid)}
+        disabled={
+          busy ||
+          Boolean(validateDisplayName(name) || reachInvalid) ||
+          Boolean(reach.pending && !codeReady(reach))
+        }
       >
         {busy ? <LuLoaderCircle className="animate-spin" /> : "Send request"}
       </Button>

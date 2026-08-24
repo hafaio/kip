@@ -37,7 +37,7 @@ export default function AboutPage(): ReactElement {
       <P>
         <strong>Share links work before someone has an account.</strong> Send a
         link to your sister and she can see what's free immediately; she only
-        needs to sign up at the moment she asks for something. No password
+        needs an account at the moment she asks for something. No password
         anywhere — you get in by an emailed link, a texted code, or Google.
       </P>
       <P>

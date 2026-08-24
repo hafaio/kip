@@ -30,11 +30,10 @@ export default function HelpPage(): ReactElement {
       </P>
       <P>
         <strong>To stop the texts, reply STOP to the message.</strong> That
-        works instantly, whoever you are — you don't need an account or a
-        password. (If you use kip, you can also turn texts off in Settings →
-        Notifications.) If a text reached you and you've never used kip, the
-        number may have previously belonged to someone who did; STOP ends it
-        either way.
+        works instantly, whoever you are — you don't need a kip account. (If you
+        use kip, you can also turn texts off in Settings → Notifications.) If a
+        text reached you and you've never used kip, the number may have
+        previously belonged to someone who did; STOP ends it either way.
       </P>
 
       <H2>Something's broken, or you have a question</H2>

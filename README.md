@@ -8,8 +8,8 @@ No money changes hands; it's just friends helping friends not waste a good empty
 
 Nobody can find you unless you let them. You're reached by a **username you choose**, or by a
 **share link** you send — never by your email or phone, neither of which is ever stored with your
-profile. A link works before the person has an account: they can see what's free, and only need to
-sign up at the point of asking.
+profile. A link works before the person has an account: they can see what's free, and only need
+one at the point of asking.
 
 Responsive web client (Next.js, static export) synced via Firestore. Native mobile apps come later.
 
@@ -22,9 +22,10 @@ bun dev
 ```
 
 The repo ships a populated dev Firebase config (`hafaio-kip-dev`), so `bun dev` gives you the real
-sign-in flow (email/password or Google) out of the box. To point at your own project, replace the
-`firebaseConfig` in `web/utils/firebase.ts` (see [CLAUDE.md](./CLAUDE.md) for the full setup
-walkthrough). Blanking its `appId` disables sign-in for a config-free build.
+sign-in flow out of the box — an emailed one-time link, a texted code, or Google. kip has no
+password anywhere. To point at your own project, replace the `firebaseConfig` in
+`web/utils/firebase.ts` (see [CLAUDE.md](./CLAUDE.md) for the full setup walkthrough). Blanking its
+`appId` disables sign-in for a config-free build.
 
 ## License
 
