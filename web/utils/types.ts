@@ -222,6 +222,47 @@ export const DEFAULT_PREFS: Prefs = {
 // a stored consent claims agreement to text nobody saw.
 export const SMS_CONSENT_VERSION = "2026-08-20";
 
+// The teardown a Cloud Function runs once `deletions/{uid}` appears, in order.
+// A fixed, named list because the app draws a determinate bar over it: how long
+// this takes depends on how many stays, places and photos there are, which
+// nothing knows without counting first, so an ETA could only be a guess wearing
+// a number. `functions/src/teardown.ts` keeps the same list — pinned together by
+// tests/drift.test.ts, since a phase only one side knows renders as a blank step.
+export const DELETION_PHASES = [
+  "stays",
+  "places",
+  "friends",
+  "profile",
+  "account",
+] as const;
+
+export type DeletionPhase = (typeof DELETION_PHASES)[number];
+
+export const DELETION_LABELS: Record<DeletionPhase, string> = {
+  stays: "Cancelling your stays",
+  places: "Removing your places",
+  friends: "Removing you from friends' lists",
+  profile: "Deleting your profile",
+  account: "Closing your account",
+};
+
+export type DeletionRequest = {
+  // Null between the client's write and the function's first report.
+  readonly phase: DeletionPhase | null;
+  readonly attempts: number;
+  // Set only when the function has stopped retrying; the document then stays.
+  readonly failed: boolean;
+};
+
+// Counting the wait BEFORE the first phase as a step of its own, and never
+// filling: the bar is what has finished, and the last phase is still running
+// when it is drawn. So it starts visibly moving rather than empty, and a full
+// bar never sits over unfinished work.
+export function deletionProgress(phase: DeletionPhase | null): number {
+  const index = phase ? DELETION_PHASES.indexOf(phase) : -1;
+  return (index + 2) / (DELETION_PHASES.length + 2);
+}
+
 export type View =
   | "home"
   | "browse"

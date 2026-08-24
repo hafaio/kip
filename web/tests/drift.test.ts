@@ -7,6 +7,7 @@ import {
 import {
   DEFAULT_NOTIFY,
   DEFAULT_NOTIFY_SMS,
+  DELETION_PHASES,
   NOTIFY_EVENTS,
 } from "../utils/types";
 
@@ -18,6 +19,15 @@ import {
 // they never got. This pins them together so drift breaks CI instead.
 const FUNCTIONS_SOURCE = readFileSync("../functions/src/messages.ts", "utf8");
 const TRIGGERS_SOURCE = readFileSync("../functions/src/index.ts", "utf8");
+const TEARDOWN_SOURCE = readFileSync("../functions/src/teardown.ts", "utf8");
+
+function arrayMembers(source: string, name: string): string[] {
+  const declaration = source.split(`const ${name} = [`)[1];
+  if (!declaration) throw new Error(`no ${name} array in functions source`);
+  return [...declaration.split("]")[0].matchAll(/"([^"]+)"/g)].map(
+    (match) => match[1],
+  );
+}
 
 function unionMembers(typeName: string): string[] {
   const declaration = FUNCTIONS_SOURCE.split(`type ${typeName} =`)[1];
@@ -61,6 +71,15 @@ describe("web and functions share a vocabulary", () => {
   // the failure it prevents is a text to someone who never agreed to one.
   it("checks a text against the number consent names", () => {
     expect(TRIGGERS_SOURCE).toContain("prefs.smsConsentNumber !== number");
+  });
+
+  // In ORDER, not as a set: the deletion screen draws a determinate bar over
+  // these and numbers the steps, so a phase the web side has never heard of
+  // renders as a blank one, and a reordering renumbers someone's progress.
+  it("the teardown phases match, in order", () => {
+    expect(arrayMembers(TEARDOWN_SOURCE, "DELETION_PHASES")).toEqual([
+      ...DELETION_PHASES,
+    ]);
   });
 
   it("every cancel reason the client writes is handled or defaulted", () => {

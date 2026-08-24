@@ -5,6 +5,7 @@ import { LuArrowLeft } from "react-icons/lu";
 import AuthMenu from "../components/auth-menu";
 import BookingPage from "../components/booking-page";
 import BrowseView from "../components/browse-view";
+import DeletionScreen from "../components/deletion-screen";
 import FriendsPanel from "../components/friends-panel";
 import HomeView from "../components/home-view";
 import ListingFormScreen from "../components/listing-form-screen";
@@ -157,6 +158,8 @@ export default function Page(): ReactElement {
     anonymous,
     profileReady,
     profileUnreachable,
+    deletion,
+    deletionReady,
     screen,
     canGoBack,
     popped,
@@ -233,7 +236,13 @@ export default function Page(): ReactElement {
   // participant or about to be: they may hold a name, an ask, even friendships,
   // and every rule they meet is blind to how they signed in.
   if (!user) return <WelcomeScreen />;
-  if (!profileReady)
+  // Ahead of the profile gate, because the teardown DELETES the profile partway
+  // through and the other reading of a missing one is onboarding — which would
+  // put someone who asked to leave in front of a form asking their name, and
+  // write it back. `deletionReady` is what stops the app being drawn in the beat
+  // before the answer arrives.
+  if (deletion) return <DeletionScreen request={deletion} />;
+  if (!profileReady || !deletionReady)
     return profileUnreachable ? (
       <Unreachable canSignOut={!anonymous} />
     ) : (

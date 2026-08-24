@@ -1,29 +1,24 @@
 "use client";
 
 import { useState } from "react";
-import { StaleSession } from "../utils/auth";
 import { auth } from "../utils/firebase";
-import { leaveKip } from "../utils/leave";
+import { requestDeletion } from "../utils/leave";
 import { useKip } from "../utils/store";
 import { useDialog } from "./dialog";
 
 // The one exit for an account with no credential, shared by the menu and
 // Settings so the two cannot drift. Leaving IS deletion here — there is no way
-// back in — so both surfaces must dismantle rather than merely sign out. The
-// menu used to sign out alone while its confirm promised the friends and stays
-// were going, which left a permanent ghost: a dead row in every friend's list, a
-// phantom guest for every host, and a profile the reaper will never collect.
+// back in — so both surfaces ask for the teardown rather than merely signing
+// out. The menu used to sign out alone while its confirm promised the friends
+// and stays were going, which left a permanent ghost: a dead row in every
+// friend's list, a phantom guest for every host, and a profile the reaper will
+// never collect.
 export function useLeave(): { leave: () => Promise<void>; leaving: boolean } {
-  const { user, signOut, myListings, trips, incomingBookings, friends } =
-    useKip();
+  const { user } = useKip();
   const { confirm, alert } = useDialog();
   const [leaving, setLeaving] = useState(false);
 
   async function leave(): Promise<void> {
-    // A teardown is a long serial chain of writes and the controls stay tappable
-    // while it runs. A second pass re-cancels bookings the first already set
-    // CANCELLED, which the rules refuse — so a teardown that WORKED reports
-    // "that didn't finish".
     if (!user || leaving) return;
 
     // `anonymous` is a snapshot, and the email door completes in ANOTHER
@@ -50,28 +45,15 @@ export function useLeave(): { leave: () => Promise<void>; leaving: boolean } {
     if (!sure) return;
     setLeaving(true);
     try {
-      await leaveKip(
-        user.uid,
-        myListings,
-        trips,
-        incomingBookings,
-        friends.map((friend) => friend.uid),
-      );
-      await signOut(true);
+      // One write, and the screen it puts up belongs to the store: the trigger
+      // reports its progress into that document and deletes it when it is done.
+      await requestDeletion(user.uid);
     } catch (error) {
       console.error(error);
-      if (error instanceof StaleSession) {
-        // "Sign in again and retry" is advice an account with no credential
-        // cannot follow. Everything social is already gone by here, so what
-        // remains is an empty ticket the reaper collects — finish the leave
-        // rather than strand them in front of an instruction they can't act on.
-        await signOut(true);
-        return;
-      }
       setLeaving(false);
       await alert({
-        title: "That didn't finish",
-        body: "Some of it went through. Check your connection and press it again — it picks up where it stopped.",
+        title: "Couldn't start that",
+        body: "Nothing has been deleted. Check your connection and try again.",
       });
     }
   }

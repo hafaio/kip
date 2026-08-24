@@ -82,6 +82,7 @@ export default function NameGateProvider({
     profile,
     profileReady,
     anonymous,
+    deletion,
     email,
     signIn,
     completeOnboarding,
@@ -119,9 +120,13 @@ export default function NameGateProvider({
     if (typeof window !== "undefined" && ownRoute(window.location.pathname)) {
       return;
     }
+    // A teardown deletes the profile as its second-to-last act, so an account
+    // on its way out reaches exactly this state — and asked the person who had
+    // just left what to call them, over the screen saying they were leaving.
+    if (deletion) return;
     if (!profileReady || anonymous || profile?.displayName || held) return;
     open(async () => undefined, "Continue");
-  }, [profileReady, anonymous, profile, held, open]);
+  }, [profileReady, anonymous, deletion, profile, held, open]);
 
   const askIdentity = useCallback(
     () => open(async () => undefined, "Continue"),

@@ -988,6 +988,11 @@ describe("users + usernames (get-not-query privacy)", () => {
 // Leaving has to be possible. The write rule can never pass for a delete — it
 // names `request.resource.data`, which a delete has none of — so this was
 // impossible rather than forbidden until an explicit rule said otherwise.
+// Leaving is a request now: the client writes `deletions/{uid}` and a Cloud
+// Function tears the account down with the Admin SDK, retrying until it
+// finishes. What the rules have to hold is that nobody can start one for
+// somebody else, read who is leaving, or interfere with a teardown under way —
+// the function owns this document's whole life.
 describe("leaving", () => {
   beforeEach(async () => {
     await seed(async (db) => {
@@ -995,11 +1000,152 @@ describe("leaving", () => {
     });
   });
 
-  it("deletes its own profile", async () => {
-    await assertSucceeds(deleteDoc(doc(authed(OWNER), "users", OWNER)));
+  it("asks for its own deletion", async () => {
+    await assertSucceeds(
+      setDoc(doc(authed(OWNER), "deletions", OWNER), {
+        requestedAt: serverTimestamp(),
+      }),
+    );
   });
 
-  it("cannot delete anyone else's", async () => {
+  // Nothing about this is gated on a credential: an account with no way back in
+  // is the one this is the ONLY exit for.
+  it("cannot ask for anyone else's", async () => {
+    await assertFails(
+      setDoc(doc(authed(STRANGER), "deletions", OWNER), {
+        requestedAt: serverTimestamp(),
+      }),
+    );
+  });
+
+  it("signed out asks for nothing", async () => {
+    await assertFails(
+      setDoc(doc(anon(), "deletions", OWNER), {
+        requestedAt: serverTimestamp(),
+      }),
+    );
+  });
+
+  // The app watches this to draw its progress, so the owner reads it.
+  it("reads its own, and nobody else's", async () => {
+    await seed((db) =>
+      setDoc(doc(db, "deletions", OWNER), {
+        requestedAt: Timestamp.now(),
+        phase: "places",
+      }),
+    );
+    await assertSucceeds(getDoc(doc(authed(OWNER), "deletions", OWNER)));
+    await assertFails(getDoc(doc(authed(STRANGER), "deletions", OWNER)));
+  });
+
+  it("cannot enumerate who is leaving", async () => {
+    await seed((db) =>
+      setDoc(doc(db, "deletions", OWNER), { requestedAt: Timestamp.now() }),
+    );
+    await assertFails(getDocs(collection(authed(OWNER), "deletions")));
+  });
+
+  // The phase is the function's word, not the account's: a client that could
+  // write it could report a teardown as finished that never ran.
+  it("cannot rewrite its own progress", async () => {
+    await seed((db) =>
+      setDoc(doc(db, "deletions", OWNER), {
+        requestedAt: Timestamp.now(),
+        phase: "stays",
+      }),
+    );
+    await assertFails(
+      updateDoc(doc(authed(OWNER), "deletions", OWNER), { phase: "account" }),
+    );
+  });
+
+  // Clearing it would abandon a teardown already under way, leaving exactly the
+  // half-dismantled account this whole design exists to stop producing.
+  it("cannot call it off once asked", async () => {
+    await seed((db) =>
+      setDoc(doc(db, "deletions", OWNER), { requestedAt: Timestamp.now() }),
+    );
+    await assertFails(deleteDoc(doc(authed(OWNER), "deletions", OWNER)));
+    await assertFails(deleteDoc(doc(authed(STRANGER), "deletions", OWNER)));
+  });
+
+  // The other half of that: a teardown that has GIVEN UP leaves this document
+  // standing forever, and while it stands the app draws its deletion screen
+  // ahead of every other gate. Nothing else removes one — no TTL, and the reaper
+  // skips an account that still has a profile — so without this the failure
+  // locks the account out of kip on every device, permanently.
+  it("clears a teardown that gave up", async () => {
+    await seed((db) =>
+      setDoc(doc(db, "deletions", OWNER), {
+        requestedAt: Timestamp.now(),
+        phase: "places",
+        attempts: 5,
+        error: "gave-up",
+      }),
+    );
+    await assertFails(deleteDoc(doc(authed(STRANGER), "deletions", OWNER)));
+    await assertSucceeds(deleteDoc(doc(authed(OWNER), "deletions", OWNER)));
+  });
+
+  // The error is what says the function has stopped, so an empty one says
+  // nothing: a client writing a blank string into a field it can't write anyway
+  // must not be the difference between a running teardown and a cancelled one.
+  it("is not cleared by an error that says nothing", async () => {
+    await seed((db) =>
+      setDoc(doc(db, "deletions", OWNER), {
+        requestedAt: Timestamp.now(),
+        error: "",
+      }),
+    );
+    await assertFails(deleteDoc(doc(authed(OWNER), "deletions", OWNER)));
+  });
+
+  // Asking again is a create, which is what restarts the function's attempt
+  // budget — a merge onto the cleared document would be an update and refused.
+  it("asks again once the failed one is cleared, and not before", async () => {
+    await seed((db) =>
+      setDoc(doc(db, "deletions", OWNER), {
+        requestedAt: Timestamp.now(),
+        error: "gave-up",
+      }),
+    );
+    // A second ask over a document that is still there is an update, whatever
+    // the client calls it — which is why `requestDeletion` reads the document
+    // back rather than reporting the refusal as "nothing has been deleted".
+    await assertFails(
+      setDoc(doc(authed(OWNER), "deletions", OWNER), {
+        requestedAt: serverTimestamp(),
+      }),
+    );
+    await assertSucceeds(deleteDoc(doc(authed(OWNER), "deletions", OWNER)));
+    await assertSucceeds(
+      setDoc(doc(authed(OWNER), "deletions", OWNER), {
+        requestedAt: serverTimestamp(),
+      }),
+    );
+  });
+
+  it("carries nothing but its own timestamp", async () => {
+    await assertFails(
+      setDoc(doc(authed(OWNER), "deletions", OWNER), {
+        requestedAt: serverTimestamp(),
+        phase: "account",
+      }),
+    );
+    // Unforgeable, like a debug event's: a request can't be lodged as having
+    // been made at some other time.
+    await assertFails(
+      setDoc(doc(authed(OWNER), "deletions", OWNER), {
+        requestedAt: Timestamp.fromMillis(0),
+      }),
+    );
+  });
+
+  // The profile now outlives the client entirely — only the Admin SDK removes
+  // one. A client that could still delete its own could do it WITHOUT asking
+  // for the teardown, which is the half-dismantled account again.
+  it("no longer deletes its own profile", async () => {
+    await assertFails(deleteDoc(doc(authed(OWNER), "users", OWNER)));
     await assertFails(deleteDoc(doc(authed(STRANGER), "users", OWNER)));
   });
 });
