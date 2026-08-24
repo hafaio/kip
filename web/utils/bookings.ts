@@ -128,15 +128,52 @@ export async function requestBooking(
   }
 }
 
-// The same document a friend creates; only the authorisation differs, and
-// instant booking is never on the table however the slot is configured.
-export async function requestStayViaPortal(
+// Why an ask couldn't go. The rules refuse all four causes identically, as
+// `permission-denied`, which the portal page can only render as "this link may
+// have been turned off" — true for a revoked link and wrong for the rest.
+// Reading the slot first is what lets the refusal say which.
+export class SlotGone extends Error {
+  constructor(readonly why: "taken" | "moved" | "removed" | "past") {
+    super(why);
+    this.name = "SlotGone";
+  }
+}
+
+type Slot = { id: string; start: string; end: string };
+
+// What the pre-flight read means, separated from the reading. `null` is the read
+// having FAILED rather than the slot being absent — offline, or refused — and it
+// answers nothing, so the ask proceeds and Firestore queues it. Turning a read
+// that never happened into "those dates aren't offered any more" would drop the
+// ask and lie about why.
+//
+// Pure so the four causes can be pinned without a network: the wrong branch here
+// is invisible in every test that has one.
+export function slotVerdict(
+  slot: {
+    exists: boolean;
+    status?: string;
+    start?: string;
+    end?: string;
+  } | null,
+  window: Slot,
+  expired: boolean,
+): SlotGone["why"] | null {
+  if (slot === null) return null;
+  if (!slot.exists) return "removed";
+  if (slot.status !== "OPEN") return "taken";
+  if (slot.start !== window.start || slot.end !== window.end) return "moved";
+  if (expired) return "past";
+  return null;
+}
+
+function lodge(
   guestId: string,
   ownerId: string,
   listingId: string,
-  window: { id: string; start: string; end: string },
-): Promise<void> {
-  await addDoc(collection(db(), "bookings"), {
+  window: Slot,
+): Promise<unknown> {
+  return addDoc(collection(db(), "bookings"), {
     listingId,
     ownerId,
     guestId,
@@ -148,6 +185,35 @@ export async function requestStayViaPortal(
     cancelReason: null,
     createdAt: serverTimestamp(),
   });
+}
+
+// The same document a friend creates; only the authorisation differs, and
+// instant booking is never on the table however the slot is configured. The
+// dates asked for are the ones that were SHOWN, never whatever the slot says
+// now — a host who shifted them while the visitor was deciding has not been
+// agreed with.
+export async function requestStayViaPortal(
+  guestId: string,
+  ownerId: string,
+  listingId: string,
+  window: Slot,
+): Promise<void> {
+  // Only a read that actually answered may refuse an ask. Offline this rejects,
+  // and the ask still goes: `addDoc` queues locally and lands on reconnect,
+  // which is the property this flow is documented to have. Turning a cache miss
+  // into "those dates aren't offered any more" would drop the ask and lie.
+  const slot = await getDoc(
+    doc(db(), "listings", listingId, "windows", window.id),
+  ).catch(() => null);
+
+  const verdict = slotVerdict(
+    slot === null ? null : { exists: slot.exists(), ...(slot.data() ?? {}) },
+    window,
+    isExpired(window.end),
+  );
+  if (verdict) throw new SlotGone(verdict);
+
+  await lodge(guestId, ownerId, listingId, window);
 }
 
 // A denial is the answer, not an error, so the caller can ask and act on the

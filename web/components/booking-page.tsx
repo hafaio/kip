@@ -229,17 +229,37 @@ export default function BookingPage({ id }: { id: string }): ReactElement {
 
   return (
     <div className="mx-auto flex w-full max-w-xl flex-col gap-6">
-      <div className="flex flex-col items-center gap-3 pt-2 text-center">
-        <span
-          className={`grid h-16 w-16 place-items-center rounded-full ${moment.circle}`}
-        >
-          {moment.icon}
-        </span>
-        <Chip tone={moment.tone}>{moment.label}</Chip>
+      {/* With a photo the whole status — icon and label — sits ON it, because
+          the state is about that stay and the image is what the stay IS. The
+          header keeps only the sentence. Without one it all falls back to the
+          header, which is where it used to live. */}
+      {room?.photos[0] ? (
+        <div className="relative">
+          {hero}
+          <span className="absolute left-3 top-3 flex items-center gap-2">
+            <span
+              className={`grid h-9 w-9 place-items-center rounded-full ${moment.circle}`}
+            >
+              {moment.icon}
+            </span>
+            <Chip tone={moment.tone}>{moment.label}</Chip>
+          </span>
+        </div>
+      ) : null}
+
+      <div className="flex flex-col items-center gap-3 text-center">
+        {room?.photos[0] ? null : (
+          <>
+            <span
+              className={`grid h-16 w-16 place-items-center rounded-full ${moment.circle}`}
+            >
+              {moment.icon}
+            </span>
+            <Chip tone={moment.tone}>{moment.label}</Chip>
+          </>
+        )}
         <p className="text-lg font-bold tracking-[-0.02em]">{moment.note}</p>
       </div>
-
-      {room?.photos[0] ? hero : null}
 
       <Group>
         {room ? (

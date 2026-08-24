@@ -13,7 +13,9 @@ import {
   onDocumentUpdated,
 } from "firebase-functions/v2/firestore";
 import { onRequest } from "firebase-functions/v2/https";
+import { onSchedule } from "firebase-functions/v2/scheduler";
 import { logger } from "firebase-functions/v2";
+import { reapTickets } from "./reap";
 import nodemailer from "nodemailer";
 import {
   ALL_OFF,
@@ -469,5 +471,29 @@ export const unsubscribe = onRequest(
         );
       }
     }
+  },
+);
+
+// The only function here that is not a reaction to a write, and the only one
+// that needs the Admin SDK for something rules categorically cannot express:
+// enumerating and deleting Auth accounts. It sits in no request path — it runs
+// on a timer, reacting to nobody — and it replaces a server-side process that
+// already existed, Firebase's own anonymous auto-delete, with one that reads the
+// database before it kills.
+//
+// Weekly, because nothing here is urgent and a small candidate set per run keeps
+// a mistake small too.
+//
+// A constant rather than the `REAP_DRY_RUN` env var it replaces, which defaulted
+// to a dry run when unset — and `functions/` has no `.env`, so this had never
+// once deleted anything while the privacy page promised abandoned sessions were
+// collected after thirty days. A rehearsal is this line flipped and redeployed:
+// visible in review, and impossible to be in without meaning to.
+const REAP_DRY_RUN = false;
+
+export const reapAnonymousTickets = onSchedule(
+  { schedule: "every monday 04:00", region: REGION, timeoutSeconds: 540 },
+  async () => {
+    await reapTickets(REAP_DRY_RUN);
   },
 );

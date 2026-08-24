@@ -30,7 +30,7 @@ const RADII = [10, 25, 50, 100, 250] as const;
 const FIELD =
   "h-11 w-full rounded-xl border border-border bg-surface px-3.5 text-base outline-none transition focus:border-accent focus:ring-2 focus:ring-accent/20";
 
-export default function BrowseView(): ReactElement {
+export default function BrowseView(): ReactElement | null {
   const {
     user,
     friends,
@@ -57,13 +57,7 @@ export default function BrowseView(): ReactElement {
     }
   }
 
-  if (!user) {
-    return (
-      <p className="text-muted">
-        Sign in to see places your friends are sharing.
-      </p>
-    );
-  }
+  if (!user) return null;
 
   return (
     <div className="flex flex-col gap-5">

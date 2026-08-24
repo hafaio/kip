@@ -1,35 +1,39 @@
 "use client";
 
 import {
-  createUserWithEmailAndPassword,
-  EmailAuthProvider,
+  type AuthError,
+  type ConfirmationResult,
   GoogleAuthProvider,
-  linkWithCredential,
+  linkWithPhoneNumber,
   linkWithPopup,
   onAuthStateChanged,
-  sendEmailVerification,
-  sendPasswordResetEmail,
-  signInWithEmailAndPassword,
+  PhoneAuthProvider,
+  RecaptchaVerifier,
+  sendSignInLinkToEmail,
+  signInWithCredential,
+  signInWithPhoneNumber,
   signInWithPopup,
   type User,
 } from "firebase/auth";
 import { auth, errorCode } from "./firebase";
 
-// A share-link visitor is already anonymous, so signing up LINKS that identity
-// rather than minting a new uid and orphaning their grant. Linking is impossible
-// when the credential already exists — they're signing in, not up — so that path
-// falls back and the uid does change; callers must re-claim anything keyed to it.
-function anonymousUser(): User | null {
-  const current = auth().currentUser;
-  return current?.isAnonymous ? current : null;
-}
+// Every door here LINKS onto whoever is signed in, so the uid survives and a
+// share-link visitor keeps the grant and the ask they already made. Linking is
+// impossible when the credential already belongs to someone — they are signing
+// in, not up — so each falls back to a plain sign-in and the uid DOES change.
+// That is why they all report `sameAccount`: a caller that writes a profile
+// afterwards must not write it over a stranger's.
 
 function alreadyRegistered(error: unknown): boolean {
   const code = authErrorCode(error);
   return (
     code === "auth/credential-already-in-use" ||
     code === "auth/email-already-in-use" ||
-    code === "auth/provider-already-linked"
+    code === "auth/provider-already-linked" ||
+    // What a phone link actually raises when the NUMBER belongs to someone
+    // else. Observed against the emulator; it comes back at send, before any
+    // message goes out, which is what makes the fallback below free.
+    code === "auth/account-exists-with-different-credential"
   );
 }
 
@@ -50,87 +54,34 @@ export function authSettled(): Promise<User | null> {
   return restored.then(() => auth().currentUser);
 }
 
-export async function googleSignIn(): Promise<unknown> {
-  const anonymous = anonymousUser();
-  if (anonymous) {
+// Links onto whoever is signed in — ANY session without Google already on it,
+// not just an anonymous one. Gating this on `isAnonymous` meant a phone-only
+// account tapping "add an email, use Google" was signed OUT of itself and into
+// something else, abandoning its listings and friends without a word.
+//
+// Reports whether the uid survived, exactly as the phone door does. False means
+// the Google account already existed and they have moved to it, so anything
+// keyed to the old uid is no longer theirs — and, critically, the profile they
+// have landed in is a real one whose name and photo must not be overwritten.
+export async function googleSignIn(): Promise<{ sameAccount: boolean }> {
+  const current = auth().currentUser;
+  const wasUid = current?.uid ?? null;
+  if (current) {
     try {
-      return await linkWithPopup(anonymous, new GoogleAuthProvider());
+      const linked = await linkWithPopup(current, new GoogleAuthProvider());
+      return { sameAccount: linked.user.uid === wasUid };
     } catch (error) {
       if (!alreadyRegistered(error)) throw error;
     }
   }
-  return signInWithPopup(auth(), new GoogleAuthProvider());
+  const signedIn = await signInWithPopup(auth(), new GoogleAuthProvider());
+  return { sameAccount: signedIn.user.uid === wasUid };
 }
 
-export function emailSignIn(email: string, password: string): Promise<unknown> {
-  return signInWithEmailAndPassword(auth(), email.trim(), password);
-}
-
-export async function emailSignUp(
-  email: string,
-  password: string,
-): Promise<unknown> {
-  const anonymous = anonymousUser();
-  const credential = anonymous
-    ? await linkWithCredential(
-        anonymous,
-        EmailAuthProvider.credential(email.trim(), password),
-      ).catch(async (error) => {
-        if (!alreadyRegistered(error)) throw error;
-        return createUserWithEmailAndPassword(auth(), email.trim(), password);
-      })
-    : await createUserWithEmailAndPassword(auth(), email.trim(), password);
-  // Fire-and-forget: a failed send must never block sign-up.
-  sendEmailVerification(credential.user).catch((error) =>
-    console.error("sendEmailVerification", error),
-  );
-  return credential;
-}
-
-// Sign in, then create only if that fails. The order matters: Identity Platform
-// masks a failed sign-in as `invalid-credential` whether the account is missing
-// or the password is wrong, but a create can't be masked — refusing IS the
-// answer — so `email-already-in-use` means the password was simply wrong.
-export async function emailContinue(
-  email: string,
-  password: string,
-): Promise<{ created: boolean }> {
-  try {
-    await emailSignIn(email, password);
-    return { created: false };
-  } catch (error) {
-    if (!failedSignIn(error)) throw error;
-  }
-  try {
-    await emailSignUp(email, password);
-    return { created: true };
-  } catch (error) {
-    if (alreadyRegistered(error)) throw new WrongPassword();
-    throw error;
-  }
-}
-
-// Firebase deliberately won't say which reason.
-function failedSignIn(error: unknown): boolean {
-  const code = authErrorCode(error);
-  return (
-    code === "auth/invalid-credential" ||
-    code === "auth/wrong-password" ||
-    code === "auth/user-not-found"
-  );
-}
-
-// The one case the two calls together can distinguish, so the panel can say it.
-export class WrongPassword extends Error {
-  readonly code = "kip/wrong-password";
-  constructor() {
-    super("wrong password");
-  }
-}
-
-export function passwordReset(email: string): Promise<void> {
-  return sendPasswordResetEmail(auth(), email.trim());
-}
+// Passwords are retired. An address that already has one is reached by the same
+// one-time link as any other — `signInWithEmailLink` lands on the existing
+// account — so nothing is stranded and the reset flow, with its own screen and
+// its own careful non-enumeration notice, left the product with it.
 
 export function authErrorCode(error: unknown): string {
   return errorCode(error);
@@ -141,28 +92,203 @@ export function authErrorMessage(error: unknown): string {
   switch (authErrorCode(error)) {
     case "auth/invalid-email":
       return "That doesn't look like a valid email.";
-    case "auth/missing-password":
-      return "Enter a password.";
-    case "auth/weak-password":
-      return "Password must be at least 6 characters.";
-    case "auth/email-already-in-use":
-      return "An account already exists for that email. Try signing in.";
-    case "auth/account-exists-with-different-credential":
-      return "You already have an account with this email — sign in with your password instead.";
+    // A one-time link is sent to an address whether or not kip knows it, so
+    // there is nothing here about an account already existing — the flow has
+    // no branch to tell them about.
+    case "auth/unauthorized-continue-uri":
+    case "auth/invalid-continue-uri":
+      return "kip can't send links from this address yet. Tell Erik.";
+    // Loss register: the plain word earns its place at the moment of loss.
     case "auth/user-disabled":
       return "This account has been disabled.";
-    case "kip/wrong-password":
-      return "That password doesn't match this account.";
-    case "auth/invalid-credential":
-    case "auth/wrong-password":
-    case "auth/user-not-found":
-      return "Wrong email or password.";
     case "auth/too-many-requests":
       return "Too many attempts. Try again in a little while.";
     case "auth/popup-closed-by-user":
     case "auth/cancelled-popup-request":
-      return "Sign-in was cancelled.";
+      return "Cancelled — nothing happened.";
     default:
       return "Something went wrong. Try again.";
+  }
+}
+
+// Everything `/continue/` needs, carried in the continue URL's QUERY — not the
+// fragment kip uses everywhere else. That is forced rather than chosen: kip does
+// not author this link, Firebase builds it around its own action handler, and a
+// fragment does not survive that redirect.
+//
+// What rides here is worth being plain about: an ID token is a BEARER
+// CREDENTIAL, accepted by Firestore's REST API as that account for up to an
+// hour — not inert residue. The address it is mailed to was typed by an
+// unverified visitor, so a typo hands a stranger an hour as that account, and a
+// click hands them it permanently. What bounds the damage is what the account
+// holds at that moment: a name and one pending ask. A kip-minted single-use
+// nonce redeemed for the link would be tighter, and needs a server to mint it.
+// The portal token is deliberately ABSENT: `/continue/` replays nothing — the ask
+// went at submit — so it needs no capability, and the one durable secret in this
+// flow never leaves the fragment world.
+export type ContinuePayload = {
+  idToken: string;
+  email: string;
+  host: string;
+};
+
+function continueUrl(payload: ContinuePayload): string {
+  const base = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
+  const query = new URLSearchParams(payload).toString();
+  return `${window.location.origin}${base}/continue/?${query}`;
+}
+
+// Attaches an address to the account that is ALREADY asking, rather than making
+// a new one. Nothing is created here — `sendSignInLinkToEmail` writes no user —
+// so someone who never opens the mail holds nothing server-side and can retry.
+export async function sendAttachLink(
+  email: string,
+  host: string,
+): Promise<void> {
+  const current = auth().currentUser;
+  if (!current) throw new Error("no session to attach an address to");
+  // Forced, not cached. Firebase only refreshes under about five minutes left,
+  // so a tab open for fifty would mint a link that dies in ten — while the page
+  // it lands on says an hour.
+  const idToken = await current.getIdToken(true);
+  await sendSignInLinkToEmail(auth(), email, {
+    url: continueUrl({ idToken, email, host }),
+    handleCodeInApp: true,
+  });
+}
+
+// A token minted a while ago is refused by the endpoint that would spend it, and
+// the ask it belongs to may be hours old. Checking before spending the one-time
+// code is what stops an expired open BURNING a code that is still good — the two
+// lifetimes differ, and kip's is the shorter.
+export function tokenExpired(idToken: string): boolean {
+  try {
+    const [, body] = idToken.split(".");
+    const { exp } = JSON.parse(
+      atob(body.replace(/-/g, "+").replace(/_/g, "/")),
+    );
+    return typeof exp !== "number" || exp * 1000 <= Date.now();
+  } catch {
+    // Unreadable is not usable.
+    return true;
+  }
+}
+
+// The returning door. No ID token rides here — there is no anonymous account to
+// attach to, and `/continue/` reads its absence as "sign this person in" rather
+// than "link this address". Same one-time link, same landing page, two modes.
+export async function sendReturnLink(email: string): Promise<void> {
+  const base = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
+  const query = new URLSearchParams({ email }).toString();
+  await sendSignInLinkToEmail(auth(), email, {
+    url: `${window.location.origin}${base}/continue/?${query}`,
+    handleCodeInApp: true,
+  });
+}
+
+// Phone codes. The verifier is Firebase-managed reCAPTCHA in invisible mode:
+// most people see nothing, and only suspicious traffic gets a challenge.
+//
+// It renders into a real element, and for an INVISIBLE verifier `clear()`
+// deliberately leaves that widget in place — so a second attempt against the
+// same element dies with "reCAPTCHA has already been rendered here", poisoning
+// the field until the sheet is closed. Every attempt therefore gets a fresh
+// child of its own, which can simply be thrown away.
+function verifier(container: HTMLElement): {
+  check: RecaptchaVerifier;
+  done: () => void;
+} {
+  const slot = container.ownerDocument.createElement("div");
+  container.appendChild(slot);
+  const check = new RecaptchaVerifier(auth(), slot, { size: "invisible" });
+  return {
+    check,
+    done: () => {
+      check.clear();
+      slot.remove();
+    },
+  };
+}
+
+// Sends the code. Linking keeps the uid, so a grant and a pending ask stay with
+// the person who made them — which is the whole reason this links rather than
+// signing in when there is already a session.
+export async function sendPhoneCode(
+  phone: string,
+  container: HTMLElement,
+): Promise<ConfirmationResult> {
+  const current = auth().currentUser;
+
+  // Refused rather than silently swapped. Falling through to a plain sign-in
+  // here would mint or enter a DIFFERENT account, so someone adding a second
+  // number from Settings lost their listings, friends and trips without being
+  // told anything at all.
+  if (current && current.phoneNumber !== null) {
+    throw new PhoneAlreadySet();
+  }
+
+  // One verifier per attempt, and cleared exactly once. Clearing twice throws
+  // `internal-error` from a `finally`, which discarded a ConfirmationResult for
+  // an SMS that had already been sent — leaving a usable code in someone's
+  // pocket and an error on their screen.
+  const first = verifier(container);
+  try {
+    if (current) {
+      try {
+        return await linkWithPhoneNumber(current, phone, first.check);
+      } catch (error) {
+        if (!alreadyRegistered(error)) throw error;
+      }
+    } else {
+      return await signInWithPhoneNumber(auth(), phone, first.check);
+    }
+  } finally {
+    first.done();
+  }
+
+  // The number belongs to an account already: they are signing in, not signing
+  // up. Refused BEFORE any message went out, so this is the first SMS rather
+  // than a second — but it needs a FRESH verifier, since the failed attempt
+  // spent the one above and reusing it fails `captcha-check-failed`.
+  const retry = verifier(container);
+  try {
+    return await signInWithPhoneNumber(auth(), phone, retry.check);
+  } finally {
+    retry.done();
+  }
+}
+
+// A number cannot be swapped in place — Firebase has no "replace the phone on
+// this account" — so the honest answer is to say so rather than move them.
+export class PhoneAlreadySet extends Error {
+  readonly code = "kip/phone-already-set";
+  constructor() {
+    super("this account already has a number");
+  }
+}
+
+// Whether the uid survived. False means the number already belonged to an
+// account and they have just moved to it — so everything keyed to the old uid,
+// a pending ask and a grant included, belongs to an identity they no longer
+// are. Callers MUST branch on this: the account they are now in already has a
+// name and a photo, and writing the sheet's over them is destructive.
+export async function confirmPhoneCode(
+  pending: ConfirmationResult,
+  code: string,
+  wasUid: string | null,
+): Promise<{ sameAccount: boolean }> {
+  try {
+    const result = await pending.confirm(code);
+    return { sameAccount: result.user.uid === wasUid };
+  } catch (error) {
+    // The number turned out to belong to someone else. The credential rides on
+    // the error, so signing in with it costs nothing further — no second SMS.
+    if (!alreadyRegistered(error)) throw error;
+    const credential = PhoneAuthProvider.credentialFromError(
+      error as AuthError,
+    );
+    if (!credential) throw error;
+    const result = await signInWithCredential(auth(), credential);
+    return { sameAccount: result.user.uid === wasUid };
   }
 }

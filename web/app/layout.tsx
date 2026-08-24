@@ -3,6 +3,8 @@ import { Plus_Jakarta_Sans } from "next/font/google";
 import { ThemeProvider } from "next-themes";
 import type { ReactElement, ReactNode } from "react";
 import DialogProvider from "../components/dialog";
+import EmulatorBadge from "../components/emulator-badge";
+import NameGateProvider from "../components/name-gate";
 import { KipProvider } from "../utils/store";
 import "./globals.css";
 
@@ -64,7 +66,14 @@ export default function RootLayout({
           disableTransitionOnChange
         >
           <DialogProvider>
-            <KipProvider>{children}</KipProvider>
+            {/* Inside KipProvider: it reads the profile to know whether a name
+                is needed at all. It gates ITSELF to the app's own routes —
+                `/portal/` and `/continue/` carry their own sheets, and its
+                auto-open would stack a second, undismissable one over them. */}
+            <KipProvider>
+              <NameGateProvider>{children}</NameGateProvider>
+              <EmulatorBadge />
+            </KipProvider>
           </DialogProvider>
         </ThemeProvider>
       </body>

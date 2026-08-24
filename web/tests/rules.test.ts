@@ -35,6 +35,17 @@ const STRANGER = "stranger1";
 function authed(uid: string): Firestore {
   return testEnv.authenticatedContext(uid).firestore() as unknown as Firestore;
 }
+// `authed` carries an EMPTY `identities` map, which is what an anonymous session
+// looks like — so it is the right default for a participant who typed a name and
+// nothing more, and the wrong one for anything gated on `hasCredential()`. The
+// emulator does not derive identities from an `email` claim; only this does.
+function credentialed(uid: string): Firestore {
+  return testEnv
+    .authenticatedContext(uid, {
+      firebase: { identities: { email: [`${uid}@example.com`] } },
+    } as never)
+    .firestore() as unknown as Firestore;
+}
 function anon(): Firestore {
   return testEnv.unauthenticatedContext().firestore() as unknown as Firestore;
 }
@@ -767,6 +778,16 @@ describe("users + usernames (get-not-query privacy)", () => {
 
   it("can claim an unclaimed handle mapping to your own uid", async () => {
     await assertSucceeds(
+      setDoc(doc(credentialed("u1"), "usernames", "freehandle"), { uid: "u1" }),
+    );
+  });
+
+  // A handle is permanent, so it needs an account someone can sign back into.
+  // The check reads `identities` — what the ACCOUNT holds — not
+  // `sign_in_provider`, which records how the session started and would refuse
+  // an asker who attached an email from the browser their email opened in.
+  it("a participant with no credential cannot claim one", async () => {
+    await assertFails(
       setDoc(doc(authed("u1"), "usernames", "freehandle"), { uid: "u1" }),
     );
   });
@@ -893,6 +914,216 @@ describe("users + usernames (get-not-query privacy)", () => {
 // Going private stops inbound requests outright, not just in the UI. The sender's
 // name and handle are pinned because the recipient can't check them and they go
 // straight into an email.
+// The tier boundary. Everything a participant without a credential may do, it may
+// do because no rule MENTIONS how they signed in — correctness by omission, which
+// is the kind that vanishes when someone adds a provider check for a good local
+// reason. These pin it from both sides.
+// Leaving has to be possible. The write rule can never pass for a delete — it
+// names `request.resource.data`, which a delete has none of — so this was
+// impossible rather than forbidden until an explicit rule said otherwise.
+describe("leaving", () => {
+  beforeEach(async () => {
+    await seed(async (db) => {
+      await setDoc(doc(db, "users", OWNER), { displayName: "Owner" });
+    });
+  });
+
+  it("deletes its own profile", async () => {
+    await assertSucceeds(deleteDoc(doc(authed(OWNER), "users", OWNER)));
+  });
+
+  it("cannot delete anyone else's", async () => {
+    await assertFails(deleteDoc(doc(authed(STRANGER), "users", OWNER)));
+  });
+});
+
+describe("a participant with no credential", () => {
+  beforeEach(async () => {
+    await seed(async (db) => {
+      await setDoc(doc(db, "portals", "p1"), portal);
+      await setDoc(doc(db, "users", OWNER), { displayName: "Owner" });
+    });
+  });
+
+  // The write that turns a ticket into a participant. Self-only, provider-blind.
+  it("writes its own profile with a display name", async () => {
+    await assertSucceeds(
+      setDoc(doc(authed(STRANGER), "users", STRANGER), {
+        displayName: "Stranger",
+      }),
+    );
+  });
+
+  // Accepting is the write that matters: it lands in someone ELSE's collection,
+  // and `edgeMatchesWriter` pins it against the accepter's profile. A profile is
+  // a profile whether or not an account can be signed back into.
+  it("accepts a request, and the pin holds against its profile", async () => {
+    await seed(async (db) => {
+      await setDoc(doc(db, "users", STRANGER), {
+        displayName: "Stranger",
+        username: "",
+      });
+      await setDoc(doc(db, "connectRequests", `${OWNER}_${STRANGER}`), {
+        ...request,
+        from: OWNER,
+        to: STRANGER,
+        fromName: "Owner",
+        fromUsername: "",
+      });
+    });
+    await assertSucceeds(
+      setDoc(doc(authed(STRANGER), "users", OWNER, "friends", STRANGER), {
+        displayName: "Stranger",
+        username: "",
+        photoURL: null,
+        since: serverTimestamp(),
+      }),
+    );
+  });
+
+  // The same write wearing a name it hasn't got.
+  it("cannot accept under a name that isn't its own", async () => {
+    await seed(async (db) => {
+      await setDoc(doc(db, "users", STRANGER), {
+        displayName: "Stranger",
+        username: "",
+      });
+      await setDoc(doc(db, "connectRequests", `${OWNER}_${STRANGER}`), {
+        ...request,
+        from: OWNER,
+        to: STRANGER,
+        fromName: "Owner",
+        fromUsername: "",
+      });
+    });
+    await assertFails(
+      setDoc(doc(authed(STRANGER), "users", OWNER, "friends", STRANGER), {
+        displayName: "kip Support",
+        username: "",
+        photoURL: null,
+        since: serverTimestamp(),
+      }),
+    );
+  });
+
+  // Hosting is the one participant action that strands OTHER people when the
+  // account is lost, so it is the one thing the rules refuse.
+  it("cannot create a listing", async () => {
+    await assertFails(
+      setDoc(doc(authed(STRANGER), "listings", "l-new"), {
+        ownerId: STRANGER,
+        title: "A place",
+        type: "ROOM",
+      }),
+    );
+  });
+
+  // The other half. A refusal test alone passes just as happily against a rule
+  // that refuses everyone.
+  it("but a credentialed account can", async () => {
+    await assertSucceeds(
+      setDoc(doc(credentialed(STRANGER), "listings", "l-new"), {
+        ownerId: STRANGER,
+        title: "A place",
+        type: "ROOM",
+      }),
+    );
+  });
+
+  // The permissive half, and the half that actually rots. Each of these passes
+  // because no rule MENTIONS how the caller signed in — so a provider check
+  // added anywhere for a good local reason would empty the middle tier with
+  // nothing else failing.
+  it("sends a portal-routed connect request", async () => {
+    await seed(async (db) => {
+      await setDoc(doc(db, "users", STRANGER), {
+        displayName: "Stranger",
+        username: "stranger_h",
+      });
+    });
+    await assertSucceeds(
+      setDoc(
+        doc(authed(STRANGER), "connectRequests", `${STRANGER}_${OWNER}`),
+        request,
+      ),
+    );
+  });
+
+  it("reads a friend's listing once the edge exists", async () => {
+    await seed(async (db) => {
+      await setDoc(doc(db, "listings", "l1"), {
+        ownerId: OWNER,
+        title: "A place",
+      });
+      await setDoc(doc(db, "users", OWNER, "friends", STRANGER), {
+        displayName: "Stranger",
+        username: "",
+        photoURL: null,
+        since: Timestamp.now(),
+      });
+    });
+    await assertSucceeds(getDoc(doc(authed(STRANGER), "listings", "l1")));
+  });
+
+  it("asks to stay through a portal grant", async () => {
+    await seed(async (db) => {
+      await setDoc(doc(db, "users", STRANGER), { displayName: "Stranger" });
+      await setDoc(doc(db, "listings", "l1"), {
+        ownerId: OWNER,
+        title: "A place",
+        publicPortalId: "p1",
+      });
+      await setDoc(doc(db, "listings", "l1", "windows", "w1"), {
+        start: isoIn(3),
+        end: isoIn(6),
+        status: "OPEN",
+        bookingId: null,
+        publicPortalId: "p1",
+      });
+      await setDoc(doc(db, "portals", "p1", "grants", STRANGER), {
+        expires: Timestamp.fromMillis(Date.now() + 86_400_000),
+      });
+    });
+    await assertSucceeds(
+      addDoc(collection(authed(STRANGER), "bookings"), {
+        listingId: "l1",
+        ownerId: OWNER,
+        guestId: STRANGER,
+        windowId: "w1",
+        start: isoIn(3),
+        end: isoIn(6),
+        status: "REQUESTED",
+        cancelledBy: null,
+        cancelReason: null,
+        createdAt: serverTimestamp(),
+      }),
+    );
+  });
+
+  // Transitive: searchable needs a registry-backed handle, and a handle needs a
+  // credential. No second rule expresses this.
+  // Searchability is gated TRANSITIVELY and this pins the actual mechanism:
+  // `users` write carries no credential check at all, only "a displayed handle
+  // must be one you own". What makes it unreachable without a credential is the
+  // registry above — and the state this would otherwise test, an uncredentialed
+  // account already owning a handle, cannot occur, because claiming one is
+  // where the credential is demanded.
+  it("cannot show a handle it does not own, credential or not", async () => {
+    await seed(async (db) => {
+      await setDoc(doc(db, "usernames", "taken_h"), { uid: OWNER });
+    });
+    for (const who of [authed(STRANGER), credentialed(STRANGER)]) {
+      await assertFails(
+        setDoc(doc(who, "users", STRANGER), {
+          displayName: "Stranger",
+          username: "taken_h",
+          searchable: true,
+        }),
+      );
+    }
+  });
+});
+
 describe("connectRequests cannot spoof an identity", () => {
   beforeEach(async () => {
     await seed(async (db) => {

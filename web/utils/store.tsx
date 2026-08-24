@@ -17,12 +17,7 @@ import {
   useRef,
   useState,
 } from "react";
-import {
-  authSettled,
-  emailContinue,
-  googleSignIn,
-  passwordReset,
-} from "./auth";
+import { authSettled, googleSignIn } from "./auth";
 import {
   type BookingOutcome,
   cancelBookingAsGuest,
@@ -38,7 +33,12 @@ import {
   watchMyTrips,
 } from "./bookings";
 import { clientState, recordDebugEvent } from "./debug";
-import { auth, firebaseConfigured, onListenerLost } from "./firebase";
+import {
+  auth,
+  errorCode,
+  firebaseConfigured,
+  onListenerLost,
+} from "./firebase";
 import {
   setSearchable as fbSetSearchable,
   unfriend as fbUnfriend,
@@ -143,7 +143,6 @@ type ContextShape = {
   // `listenersLost`, which is data going stale AFTER it arrived.
   profileUnreachable: boolean;
   // Gated on displayName only — a handle is optional and claimed from Settings.
-  needsOnboarding: boolean;
   prefs: Prefs;
   friends: Friend[];
   incomingRequests: ConnectRequest[];
@@ -180,14 +179,9 @@ type ContextShape = {
   setCriteria: (criteria: SearchCriteria) => void;
   refreshBrowse: () => Promise<void>;
   refreshWindows: (listingId: string) => Promise<void>;
-  signIn: () => Promise<void>;
+  signIn: () => Promise<{ sameAccount: boolean }>;
   // Signs in, or makes an account if that address has none.
-  continueWithEmail: (
-    email: string,
-    password: string,
-  ) => Promise<{ created: boolean }>;
-  resetPassword: (email: string) => Promise<void>;
-  signOut: () => Promise<void>;
+  signOut: (force?: boolean) => Promise<void>;
   // For the share-link page only, whose live reads need an identity to hang a
   // grant on. Never replaces a real session.
   ensureAnonymous: () => Promise<string>;
@@ -585,19 +579,24 @@ export function KipProvider({ children }: { children: ReactNode }) {
   }, []);
   const [criteria, setCriteria] = useState<SearchCriteria>(EMPTY_CRITERIA);
 
-  const needsOnboarding = Boolean(
-    user && profileReady && !profile?.displayName,
-  );
-
   // The owner's public identity as copied into share links.
+  // Read through a ref, not a closure. An action can be HELD — captured at the
+  // tap, run after the identity sheet writes a profile — and a callback that
+  // closed over `profile` captured the null that opened the sheet in the first
+  // place. It then threw "not signed in" after the name had saved, and the
+  // sheet blamed the network. Anything a held action can reach must read the
+  // profile at CALL time.
+  const profileRef = useRef<Profile | null>(profile);
+  profileRef.current = profile;
+
   const asParty = useCallback(
     () => ({
-      uid: profile?.uid ?? "",
-      username: profile?.username ?? "",
-      displayName: profile?.displayName ?? "",
-      photoURL: profile?.photoURL ?? null,
+      uid: profileRef.current?.uid ?? "",
+      username: profileRef.current?.username ?? "",
+      displayName: profileRef.current?.displayName ?? "",
+      photoURL: profileRef.current?.photoURL ?? null,
     }),
-    [profile],
+    [],
   );
 
   useEffect(() => {
@@ -868,12 +867,21 @@ export function KipProvider({ children }: { children: ReactNode }) {
     const otherUid =
       booking.guestId === user?.uid ? booking.ownerId : booking.guestId;
     if (knownUids.has(otherUid)) continue;
-    // Only a confirmed stay satisfies the pointer rule, and any one will do.
-    if (!counterpartStays.get(otherUid)) {
-      counterpartStays.set(
-        otherUid,
-        booking.status === "CONFIRMED" ? booking.id : "",
-      );
+    // Which stays authorise a lookup, straight from `stayPermitsSight`: a
+    // CONFIRMED one either way, and a REQUESTED one for the HOST only — being
+    // asked is not consent to be looked up, but confirming a stranger called
+    // "Someone" is the moment identity matters most.
+    //
+    // Only the confirmed half used to qualify, so every pending ask rendered as
+    // "Someone" — the fallback for a name that could not be read. Rarely seen
+    // when askers were friends; now it is every share-link request there is.
+    const usable =
+      booking.status === "CONFIRMED" ||
+      (booking.status === "REQUESTED" && booking.ownerId === user?.uid);
+    if (usable && !counterpartStays.get(otherUid)) {
+      counterpartStays.set(otherUid, booking.id);
+    } else if (!counterpartStays.has(otherUid)) {
+      counterpartStays.set(otherUid, "");
     }
   }
   const counterpartsKey = [...counterpartStays]
@@ -914,21 +922,42 @@ export function KipProvider({ children }: { children: ReactNode }) {
     [friends, counterparts],
   );
 
-  const signIn = useCallback(async () => {
-    await googleSignIn();
-  }, []);
+  // Passes the verdict through: a caller that writes a profile afterwards has
+  // to know whether it landed in someone else's account.
+  const signIn = useCallback(() => googleSignIn(), []);
 
-  const continueWithEmail = useCallback(
-    (email: string, password: string) => emailContinue(email, password),
-    [],
-  );
+  // The address is attached from ANOTHER browser, by a REST call this session
+  // never sees — so nothing would otherwise tell it. `reload` refreshes the user
+  // and `getIdToken(true)` mints the token the rules read, which is what makes
+  // `identities` non-empty for `hasCredential()`. Both are needed: the flag this
+  // app branches on and the claim Firestore checks are different things.
+  useEffect(() => {
+    if (!anonymous) return;
+    const check = (): void => {
+      const current = auth().currentUser;
+      if (!current?.isAnonymous) return;
+      current
+        .reload()
+        .then(() => current.getIdToken(true))
+        .catch(() => undefined);
+    };
+    window.addEventListener("focus", check);
+    document.addEventListener("visibilitychange", check);
+    return () => {
+      window.removeEventListener("focus", check);
+      document.removeEventListener("visibilitychange", check);
+    };
+  }, [anonymous]);
 
-  const resetPassword = useCallback(
-    (email: string) => passwordReset(email),
-    [],
-  );
-
-  const signOut = useCallback(async () => {
+  // Signing out of a session with no credential does not end it, it DESTROYS
+  // it: the uid lives in this browser and nowhere else, so there is nothing to
+  // sign back in with. The guard lives here rather than at each surface, because
+  // the failure mode is a future screen adding a sign-out without the check —
+  // callers that mean it (the Settings exit, behind its confirm) pass `force`.
+  const signOut = useCallback(async (force = false) => {
+    if (auth().currentUser?.isAnonymous && !force) {
+      throw new Error("signOut would destroy an account with no way back in");
+    }
     await fbSignOut(auth());
   }, []);
 
@@ -937,7 +966,29 @@ export function KipProvider({ children }: { children: ReactNode }) {
   // persisted session. `authSettled` is that same read, held until the restore.
   const ensureAnonymous = useCallback(async () => {
     const restored = await authSettled();
-    if (restored) return restored.uid;
+    // A restored session is not proof the account still EXISTS. Firebase reaps
+    // idle anonymous accounts, and the browser keeps its tokens either way — so
+    // a returning visitor could hold a session for a uid that is gone, claim a
+    // grant as it, be refused, and see a live share link reported as turned off.
+    // Forcing a refresh is what asks the server; only a real answer is trusted.
+    if (restored) {
+      if (!restored.isAnonymous) return restored.uid;
+      try {
+        await restored.getIdToken(true);
+        return restored.uid;
+      } catch (error) {
+        // ONLY a server saying this account is gone. A network blip is not that,
+        // and treating it as one hands them a brand-new uid — losing the pending
+        // ask, the grant and the name this function exists to preserve.
+        const code = errorCode(error);
+        const gone =
+          code === "auth/user-token-expired" ||
+          code === "auth/user-not-found" ||
+          code === "auth/user-disabled";
+        if (!gone) return restored.uid;
+        console.warn("ensureAnonymous: account is gone, starting a new one");
+      }
+    }
     return (await signInAnonymously(auth())).user.uid;
   }, []);
 
@@ -1043,10 +1094,10 @@ export function KipProvider({ children }: { children: ReactNode }) {
 
   const acceptRequest = useCallback(
     (request: ConnectRequest) => {
-      if (!profile) throw new Error("not signed in");
+      if (!profileRef.current) throw new Error("not signed in");
       return fbAcceptRequest(asParty(), request);
     },
-    [profile, asParty],
+    [asParty],
   );
 
   const unfriend = useCallback(
@@ -1284,7 +1335,6 @@ export function KipProvider({ children }: { children: ReactNode }) {
     profile,
     profileReady,
     profileUnreachable,
-    needsOnboarding,
     prefs,
     friends,
     incomingRequests,
@@ -1314,8 +1364,6 @@ export function KipProvider({ children }: { children: ReactNode }) {
     refreshBrowse,
     refreshWindows,
     signIn,
-    continueWithEmail,
-    resetPassword,
     signOut,
     ensureAnonymous,
     completeOnboarding,

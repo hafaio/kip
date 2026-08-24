@@ -31,7 +31,7 @@ function countPhrase(count: number, noun: string): string | null {
 }
 
 // The landing dashboard.
-export default function HomeView(): ReactElement {
+export default function HomeView(): ReactElement | null {
   const {
     user,
     profile,
@@ -101,7 +101,7 @@ export default function HomeView(): ReactElement {
   }
 
   if (!user) {
-    return <p className="text-muted">Sign in to see your home.</p>;
+    return null;
   }
 
   const hasAttention = bookingRequests.length + incomingRequests.length > 0;
@@ -343,12 +343,12 @@ function VerifyEmailPrompt(): ReactElement | null {
     <div className="flex flex-col gap-3 rounded-3xl bg-surface p-4 shadow-card sm:flex-row sm:items-center">
       <p className="min-w-0 flex-1 text-sm text-muted">
         {sent
-          ? `Verification sent to ${user.email}. Open it, then reload kip.`
-          : `Verify ${user.email} to get notified about bookings — until you do, kip can't email you.`}
+          ? `Confirmation sent to ${user.email}. Open it, then reload kip.`
+          : `Confirm ${user.email} to get notified about bookings — until you do, kip can't email you.`}
       </p>
       {sent ? null : (
         <Button variant="secondary" onClick={resend} className="shrink-0">
-          {failed ? "Try again" : "Verify email"}
+          {failed ? "Try again" : "Confirm email"}
         </Button>
       )}
     </div>

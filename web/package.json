@@ -8,11 +8,13 @@
   },
   "scripts": {
     "dev": "next dev --turbo",
+    "dev:emulated": "firebase emulators:exec --config ../firebase.json --only auth,firestore --project demo-kip 'NEXT_PUBLIC_AUTH_EMULATOR=1 next dev --turbo --port 3001'",
+    "check:portal": "node scripts/portal-check.mjs",
     "export": "next build",
     "fmt": "biome format --write",
     "lint": "tsc && biome check && tsc --noEmit -p ../functions",
     "test": "bun test --path-ignore-patterns '**/rules.test.ts'",
-    "test:rules": "firebase emulators:exec --config ../firebase.json --only firestore --project demo-kip-rules 'bun test tests/rules.test.ts'"
+    "test:rules": "firebase emulators:exec --config ../firebase.json --only firestore,auth --project demo-kip-rules 'bun test tests/rules.test.ts'"
   },
   "dependencies": {
     "firebase": "^12.16.0",
