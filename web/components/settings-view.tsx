@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useTheme } from "next-themes";
 import {
   type ReactElement,
@@ -813,15 +814,13 @@ function NotificationsSection(): ReactElement | null {
       <FieldNote>
         Texts cover {TEXTED_EVENTS.length} of the kinds below: {TEXTED_KINDS}.
         See our{" "}
-        {/* TODO: neither page is built — `screenForHash` knows no such
-              screen, so both land on Home until they are. */}
-        <a className="font-semibold text-accent-ink" href="#/privacy">
+        <Link className="font-semibold text-accent-ink" href="/privacy/">
           Privacy Policy
-        </a>{" "}
+        </Link>{" "}
         and{" "}
-        <a className="font-semibold text-accent-ink" href="#/terms">
+        <Link className="font-semibold text-accent-ink" href="/terms/">
           Terms
-        </a>
+        </Link>
         .
       </FieldNote>
 

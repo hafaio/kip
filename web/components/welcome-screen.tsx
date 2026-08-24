@@ -2,6 +2,7 @@
 
 import type { ReactElement } from "react";
 import AuthPanel from "./auth-panel";
+import SiteFooter from "./site-footer";
 import ThemeButton from "./theme-button";
 import Wordmark from "./wordmark";
 
@@ -34,6 +35,8 @@ export default function WelcomeScreen(): ReactElement {
           <AuthPanel />
         </div>
       </main>
+
+      <SiteFooter className="px-4 pb-8" />
     </div>
   );
 }

@@ -18,6 +18,7 @@ import ReachField, {
   reachError,
   sendReach,
 } from "../../components/reach-field";
+import SiteFooter from "../../components/site-footer";
 import ThemeButton from "../../components/theme-button";
 import Button from "../../components/ui/button";
 import Chip from "../../components/ui/chip";
@@ -403,6 +404,8 @@ export default function PortalPage(): ReactElement {
             }}
           />
         ) : null}
+
+        <SiteFooter className="mx-auto mt-12 max-w-2xl" />
       </main>
 
       {/* Closing it abandons the held ask, which is the only way out and needs

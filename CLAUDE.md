@@ -1156,6 +1156,63 @@ secret, because it's the only thing that authenticates.
 account password), then `firebase deploy --only functions`. Until deployed, nothing sends and
 nothing accumulates.
 
+## About, Privacy, Terms and Help
+
+Four **statically exported routes** — `/about/`, `/privacy/`, `/terms/`, `/help/` — each a plain server
+component importing no store, initialising no Firebase and needing no session, so the full text sits
+in the exported HTML for `curl` with JavaScript off.
+
+**They cannot be fragment screens, and that is not a preference.** Twilio fetches the Privacy and
+Terms URLs **server-side** during campaign registration, and a fragment never reaches the server —
+`#/privacy` would serve the SPA shell, which renders a splash and an auth gate and contains none of
+the required language. It would pass the URL check and fail the content review, which is the worst
+shape of failure: the thing looks configured and isn't. `web/tests` cannot catch this; the check is
+grepping `web/out/privacy/index.html` for the non-sharing sentence after `bun export`.
+
+Neither are they BOTH — a fragment screen beside a static route is two copies of legal text that
+will drift. One canonical URL each, and `screenForHash` already resolves an unknown fragment to
+Home, so a stray `#/privacy` link degrades rather than breaking.
+
+`components/doc-page.tsx` is the shell and about a dozen element classes; deliberately not
+`@tailwindcss/typography`, which would be a dependency to keep the tokens exact for four pages.
+Body text sits on the **warm canvas, not in cards** — a card in kip means a control or a list, and a
+wall of card behind two thousand words reads as a form. **Exactly two cards exist** and both earn
+it: Privacy's "short version", which is the honesty gesture, and Terms' "Text messaging program",
+which makes the required SMS disclosures impossible for a reviewer to miss.
+
+`utils/contact.ts` holds the contact address as one constant, because it is currently
+`kip.hafaio.noreply@gmail.com` — a real receivable mailbox whose name says the opposite, chosen as a
+testing-phase shortcut and expected to change. **It needs a forwarding rule**, or the Contact section
+is a promise nothing answers. `SiteFooter` puts the four pages on every surface a stranger can reach
+without signing in: the welcome screen, the portal page, and each other.
+
+**No page names a person, and the operator is `hafa.io`.** Terms has to name SOME operator or there
+is no counterparty to the agreement, so that one is replaced rather than cut; About's "Who makes it"
+is one sentence and Privacy's opening one clause. The name links to `HAFAIO_URL`
+(`hafaio.github.io`, whose own title is already "hafa.io") and **never to `hafa.io` itself**, which
+is not ours — it redirects to a domain broker's listing for the name, and a legal page pointing at a
+sales page is worse than one that just uses the word.
+
+**Contact is GitHub issues except where an address is the point.** About's "Getting in touch" is
+gone entirely, because Help is the contact page and sits in the footer of all four. The address
+stays in five places, only one of which is Twilio's: Terms' SMS section (the HELP/opt-out contact
+carriers require), Privacy's under-18 removal and privacy questions, Help's "Private matters", and
+the deletion screen — where someone whose teardown failed may have neither an account nor a GitHub
+login. "Open a public issue about your privacy" is the wrong sentence.
+
+**Privacy names the one tracker rather than claiming there are none.** "No ads, no analytics, no
+trackers" was true of kip's own code — there is no `firebase/analytics` import and no `measurementId`
+in the config — but `RecaptchaVerifier` loads Google reCAPTCHA, which fingerprints the browser to
+score it. Naming the exception is better copy than a quietly weakened claim, and the exception is
+genuinely narrow: it is constructed inside `sendReach`, so it never loads for anyone signing in by
+email or with Google, and not even for phone until a number is submitted. It has its own bullet in
+"Services kip relies on" beside Firebase, GitHub Pages, Gmail and Twilio. Twilio is deliberately NOT
+also listed in Terms: Privacy owns the vendor list, the campaign review checks Terms for the SMS
+PROGRAM disclosures rather than the vendor's name, and two copies of a vendor list drift.
+
+**The consent switch links here, and that is why these pages exist at all** beyond the filing: the
+stored SMS consent record references documents, and until now those links resolved to Home.
+
 ## Photos
 
 A listing carries up to `MAX_PHOTOS` (8) entries in `photos`, each `{ id, url }`; the objects live
