@@ -180,12 +180,12 @@ export function authErrorMessage(error: unknown): string {
     // no branch to tell them about.
     case "auth/unauthorized-continue-uri":
     case "auth/invalid-continue-uri":
-      return "kip can't send links from this address yet. Tell Erik.";
+      return "kip can't send links here yet. Tell Erik.";
     // Loss register: the plain word earns its place at the moment of loss.
     case "auth/user-disabled":
       return "This account has been disabled.";
     case "auth/too-many-requests":
-      return "Too many attempts. Try again in a little while.";
+      return "Too many attempts. Try again later.";
     case "auth/popup-closed-by-user":
     case "auth/cancelled-popup-request":
       return "Cancelled — nothing happened.";

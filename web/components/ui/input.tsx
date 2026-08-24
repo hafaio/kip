@@ -9,11 +9,15 @@ import type { ComponentPropsWithRef, ReactElement, ReactNode } from "react";
 // validity spinner/check). A suffix holding WORDS rather than a glyph needs the
 // text kept further clear of it, which is what `wideSuffix` is for — the gutter
 // can't just be widened for everyone, or the handle field's tick sits in a hole.
+// `invalid` reddens the box so it and the message under it read as one object;
+// it lives here rather than beside any one caller because every field that can
+// be complained about is this same input.
 // Everything else is a normal <input>.
 export default function Input({
   prefix,
   suffix,
   wideSuffix = false,
+  invalid = false,
   className = "",
   ...props
   // `ComponentPropsWithRef` rather than `InputHTMLAttributes` so a caller can
@@ -22,9 +26,13 @@ export default function Input({
   prefix?: ReactNode;
   suffix?: ReactNode;
   wideSuffix?: boolean;
+  invalid?: boolean;
 }): ReactElement {
   const base =
-    "h-11 w-full rounded-xl border border-border bg-surface text-base outline-none transition focus:border-accent focus:ring-2 focus:ring-accent/20";
+    "h-11 w-full rounded-xl border border-border bg-surface text-base outline-none transition focus:ring-2";
+  const tone = invalid
+    ? "border-danger focus:border-danger focus:ring-danger/20"
+    : "border-border focus:border-accent focus:ring-accent/20";
   // Always the same tree, adorned or not. Branching on `prefix || suffix` gave
   // the input two different positions in the element tree, so an adornment that
   // comes and goes — one shown only while the field is empty, say — REMOUNTED
@@ -38,7 +46,8 @@ export default function Input({
         </span>
       ) : null}
       <input
-        className={`${base} ${prefix ? "pl-8" : "pl-3.5"} ${suffix ? (wideSuffix ? "pr-24" : "pr-10") : "pr-3.5"} ${className}`}
+        aria-invalid={invalid || undefined}
+        className={`${base} ${tone} ${prefix ? "pl-8" : "pl-3.5"} ${suffix ? (wideSuffix ? "pr-24" : "pr-10") : "pr-3.5"} ${className}`}
         {...props}
       />
       {suffix ? (

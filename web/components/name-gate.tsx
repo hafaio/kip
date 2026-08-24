@@ -176,14 +176,14 @@ export default function NameGateProvider({
       const known = auth().currentUser?.displayName?.trim();
       if (needsName && known) await completeOnboarding(known);
       else if (needsName) {
-        setError("Google didn't share a name. Type one and continue.");
+        setError("Google didn't share a name. Type one.");
         return;
       }
       await held.action();
       setHeld(null);
     } catch (caught) {
       console.error(caught);
-      setError("That didn't work. Try again, or use an email or number.");
+      setError("That didn't work. Try again, or use email.");
     } finally {
       setBusy(false);
     }
@@ -213,7 +213,7 @@ export default function NameGateProvider({
         }
       } catch (caught) {
         console.error(caught);
-        setError("That code didn't work. Check it, or ask for another.");
+        setError("Wrong code. Check it, or ask for another.");
         setBusy(false);
         return;
       }
@@ -240,7 +240,7 @@ export default function NameGateProvider({
         console.error(caught);
         setError(
           caught instanceof PhoneAlreadySet
-            ? "This account already has a number. Add an email instead."
+            ? "This account has a number. Add an email."
             : "Couldn't send that. Check it, or clear it.",
         );
         setBusy(false);
@@ -255,7 +255,7 @@ export default function NameGateProvider({
       await held.action();
     } catch (caught) {
       console.error(caught);
-      setError("Couldn't save that. Check your connection and try again.");
+      setError("Couldn't save that. Check your connection.");
       setBusy(false);
       return;
     }
@@ -302,6 +302,7 @@ export default function NameGateProvider({
               <Input
                 autoComplete="name"
                 autoFocus
+                invalid={Boolean(invalid)}
                 value={name}
                 onChange={(event) => setName(event.target.value)}
                 placeholder="Your name"
@@ -316,6 +317,7 @@ export default function NameGateProvider({
                   setReach(next);
                 }}
                 hostRef={recaptcha}
+                invalid={Boolean(reachInvalid || error)}
               />
             ) : null}
 
@@ -323,14 +325,22 @@ export default function NameGateProvider({
                 reason for the address OR whatever is wrong. Two slots would
                 make the sheet grow and shrink as you type; one cannot. It is
                 the address that needs explaining, so with no address field
-                there is nothing to say and only a problem can speak. */}
-            {problem || needsReach ? (
-              <p
-                className={`text-sm ${problem ? "text-danger" : "text-muted"}`}
-              >
-                {problem ?? message}
-              </p>
-            ) : null}
+                there is nothing to say and only a problem can speak.
+
+                Rendered whether or not it has anything to say, because a
+                bottom sheet grows UPWARD: a message that APPEARS rather than
+                swapping shoves the fields out from under the thumb typing
+                into them. Name-only mode has no standing copy, which is
+                exactly the mode that used to jump. One line is enough for
+                both — every string either slot can hold measures one at the
+                sheet's 350px, which is what the budget in
+                `tests/auth-copy.test.ts` keeps true. */}
+            <p
+              aria-live="polite"
+              className={`min-h-5 text-sm leading-5 ${problem ? "text-danger" : "text-muted"}`}
+            >
+              {problem ?? (needsReach ? message : null)}
+            </p>
 
             {/* Labelled by the verb it finishes, never "Save" — the button
               completes what they tapped rather than starting something new. */}

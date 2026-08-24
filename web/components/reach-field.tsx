@@ -45,11 +45,11 @@ export function reachError(raw: string, only?: "phone"): string | null {
   if (only && parsed.kind === "email") return "That's an email, not a number.";
   if (parsed.kind !== "unknown") return null;
   if (isForeignNumber(raw)) {
-    return "Phone codes are US-only for now — an email works from anywhere.";
+    return "US numbers only — email works anywhere.";
   }
   return only
-    ? "That doesn't look like a US phone number."
-    : "That doesn't look like an email address or a US phone number.";
+    ? "That's not a US phone number."
+    : "That's not an email or a US number.";
 }
 
 // Sends whichever kind was typed. Email returns immediately (the link lands in
@@ -99,6 +99,7 @@ export default function ReachField({
   onChange,
   hostRef,
   only,
+  invalid = false,
 }: {
   state: ReachState;
   onChange: (next: ReachState) => void;
@@ -107,6 +108,11 @@ export default function ReachField({
   // Pins the field to one door and drops the offer of the other. See
   // `reachError`.
   only?: "phone";
+  // Reddens whichever step's box is up, so it and the message the caller is
+  // showing read as one object. The caller owns it because the caller owns the
+  // message: what is wrong may be the typed address (`reachError`) or the send
+  // that followed it, and only the caller has both.
+  invalid?: boolean;
 }): ReactElement {
   // The code step replaces the field rather than sitting under it: at that point
   // the number is settled and the only thing left to type is six digits. It
@@ -126,6 +132,7 @@ export default function ReachField({
           autoComplete="one-time-code"
           inputMode="numeric"
           autoFocus
+          invalid={invalid}
           value={state.code}
           onChange={(event) =>
             onChange({ ...state, code: event.target.value.trim() })
@@ -162,6 +169,7 @@ export default function ReachField({
       <Input
         autoComplete={phoneMode ? "tel" : "email"}
         inputMode={phoneMode ? "tel" : "email"}
+        invalid={invalid}
         value={state.raw}
         onChange={(event) => onChange({ ...state, raw: event.target.value })}
         placeholder={phoneMode ? "(415) 555-0123" : "you@example.com"}
