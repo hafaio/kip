@@ -1874,11 +1874,15 @@ where Pages actually serves.
 never left in it). Standing up a separate `hafaio-kip` would mean redoing the whole one-time setup:
 rules, storage, functions, secrets, WIF, authorized domains.
 
-**Nothing has been exercised on production by a second person.** Every state that needs two
-accounts — a friendship, a booking, a notification email actually landing — has only ever been
-tested locally or against the rules emulator. Notification email in particular is now live and has
-never sent from the deployed functions; see the deliverability note under Notifications for what to
-expect when it does.
+**Production has been exercised, and the triggers are the record of it.** This note used to say
+nothing had been, which stopped being true and stayed here — check rather than repeat it. Cloud Run
+request logs for `hafaio-kip-dev` over the last 90 days: `onBookingChanged` 129, `onBookingCreated`
+44, `onConnectRequested` 12, `unsubscribe` 9, `onTextCheckRequested` 6, spread from late July to the
+present and all 2xx bar three early `unsubscribe` 400s. So real stays have been asked for, answered
+and cancelled between two accounts, real friend requests have gone, and notification email has sent
+from the deployed functions. `gcloud logging read 'resource.type="cloud_run_revision" AND
+httpRequest.requestMethod!=""' --project hafaio-kip-dev --freshness=90d` is the query; the startup
+lines it returns alongside are deploys, not invocations.
 
 ## Known limitations / next steps
 
