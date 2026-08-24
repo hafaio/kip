@@ -17,6 +17,7 @@
     "test:rules": "firebase emulators:exec --config ../firebase.json --only firestore,auth --project demo-kip-rules 'bun test tests/rules.test.ts'",
     "check:host": "node scripts/host-check.mjs",
     "check:leave": "node scripts/leave-check.mjs",
+    "check:exif": "node scripts/exif-check.mjs",
     "check:teardown": "npm --prefix ../functions run build && firebase emulators:exec --config ../firebase.json --only auth,firestore,functions --project demo-kip 'node scripts/teardown-check.mjs'"
   },
   "dependencies": {

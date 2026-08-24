@@ -34,8 +34,24 @@ function avatarPath(uid: string): string {
   return `avatars/${uid}`;
 }
 
-async function shrink(file: Blob, maxEdge: number): Promise<Blob> {
-  const bitmap = await createImageBitmap(file);
+// Nothing here retries, so the caller can say so instead of blaming the network.
+export class PhotoEncodeError extends Error {}
+
+// Both failures used to fall back to the original file, which shipped whatever
+// EXIF the camera wrote — including the GPS tag on a photo of someone's home,
+// which the privacy page promises is gone. A refused upload is the lesser harm.
+export async function shrink(file: Blob, maxEdge: number): Promise<Blob> {
+  // The THIRD way this fails, and the one that reaches real people: a format the
+  // browser can't decode at all — HEIC straight off an iPhone is the live case.
+  // It throws a bare DOMException, which the callers read as a network problem
+  // and answer with "check your connection and try again", advice that is wrong
+  // about a file that will fail identically for ever.
+  let bitmap: ImageBitmap;
+  try {
+    bitmap = await createImageBitmap(file);
+  } catch {
+    throw new PhotoEncodeError("this image format can't be read");
+  }
   const scale = Math.min(1, maxEdge / Math.max(bitmap.width, bitmap.height));
   const width = Math.round(bitmap.width * scale);
   const height = Math.round(bitmap.height * scale);
@@ -44,14 +60,16 @@ async function shrink(file: Blob, maxEdge: number): Promise<Blob> {
   canvas.width = width;
   canvas.height = height;
   const context = canvas.getContext("2d");
-  if (!context) return file;
+  if (!context) throw new PhotoEncodeError("no 2d canvas context");
   context.drawImage(bitmap, 0, 0, width, height);
   bitmap.close();
 
   const blob = await new Promise<Blob | null>((resolve) =>
     canvas.toBlob(resolve, "image/jpeg", QUALITY),
   );
-  return blob ?? file; // exotic source formats can fail to re-encode
+  // Exotic source formats can fail to re-encode.
+  if (!blob) throw new PhotoEncodeError("could not re-encode as JPEG");
+  return blob;
 }
 
 // The URL is minted once, here, because only the owner may ask Storage for it.

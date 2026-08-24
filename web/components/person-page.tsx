@@ -12,6 +12,7 @@ import {
 import { fetchStaysOf } from "../utils/bookings";
 import { isExpired } from "../utils/format";
 import { fetchUserProfile } from "../utils/friends";
+import { PhotoEncodeError } from "../utils/photos";
 import { sendBookingConnectRequest } from "../utils/requests";
 import { useKip } from "../utils/store";
 import type { Booking, Profile } from "../utils/types";
@@ -159,9 +160,11 @@ function ProfilePhoto({
     } catch (caught) {
       console.error(caught);
       setError(
-        file
-          ? "That didn't upload. Check your connection and try again."
-          : "Couldn't remove that. Try again.",
+        caught instanceof PhotoEncodeError
+          ? "kip couldn't read that image. Try a different photo."
+          : file
+            ? "That didn't upload. Check your connection and try again."
+            : "Couldn't remove that. Try again.",
       );
     } finally {
       setBusy(false);
