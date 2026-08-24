@@ -29,7 +29,24 @@ import { auth, firebaseConfig } from "../../utils/firebase";
 // covers a dependency chain with the SDK's own retries behind it.
 const CONTINUE_TIMEOUT_MS = 6_000;
 
-type Outcome = "working" | "done" | "expired" | "stalled" | "failed";
+// `connectAuthEmulator` points the SDK, and nothing points a raw fetch — so
+// attaching was the one door a local run could not open, while returning (an SDK
+// call) worked. Written out rather than read off a helper for the reason the
+// same pair is written out in `utils/firebase.ts`: Next inlines NODE_ENV, so the
+// whole ternary folds and no localhost address reaches a production bundle.
+function identityToolkit(): string {
+  return process.env.NODE_ENV !== "production" &&
+    process.env.NEXT_PUBLIC_AUTH_EMULATOR === "1"
+    ? "http://127.0.0.1:9099/identitytoolkit.googleapis.com"
+    : "https://identitytoolkit.googleapis.com";
+}
+
+type Outcome = "working" | "done" | "expired" | "stalled" | "taken" | "failed";
+
+// The one refusal that is worth naming, because it is the one nobody can fix
+// from anywhere else: kip cannot merge two accounts, and the ask this link
+// belongs to is held by the account that was asking, not by the address.
+const EMAIL_EXISTS = "EMAIL_EXISTS";
 
 export default function ContinuePage(): ReactElement {
   const [outcome, setOutcome] = useState<Outcome>("working");
@@ -96,7 +113,7 @@ export default function ContinuePage(): ReactElement {
     const work: Promise<unknown> = returning
       ? signInWithEmailLink(auth(), email, window.location.href)
       : fetch(
-          `https://identitytoolkit.googleapis.com/v1/accounts:signInWithEmailLink?key=${firebaseConfig.apiKey}`,
+          `${identityToolkit()}/v1/accounts:signInWithEmailLink?key=${firebaseConfig.apiKey}`,
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -106,13 +123,21 @@ export default function ContinuePage(): ReactElement {
               idToken,
             }),
           },
-        ).then((response) => {
-          if (!response.ok) throw new Error("attach refused");
+        ).then(async (response) => {
+          if (response.ok) return;
+          const refusal = await response
+            .json()
+            .then((body) => body?.error?.message)
+            .catch(() => null);
+          throw new Error(refusal === EMAIL_EXISTS ? EMAIL_EXISTS : "refused");
         });
 
     work
       .then((): Outcome => "done")
-      .catch((): Outcome => "failed")
+      .catch(
+        (error: Error): Outcome =>
+          error.message === EMAIL_EXISTS ? "taken" : "failed",
+      )
       .then((result) => {
         if (!live) return;
         clearTimeout(timer);
@@ -193,6 +218,18 @@ export default function ContinuePage(): ReactElement {
               request is unaffected.
             </p>
           </div>
+        ) : outcome === "taken" ? (
+          <div className="flex flex-col gap-2">
+            <h1 className="text-xl font-bold tracking-[-0.02em]">
+              That address already has a kip
+            </h1>
+            <p className="max-w-xs text-sm text-muted">
+              It belongs to another account, and kip can't combine two. Open kip
+              where you already use that address, or sign back in with it from
+              kip's front page. Whatever you asked for still stands where you
+              asked it.
+            </p>
+          </div>
         ) : (
           <div className="flex flex-col items-center gap-3">
             <h1 className="text-xl font-bold tracking-[-0.02em]">
@@ -203,7 +240,7 @@ export default function ContinuePage(): ReactElement {
             <p className="max-w-xs text-sm text-muted">
               {outcome === "stalled"
                 ? "Nothing is lost. Try again, or close this and finish from where you started."
-                : "This link can't be used — most often because that address already belongs to a kip account. Nothing is lost: whatever you asked for still stands where you asked it."}
+                : "This link can't be used. Nothing is lost: whatever you asked for still stands where you asked it."}
             </p>
             {/* Only after a timeout, where the call may never have run. A call
                 that ANSWERED has spent the one-time code, so retrying it fails
