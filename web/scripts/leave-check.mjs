@@ -207,12 +207,17 @@ console.log("\nthe trigger finishes");
 await remove(`deletions/${uid}`);
 await new Promise((r) => setTimeout(r, 4000));
 const ended = await page.evaluate("document.body.innerText");
-// The welcome screen's door, not the absence of a word: an inert sheet's title
-// sits in the DOM on every screen, so "is the name form up?" answers yes even
-// when nothing is showing.
+// The welcome screen's own line, not the absence of a word: an inert sheet's
+// title sits in the DOM on every screen, so "is the name form up?" answers yes
+// even when nothing is showing. And not the door's LABEL, which is what this
+// used to look for — it read "Come in" once, the button now says "Continue",
+// and the check had been failing on a screen that was correct. The tagline is
+// rendered by `welcome-screen.tsx` and nowhere else, so it cannot be true of a
+// signed-in kip.
 expect(
   "the session ends rather than dropping them into a nameless kip",
-  !String(ended).includes("Deleting your kip") && String(ended).includes("Come in"),
+  !String(ended).includes("Deleting your kip") &&
+    String(ended).includes("Spare rooms and empty flats"),
   String(ended).slice(0, 120),
 );
 
