@@ -42,7 +42,26 @@ function authed(uid: string): Firestore {
 function credentialed(uid: string): Firestore {
   return testEnv
     .authenticatedContext(uid, {
+      email_verified: true,
       firebase: { identities: { email: [`${uid}@example.com`] } },
+    } as never)
+    .firestore() as unknown as Firestore;
+}
+// What a scripted email+password signup gets: an identity, and an address nobody
+// answered. Firebase verifies neither, and the web API key is public.
+function unverified(uid: string): Firestore {
+  return testEnv
+    .authenticatedContext(uid, {
+      email_verified: false,
+      firebase: { identities: { email: [`${uid}@example.com`] } },
+    } as never)
+    .firestore() as unknown as Firestore;
+}
+// The other two doors prove themselves, so neither carries `email_verified`.
+function phoned(uid: string): Firestore {
+  return testEnv
+    .authenticatedContext(uid, {
+      firebase: { identities: { phone: ["+15555550123"] } },
     } as never)
     .firestore() as unknown as Firestore;
 }
@@ -792,6 +811,21 @@ describe("users + usernames (get-not-query privacy)", () => {
     );
   });
 
+  // A handle is permanent and never released, so an address nobody proved could
+  // park good names for good — and kip's UI not offering passwords is no
+  // protection, since the web API key is public.
+  it("an unverified address cannot claim one", async () => {
+    await assertFails(
+      setDoc(doc(unverified("u1"), "usernames", "freehandle"), { uid: "u1" }),
+    );
+  });
+
+  it("a phone, which proves itself, can", async () => {
+    await assertSucceeds(
+      setDoc(doc(phoned("u1"), "usernames", "freehandle"), { uid: "u1" }),
+    );
+  });
+
   it("cannot claim a handle mapping to someone else's uid", async () => {
     await assertFails(
       setDoc(doc(authed("u1"), "usernames", "freehandle"), {
@@ -906,6 +940,39 @@ describe("users + usernames (get-not-query privacy)", () => {
       setDoc(doc(authed("u1"), "users", "u1"), {
         username: "alice",
         displayName: "Not Alice",
+      }),
+    );
+  });
+
+  // The promise this schema makes loudest: an address lives on the Auth account
+  // and nowhere else. Until the key set was pinned only the client's habits kept
+  // it out of a document every friend can read.
+  it("cannot park an address or a number on a profile", async () => {
+    await assertFails(
+      setDoc(doc(authed("u1"), "users", "u1"), {
+        displayName: "U",
+        email: "u1@example.com",
+      }),
+    );
+    await assertFails(
+      setDoc(doc(authed("u1"), "users", "u1"), {
+        displayName: "U",
+        phoneNumber: "+15551234567",
+      }),
+    );
+  });
+
+  // The other side of that pin: every field the app really writes still passes,
+  // so tightening the list can't quietly break a rename or a fresh profile.
+  it("can write every field a profile really has", async () => {
+    await seed((db) => setDoc(doc(db, "usernames", "mine"), { uid: "u1" }));
+    await assertSucceeds(
+      setDoc(doc(authed("u1"), "users", "u1"), {
+        username: "mine",
+        displayName: "U",
+        photoURL: null,
+        searchable: true,
+        createdAt: serverTimestamp(),
       }),
     );
   });

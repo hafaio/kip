@@ -6,11 +6,26 @@ service cloud.firestore {
       return request.auth != null;
     }
 
-    // Does this ACCOUNT hold a way back in? An anonymous session carries an empty
-    // `identities` map; linking any provider fills it, on the next token mint, for
-    // every session including the anonymous-born one that did the linking.
+    // Does this ACCOUNT hold a way back in that someone PROVED? An anonymous
+    // session carries an empty `identities` map; linking any provider fills it, on
+    // the next token mint, for every session including the anonymous-born one that
+    // did the linking.
+    //
+    // A non-empty map is not enough on its own. Firebase's email+password signup
+    // verifies nothing, and the web API key is public — so a script can mint
+    // accounts for addresses it does not own, and kip's UI not offering passwords
+    // is no protection. Such an account reaches nobody, but it would claim
+    // usernames, which are permanent and never released.
+    //
+    // Every door kip actually offers passes: an email link sets `email_verified`
+    // (checked against the emulator, not assumed), and phone and Google prove
+    // themselves. Only the address nobody answered is refused.
     function hasCredential() {
-      return isSignedIn() && request.auth.token.firebase.identities.size() > 0;
+      return isSignedIn()
+        && request.auth.token.firebase.identities.size() > 0
+        && (request.auth.token.email_verified == true
+            || 'phone' in request.auth.token.firebase.identities
+            || 'google.com' in request.auth.token.firebase.identities);
     }
 
     // Friendship is bijective — both edges are written — so one exists() answers it.
@@ -200,8 +215,12 @@ service cloud.firestore {
             || sharesStayWith(userId));
       allow list: if false;
       // A displayed handle must resolve to a registry entry you own, and being
-      // searchable requires having one. Email is simply never written here.
+      // searchable requires having one. The key set is pinned because "email is
+      // simply never written here" was a client habit, not a rule — a crafted
+      // one could park an address or a number in a document friends can read,
+      // which is the single promise this schema makes loudest.
       allow write: if isSignedIn() && request.auth.uid == userId
+        && request.resource.data.keys().hasOnly(['username', 'displayName', 'photoURL', 'searchable', 'createdAt'])
         && (!('username' in request.resource.data)
             || get(/databases/$(database)/documents/usernames/$(request.resource.data.username)).data.uid == userId)
         && (request.resource.data.get('searchable', false) == false
