@@ -5,6 +5,7 @@ import {
   type DocumentData,
   doc,
   getDoc,
+  getDocFromCache,
   onSnapshot,
   type QueryDocumentSnapshot,
   setDoc,
@@ -12,7 +13,7 @@ import {
   writeBatch,
 } from "firebase/firestore";
 import { db, onSnapshotError } from "./firebase";
-import { classifySnapshot } from "./profile-gate";
+import { attempt, classifySnapshot } from "./profile-gate";
 import type { Friend, Profile } from "./types";
 import { normalizeUsername } from "./username";
 
@@ -54,24 +55,42 @@ export async function setSearchable(
 // The profile lives in Firestore, not on the Auth user, so own-profile views
 // read it live. Metadata events are load-bearing: confirming a cached absence
 // changes no document data, so without them the server's "really no profile"
-// would never raise — and the absent-from-cache event they classify as silence
-// is the SDK's own offline verdict, raised only once it stops waiting.
+// would never raise.
 export function watchOwnProfile(
   uid: string,
   onAnswer: (profile: Profile | null) => void,
   onSilence: (code: string) => void,
 ): () => void {
   const log = onSnapshotError("ownProfile");
-  return onSnapshot(
-    doc(db(), "users", uid),
+  const ref = doc(db(), "users", uid);
+  // Which snapshot a cache read belongs to. It is local and quick, but the
+  // server can still answer first, and an answer it overtook would wind the
+  // profile back to nothing under an app already rendering it. Teardown counts
+  // as being overtaken, which is the half this used to miss — see `attempt`.
+  const run = attempt();
+  const unsubscribe = onSnapshot(
+    ref,
     { includeMetadataChanges: true },
     (snap) => {
+      const current = run.mint();
       if (
         classifySnapshot(snap.exists(), snap.metadata.fromCache) === "answered"
       ) {
         onAnswer(snap.exists() ? toProfile(uid, snap.data()) : null);
       } else {
-        onSilence("offline-verdict");
+        // An absence from cache proves nothing until the cache says why it was
+        // raised. A remembered server verdict is as believable as a remembered
+        // profile — the server said there is none, and this read is what tells
+        // that from the SDK having given up with nothing to go on, which is the
+        // silence the gate exists to report.
+        void getDocFromCache(ref).then(
+          () => {
+            if (current()) onAnswer(null);
+          },
+          () => {
+            if (current()) onSilence("offline-verdict");
+          },
+        );
       }
     },
     (error) => {
@@ -79,6 +98,15 @@ export function watchOwnProfile(
       onSilence(error.code);
     },
   );
+
+  // Both callers of `run` are guarded by it, so after this nothing from this
+  // attempt speaks again — which is what lets the store set the profile
+  // unconditionally. A second guard there would be the same contract stated
+  // twice, and the two would drift.
+  return () => {
+    run.stop();
+    unsubscribe();
+  };
 }
 
 // Your own edge, so it needs no grant — which is what makes it askable from the

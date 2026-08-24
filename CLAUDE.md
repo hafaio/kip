@@ -704,21 +704,40 @@ Rules: [firebase/firestore.rules](./firebase/firestore.rules), [firebase/storage
 
   **The gate settles off that one listener, because a metadata listener is a complete signal.**
   Every wait it can be in ends in something visible: an answer opens the gate, silence names itself,
-  and both arrive on the SDK's own bounded timers. The pivot is that a cached absence is the one
-  unbelievable snapshot — byte-identical for "no profile" and "offline with nothing cached", and
-  believing it would put a returning user through onboarding, whose `createProfile` write merges
-  over the name they already have. (A plain listener swallowing it is how a share-link visitor
-  wedged on a permanent splash in production.) So `classifySnapshot` (`utils/profile-gate.ts`)
-  sorts every snapshot into an ANSWER — the profile from cache or server, or a server-confirmed
-  absence — or SILENCE, an absence from cache. What makes one listener sufficient is
-  `includeMetadataChanges: true`, load-bearing twice over and probed against the SDK rather than
+  and both arrive on the SDK's own bounded timers. The pivot is that a cached absence proves nothing
+  on its own — byte-identical for "the server said there is none and we remembered" and "we have
+  never reached the server" — and believing it EITHER way is a lie. As an answer it would put a
+  returning user through onboarding, whose `createProfile` write merges over the name they already
+  have; as a verdict it tells an ordinary successful load that the device can't reach kip. (A plain
+  listener swallowing it is how a share-link visitor wedged on a permanent splash in production.) So
+  `classifySnapshot` (`utils/profile-gate.ts`) sorts every snapshot into an ANSWER — the profile from
+  cache or server, or a server-confirmed absence — or UNPROVEN, an absence from cache, which
+  `watchOwnProfile` settles by asking the cache which of the two raised it. What makes one listener
+  sufficient is `includeMetadataChanges: true`, load-bearing twice over and probed against the SDK rather than
   reasoned (a previous note here claimed metadata events raise nothing useful; the probe said
   otherwise):
-  - **The absent-from-cache event IS the SDK's offline verdict.** Online with a cold cache the
-    listener raises nothing until the server answers; the cached miss is raised only once the SDK
-    concludes it is offline — first stream failure, or its 10s handshake timer. Three latencies
-    prove the reading: ~1ms after `disableNetwork`, ~40ms against a connection-refused backend,
-    never on a healthy one.
+  - **An absent-from-cache event proves nothing, and believing otherwise was a bug.** It was
+    recorded here as the SDK's offline verdict, on three probe latencies (~1ms after
+    `disableNetwork`, ~40ms against a refused backend, never on a healthy one) — every one of them
+    measured against a target the SDK had never synced, which is the only case where it holds. Once
+    a listen target carries a **resume token** from a previous visit, `shouldRaiseInitialEvent`
+    raises the cached view the instant the listener attaches, before the SDK has spoken to anyone:
+    `!docs.isEmpty() || hasCachedResults || onlineState === Offline`, where `hasCachedResults` is
+    just `resumeToken.byteSize > 0`. So every reload by an account with no `users/{uid}` document
+    rendered "Can't reach kip right now" for the length of one round trip — an error screen, with a
+    sign-out on it, during an ordinary successful load. `classifySnapshot` returns `unproven` for
+    that snapshot now, and `watchOwnProfile` asks `getDocFromCache` which it was: a resolve is a
+    remembered server verdict and opens the gate from cache, a reject is the SDK having given up and
+    is silence.
+  - **An answer belongs to an ATTEMPT, and teardown is the half that was missing.** The cache probe
+    is the one way a torn-down listener can still speak — Firestore's own promise not to call back
+    after `unsubscribe` doesn't reach a promise already in flight — and it has to be attempt identity
+    rather than the uid, since a `generation` re-attach opens a new listener for the SAME person and
+    the straggler carries the right uid. A late `null` read as "no profile" opened the identity sheet
+    over someone who already had a name; a late silence flipped the can't-reach-kip screen and logged
+    a false incident. `attempt()` (`utils/profile-gate.ts`, pinned in `tests/profile-gate.test.ts`)
+    is one counter serving both ordering and teardown, which is what lets the store set the profile
+    unconditionally — a second guard there would state the same contract twice and drift.
   - **Recovery re-raises.** Confirming a cached absence changes no document DATA, so a plain
     listener sits on its cached miss forever — that silence is why the old design raced a
     `getDocFromServer` against it. Metadata events turn the `fromCache` flip into an event, so the

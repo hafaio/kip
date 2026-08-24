@@ -5,6 +5,7 @@ import {
   type GateState,
   gateStep,
   NO_SESSION,
+  attempt,
 } from "../utils/profile-gate";
 
 const UID = "uid-a";
@@ -127,9 +128,47 @@ describe("snapshot classification", () => {
     expect(classifySnapshot(false, false)).toBe("answered");
   });
 
-  test("an absence from cache is silence", () => {
+  test("an absence from cache proves nothing", () => {
     // Probed against the SDK, not reasoned: this snapshot is byte-identical
-    // for "no profile" and "offline with nothing cached".
-    expect(classifySnapshot(false, true)).toBe("silence");
+    // for "no profile" and "offline with nothing cached". It used to be read as
+    // the offline verdict, on the belief that the SDK raised it only once it
+    // stopped waiting — but a target carrying a resume token from a previous
+    // visit has it raised AT ATTACH, before the SDK has spoken to anyone. So
+    // every ordinary reload by an account with no profile yet put "Can't reach
+    // kip right now" on screen for one server round trip (80-170ms, measured)
+    // between the splash and the app. Which of the two raised it is the cache's
+    // answer to give, not this function's.
+    expect(classifySnapshot(false, true)).toBe("unproven");
+  });
+});
+
+// The bug these pin: a cache read outliving the listener that started it, then
+// answering `null` for a person who has a profile — which reads as "no name
+// yet" and opens the identity sheet over someone who already has one. A late
+// silence is the same shape and flips the can't-reach-kip screen instead.
+describe("an answer belongs to one attempt", () => {
+  test("a minted check is current until something displaces it", () => {
+    const run = attempt();
+    const first = run.mint();
+    expect(first()).toBe(true);
+  });
+
+  test("a later attempt retires an earlier one", () => {
+    const run = attempt();
+    const first = run.mint();
+    const second = run.mint();
+    expect(first()).toBe(false);
+    expect(second()).toBe(true);
+  });
+
+  // The half that was missing: a re-attach opens a new listener for the SAME
+  // uid, so no uid-keyed guard anywhere can reject the straggler.
+  test("teardown retires every answer still outstanding", () => {
+    const run = attempt();
+    const first = run.mint();
+    const second = run.mint();
+    run.stop();
+    expect(first()).toBe(false);
+    expect(second()).toBe(false);
   });
 });
