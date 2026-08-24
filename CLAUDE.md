@@ -803,6 +803,32 @@ Rules: [firebase/firestore.rules](./firebase/firestore.rules), [firebase/storage
   writing the sheet's over them is destructive, and a held action belongs to the uid they left.
   Returned and ignored, it silently overwrote a real profile with whatever was typed in a sheet.
 
+  **`/continue/` is where an emailed link lands, and it does two jobs told apart by one field.**
+  Its own route rather than a mode of `/portal/`, which mints an anonymous account on load — this
+  one must not, since every landing would leave a throwaway behind. ATTACHING (an `idToken` in the
+  link) links the address to the anonymous account already asking SOMEWHERE ELSE and never signs in
+  here, which is what makes it survive a mail app's throwaway browser; RETURNING (no token) is a
+  real sign-in on this device. The two take different calls for a reason the comments there spell
+  out: returning needs a SESSION, which only the SDK can persist, while attaching wants none.
+
+  **That token is a live credential and does not stay in the address bar.** An ID token is an hour
+  of the asking account, and a URL holding one goes into the static host's access log, this
+  browser's history, and whatever that history syncs to. It cannot be kept out of the FIRST request
+  — that request is how the page loads — so `readLink` takes it once and wipes the query with
+  `replaceState`. It is mirrored into `sessionStorage` first, because wiping breaks two things
+  otherwise: the retry button re-reads the link, and a RELOAD would find an attach link with no
+  token and fall through to the RETURNING branch, which signs in rather than links — minting a
+  second account for the address whose whole point was to join the first. Per tab, gone when it
+  closes, sent nowhere. The wipe happens only if that mirror SUCCEEDED: it is worth doing because the
+  token is held somewhere better, so with nowhere to hold it the wipe would destroy the only copy and
+  a reload could no longer finish — and a browser refusing storage is a private window, which keeps
+  no history to leak into, so it buys least exactly where it costs most. `forgetLink` drops it on every outcome but `failed`, which keeps it because a
+  RELOAD is the only retry that outcome has — the screen offers no button, since a call that
+  ANSWERED has spent the code, though a request that never reached the server lands there too.
+  `stalled` is the one with a button, and it never reaches that line: the timeout sets it, not the
+  work. `Referer` needed nothing: the only cross-origin calls go to Google, and the default
+  `strict-origin-when-cross-origin` already sends the origin alone.
+
   **The code step is six boxes over ONE input, and the count is the point.** `components/ui/code-input.tsx`
   draws six boxes wearing `Input`'s own shell and lays a single transparent `one-time-code` field
   across all of them, because the OS keyboard's "From Messages: 123456" strip, paste, backspace and

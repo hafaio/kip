@@ -151,7 +151,7 @@ if (!link) {
 const followed = new URL(link);
 const code = followed.searchParams.get("oobCode");
 await page.go(
-  `${APP}/continue/?mode=signIn&lang=en&apiKey=fake-api-key&oobCode=${encodeURIComponent(code)}&email=${encodeURIComponent(EMAIL)}`,
+  `${APP}/continue/?mode=signIn&lang=en&apiKey=fake-api-key&oobCode=${encodeURIComponent(code)}#email=${encodeURIComponent(EMAIL)}`,
   10000,
 );
 
