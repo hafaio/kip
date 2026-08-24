@@ -10,12 +10,16 @@ export default function Switch({
   onChange,
   label,
   description,
+  srSuffix,
   disabled = false,
 }: {
   checked: boolean;
   onChange: (next: boolean) => void;
   label: string;
   description?: string;
+  // Read aloud after the label, for a list where the same labels appear once
+  // per channel and the heading that tells them apart is not part of any name.
+  srSuffix?: string;
   disabled?: boolean;
 }): ReactElement {
   return (
@@ -28,7 +32,10 @@ export default function Switch({
       className="flex w-full items-center gap-3 px-4 py-3 text-left disabled:opacity-50"
     >
       <span className="min-w-0 flex-1">
-        <span className="block text-[0.9375rem] font-semibold">{label}</span>
+        <span className="block text-[0.9375rem] font-semibold">
+          {label}
+          {srSuffix ? <span className="sr-only"> {srSuffix}</span> : null}
+        </span>
         {description ? (
           <span className="mt-0.5 block text-sm text-muted">{description}</span>
         ) : null}

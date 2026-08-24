@@ -204,6 +204,13 @@ export type Prefs = {
   // carrier's block, so Settings says so and the next refused send says it
   // again.
   readonly smsStopped: boolean;
+  // A check the owner asked for, and the sender's answer to it. The client sets
+  // `smsProbeAt`; the trigger stamps `smsProbeDoneAt` with the SAME value once
+  // it has tried. So "still checking" is `smsProbeAt > smsProbeDoneAt`, and the
+  // write that answers cannot re-trigger itself — which it would, since the
+  // answer lands in the very document the trigger watches.
+  readonly smsProbeAt: number | null;
+  readonly smsProbeDoneAt: number | null;
 };
 
 export const DEFAULT_PREFS: Prefs = {
@@ -216,11 +223,13 @@ export const DEFAULT_PREFS: Prefs = {
   smsConsentVersion: null,
   smsConsentNumber: null,
   smsStopped: false,
+  smsProbeAt: null,
+  smsProbeDoneAt: null,
 };
 
 // The wording currently shown beside the switch. Bump it when that changes, or
 // a stored consent claims agreement to text nobody saw.
-export const SMS_CONSENT_VERSION = "2026-08-20";
+export const SMS_CONSENT_VERSION = "2026-08-23";
 
 // The teardown a Cloud Function runs once `deletions/{uid}` appears, in order.
 // A fixed, named list because the app draws a determinate bar over it: how long

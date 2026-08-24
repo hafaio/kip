@@ -231,8 +231,26 @@ service cloud.firestore {
       // could do it WITHOUT asking for the teardown, which is the half-dismantled
       // account this whole change exists to stop producing.
 
+      // `smsStopped` is the sender's word that a CARRIER is refusing this
+      // number, and the text-check trigger acts only while it stands — refusing
+      // a client that sets it is what makes "a check cannot be made to spend
+      // money" true rather than merely intended. Left open, a crafted client
+      // could alternate `{smsStopped: true, smsProbeAt: n}` with the success
+      // that clears it and bill kip a message per round trip. Clearing it stays
+      // allowed, because turning texts on does exactly that; only the sender,
+      // which runs as admin and is not bound by these rules, may set it.
+      //
+      // It has to be phrased as "not CHANGED to true" and not "not true", since
+      // `request.resource.data` is the whole document after the write: a merge
+      // that never mentions the field still carries the stored value, so the
+      // simpler rule refused every other Settings control the moment a carrier
+      // block stood — including the switch that clears it.
       match /settings/{doc} {
-        allow read, write: if isSignedIn() && request.auth.uid == userId;
+        allow read: if isSignedIn() && request.auth.uid == userId;
+        allow write: if isSignedIn() && request.auth.uid == userId
+          && (request.resource.data.get('smsStopped', false) == false
+              || (resource != null
+                  && resource.data.get('smsStopped', false) == true));
       }
 
       // Saved searches are private notes about what you're looking for, read

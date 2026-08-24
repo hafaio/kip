@@ -111,9 +111,12 @@ import {
   watchSavedSearches,
 } from "./searches";
 import {
-  clearSmsConsent,
+  setTextNotify as fbSetTextNotify,
+  giveSmsConsent,
+  requestTextCheck,
   setPrefs,
-  setSmsNotify,
+  standingConsent,
+  stopTexts,
   watchPrefs,
 } from "./settings";
 import {
@@ -126,6 +129,7 @@ import {
   type Listing,
   type ListingPhoto,
   type NotifyKind,
+  type NotifySmsKind,
   type Party,
   type Prefs,
   type Profile,
@@ -286,9 +290,15 @@ type ContextShape = {
   // One answer for every SMS kind, since one switch collects the consent they
   // all ride on.
   setTexts: (on: boolean) => Promise<void>;
-  // For the number leaving the account, which is a withdrawal rather than a
-  // preference: what was agreed to was being texted at THAT phone.
-  dropTexts: () => Promise<void>;
+  checkTexts: () => Promise<void>;
+  // One kind, once texts are on at all.
+  setTextNotify: (key: NotifySmsKind, on: boolean) => Promise<void>;
+  // The same act as switching them on, for a number that has just arrived: the
+  // dialog it comes from carries the current disclosures, so this is a fresh
+  // consent naming the new phone and not the old one transferred onto it. The
+  // number is passed rather than read off `phone`, which the link that produced
+  // it may not have reached yet.
+  keepTexts: (number: string) => Promise<void>;
   resendVerification: () => Promise<void>;
 };
 
@@ -1370,40 +1380,66 @@ export function KipProvider({ children }: { children: ReactNode }) {
     [user, prefs],
   );
 
-  const setTexts = useCallback(
-    async (on: boolean) => {
+  const keepTexts = useCallback(
+    async (number: string) => {
       if (!user) throw new Error("not signed in");
-      // Consent is to being texted at a number, so there has to be one. The
-      // switch is disabled without it; this is the same fact where a crafted
-      // caller meets it.
-      if (on && !phone) throw new Error("no number to consent about");
       const notifySms = Object.fromEntries(
-        Object.keys(prefs.notifySms).map((kind) => [kind, on]),
+        Object.keys(prefs.notifySms).map((kind) => [kind, true]),
       ) as Prefs["notifySms"];
       setPrefsState({
         ...prefs,
         notifySms,
-        smsConsentAt: on ? Date.now() : prefs.smsConsentAt,
-        smsConsentVersion: on ? SMS_CONSENT_VERSION : prefs.smsConsentVersion,
-        smsConsentNumber: on ? phone : prefs.smsConsentNumber,
-        smsStopped: on ? false : prefs.smsStopped,
+        smsConsentAt: Date.now(),
+        smsConsentVersion: SMS_CONSENT_VERSION,
+        smsConsentNumber: number,
+        smsStopped: false,
       });
-      await setSmsNotify(user.uid, on, SMS_CONSENT_VERSION, phone ?? "");
+      await giveSmsConsent(
+        user.uid,
+        SMS_CONSENT_VERSION,
+        number,
+        standingConsent(prefs),
+      );
     },
-    [user, phone, prefs],
+    [user, prefs],
   );
 
-  const dropTexts = useCallback(async () => {
+  const setTexts = useCallback(
+    async (on: boolean) => {
+      if (!user) throw new Error("not signed in");
+      if (on) {
+        // Consent is to being texted at a number, so there has to be one. The
+        // switch is disabled without it; this is the same fact where a crafted
+        // caller meets it.
+        if (!phone) throw new Error("no number to consent about");
+        await keepTexts(phone);
+      } else {
+        setPrefsState({ ...prefs, notifySms: DEFAULT_PREFS.notifySms });
+        await stopTexts(user.uid);
+      }
+    },
+    [user, phone, prefs, keepTexts],
+  );
+
+  // Optimistic on the ASKING, never on the answer: the local write moves the
+  // control into its waiting state at once, and only the sender may say whether
+  // a text got through.
+  const checkTexts = useCallback(async () => {
     if (!user) throw new Error("not signed in");
-    setPrefsState({
-      ...prefs,
-      notifySms: DEFAULT_PREFS.notifySms,
-      smsConsentAt: null,
-      smsConsentVersion: null,
-      smsConsentNumber: null,
-    });
-    await clearSmsConsent(user.uid);
+    const at = Date.now();
+    setPrefsState({ ...prefs, smsProbeAt: at });
+    await requestTextCheck(user.uid, at);
   }, [user, prefs]);
+
+  const setTextNotify = useCallback(
+    async (key: NotifySmsKind, on: boolean) => {
+      if (!user) throw new Error("not signed in");
+      const notifySms = { ...prefs.notifySms, [key]: on };
+      setPrefsState({ ...prefs, notifySms });
+      await fbSetTextNotify(user.uid, key, on);
+    },
+    [user, prefs],
+  );
 
   // Mail only ever goes to a verified address, so this is the way out of that.
   const resendVerification = useCallback(async () => {
@@ -1542,7 +1578,9 @@ export function KipProvider({ children }: { children: ReactNode }) {
     setShareStays,
     setNotify,
     setTexts,
-    dropTexts,
+    checkTexts,
+    setTextNotify,
+    keepTexts,
     resendVerification,
   };
 
