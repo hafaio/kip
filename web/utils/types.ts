@@ -120,38 +120,46 @@ export type Booking = {
   readonly createdAt: number;
 };
 
-// Every email kip can send, defined once — the type, the defaults and the
-// Settings rows all derive from this, so the three can't drift.
+// Every notification kip can send, defined once — the types, the defaults and
+// the Settings rows all derive from this, so they can't drift. `sms` marks the
+// four worth interrupting someone for; the rest are news, to people who have an
+// address anyway.
 export const NOTIFY_EVENTS = {
   bookingRequested: {
     label: "Someone asks to stay",
     note: "A friend, or someone with your link, wants dates at one of your places.",
     default: true, // needs a decision from you, or someone waits forever
+    sms: true,
   },
   bookingTaken: {
     label: "Someone books instantly",
     note: "They took dates you'd marked as instant — nothing for you to do.",
     default: true, // purely news, which is why it's split from the ask above
+    sms: false,
   },
   bookingDecision: {
     label: "Your request is answered",
     note: "A host confirms or declines dates you asked for.",
     default: true,
+    sms: true,
   },
   stayCancelled: {
     label: "A confirmed stay is called off",
     note: "Either side cancels something already booked.",
     default: true, // the one you'd regret missing; Settings warns if it's off
+    sms: true,
   },
   connectRequest: {
     label: "Someone asks to be friends",
     note: "By your username, or through a link you shared.",
     default: true, // the only route in for a stranger holding your link
+    sms: false, // reaches an established user, who has an address
   },
   connectAccepted: {
     label: "Someone agrees to be friends",
     note: "You asked to connect and they said yes.",
     default: true, // a decline says nothing, so silence would read as one
+    sms: true, // reaches the share-link visitor, who may have no address
   },
 } as const;
 
@@ -162,10 +170,40 @@ export const DEFAULT_NOTIFY: NotifyPrefs = Object.fromEntries(
   Object.entries(NOTIFY_EVENTS).map(([key, event]) => [key, event.default]),
 ) as NotifyPrefs;
 
+// Read off the table rather than listed again, so marking an event `sms` is the
+// only edit adding one takes.
+export type NotifySmsKind = {
+  [K in NotifyKind]: (typeof NOTIFY_EVENTS)[K]["sms"] extends true ? K : never;
+}[NotifyKind];
+export type NotifySmsPrefs = { readonly [K in NotifySmsKind]: boolean };
+
+// All off, unlike email: a verified number proves possession, never consent, so
+// nothing is texted until the switch that carries the disclosures is turned on.
+export const DEFAULT_NOTIFY_SMS: NotifySmsPrefs = Object.fromEntries(
+  Object.entries(NOTIFY_EVENTS)
+    .filter(([, event]) => event.sms)
+    .map(([key]) => [key, false]),
+) as NotifySmsPrefs;
+
 export type Prefs = {
   readonly shareStaysWithFriends: boolean;
   readonly profilePortalId: string | null;
   readonly notify: NotifyPrefs;
+  // A sibling map, not a channel inside `notify`: that shape is already stored
+  // and the unsubscribe function writes `{[kind]: false}` straight into it.
+  readonly notifySms: NotifySmsPrefs;
+  // What wording was agreed to, when, and FOR WHICH NUMBER. Kept when the switch
+  // goes off again — a consent record you can't produce is one you didn't take —
+  // but a number that has since changed makes it a record about somebody else's
+  // phone, so the sender checks it and Settings reads the switch as off.
+  readonly smsConsentAt: number | null;
+  readonly smsConsentVersion: string | null;
+  readonly smsConsentNumber: string | null;
+  // Written by the sender when Twilio reports the carrier's STOP. Cleared by the
+  // next send that succeeds, or by turning texts back on — kip can't lift the
+  // carrier's block, so Settings says so and the next refused send says it
+  // again.
+  readonly smsStopped: boolean;
 };
 
 export const DEFAULT_PREFS: Prefs = {
@@ -173,7 +211,16 @@ export const DEFAULT_PREFS: Prefs = {
   shareStaysWithFriends: false,
   profilePortalId: null,
   notify: DEFAULT_NOTIFY,
+  notifySms: DEFAULT_NOTIFY_SMS,
+  smsConsentAt: null,
+  smsConsentVersion: null,
+  smsConsentNumber: null,
+  smsStopped: false,
 };
+
+// The wording currently shown beside the switch. Bump it when that changes, or
+// a stored consent claims agreement to text nobody saw.
+export const SMS_CONSENT_VERSION = "2026-08-20";
 
 export type View =
   | "home"

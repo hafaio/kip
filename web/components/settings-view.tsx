@@ -97,6 +97,17 @@ function DoorRow({
 // tap — `only` pins the route, this only picks the keyboard.
 const PHONE_REACH: ReachState = { ...EMPTY_REACH, mode: "phone" };
 
+// Removing one of these two takes the reach it carried with it: unlinking clears
+// the address or the number off the Auth account, which is the only copy kip
+// keeps, so notifications on that channel stop. Probed against the Auth
+// emulator, including the case where a Google door carries the same address —
+// the address still goes. Google is absent because it is the exception: it
+// leaves the address behind, and kip keeps mailing it.
+const LOSES: Record<string, string> = {
+  [EMAIL_DOOR]: "The address goes with it, so kip's email stops. ",
+  [PHONE_DOOR]: "The number goes with it, so kip's texts stop. ",
+};
+
 // What this account can be reached and re-entered by. kip has no password, so
 // there is no reset to fall back on: one credential is one lost inbox from
 // unrecoverable, which is the whole reason this is a list rather than a line.
@@ -105,7 +116,7 @@ const PHONE_REACH: ReachState = { ...EMPTY_REACH, mode: "phone" };
 // unlinking change those fields without changing the uid — Firebase hands React
 // the same object and a row reading it never re-renders.
 function DoorsSection(): ReactElement {
-  const { doors, emailVerified, signIn } = useKip();
+  const { doors, dropTexts, emailVerified, signIn } = useKip();
   const { confirm, alert } = useDialog();
   // Which sheet is up, rather than one flag each: they draw over the same note
   // and only one can be answered at a time.
@@ -226,7 +237,7 @@ function DoorsSection(): ReactElement {
   async function remove(providerId: string, name: string): Promise<void> {
     const sure = await confirm({
       title: `Remove ${name}?`,
-      body: "You'll still get in the other ways listed here, and you can add this one back anytime.",
+      body: `${LOSES[providerId] ?? ""}You'll still get in the other ways listed here, and you can add this one back anytime.`,
       confirmLabel: "Remove",
       tone: "danger",
     });
@@ -235,6 +246,9 @@ function DoorsSection(): ReactElement {
     setError(null);
     try {
       await removeDoor(providerId);
+      // The number is gone from the account, so the consent given about it is
+      // withdrawn rather than left pointing at a phone kip no longer has.
+      if (providerId === PHONE_DOOR) await dropTexts();
     } catch (caught) {
       console.error(caught);
       if (caught instanceof StaleSession) {
@@ -650,17 +664,68 @@ function DiscoverabilitySection(): ReactElement | null {
   );
 }
 
-// Email is the only channel, and it only ever goes to a verified address — so an
-// unverified account would silently receive nothing. That has to be said here,
-// with a way to fix it, or it just looks broken.
+// The kinds a text can carry, read off the one table rather than listed again —
+// naming them is part of the consent, so a fifth added there says so here. The
+// count comes off the same list, or the sentence starts contradicting it.
+const TEXTED_EVENTS = Object.values(NOTIFY_EVENTS).filter((event) => event.sms);
+const TEXTED_KINDS = TEXTED_EVENTS.map((event) =>
+  event.label.toLowerCase(),
+).join(", ");
+
+// Two channels, each with its own way of reaching nobody: email needs a verified
+// address, and a text needs a number on the account plus consent that was given
+// beside the disclosures. Both gaps are silent, so both are said here.
 function NotificationsSection(): ReactElement | null {
   const { askIdentity } = useNameGate();
-  const { user, email, emailVerified, prefs, setNotify, resendVerification } =
-    useKip();
+  const {
+    user,
+    email,
+    emailVerified,
+    phone,
+    prefs,
+    setNotify,
+    setTexts,
+    resendVerification,
+  } = useKip();
   const [sent, setSent] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [textError, setTextError] = useState<string | null>(null);
 
   if (!user) return null;
+
+  // One switch over the whole map: what people decide is "text me the important
+  // stuff", and per-kind granularity later is a UI change with no migration.
+  //
+  // `some`, not `every`: a kind added to the table later is absent from a stored
+  // map and reads false, and that is meant to stay false — the disclosures name
+  // the kinds, so a new one is wording nobody agreed to and wants the switch
+  // turned on again. `every` would meanwhile read "off" while four kinds still
+  // text, which is the lie worth avoiding.
+  //
+  // AND bound to the number it was given for. Read off the map alone, the row
+  // rendered ON and greyed out over an account whose phone door had been
+  // removed — nothing to turn it off with — and a different number added later
+  // resumed texting on an agreement about the old one.
+  const texting =
+    prefs.smsConsentNumber !== null &&
+    prefs.smsConsentNumber === phone &&
+    Object.values(prefs.notifySms).some(Boolean);
+  // Carrier-enforced, so kip only observes it — and only by attempting a send,
+  // which needs the switch left on. Disabling it here stranded anyone whose STOP
+  // landed as they were switching texts off: nothing to attempt, nothing to
+  // clear the flag, and a dead control. Turning it on clears it instead, and the
+  // next refused send writes it straight back.
+  const blocked = prefs.smsStopped;
+
+  async function toggleTexts(next: boolean): Promise<void> {
+    setTextError(null);
+    try {
+      await setTexts(next);
+    } catch (caught) {
+      console.error(caught);
+      setTextError("Couldn't save that. Try again.");
+    }
+  }
 
   async function resend(): Promise<void> {
     setError(null);
@@ -706,14 +771,59 @@ function NotificationsSection(): ReactElement | null {
       ) : (
         <div className="flex flex-col items-start gap-3 rounded-3xl bg-surface p-4 shadow-card">
           <p className="text-sm text-muted">
-            kip can only reach you by email. Add an address to hear when things
-            happen without opening kip.
+            {phone
+              ? "kip has no address for you, so none of this arrives by email. A text can still reach you — that's the switch below."
+              : "kip has no way to reach you when you're not looking at it. Add an address to hear when things happen."}
           </p>
           <Button variant="secondary" onClick={askIdentity}>
             Add email
           </Button>
         </div>
       )}
+
+      {/* Consent to be texted is collected here and nowhere else: it must not
+          ride along with signing in or with adding a number, which is what
+          bundling it onto the reach field would have done. Off by default, and
+          the disclosures are on the row being turned on. */}
+      <Group>
+        <Switch
+          checked={texting}
+          onChange={toggleTexts}
+          disabled={!phone}
+          label="Also text me"
+          description={
+            phone
+              ? `Automated texts to ${phone} when something needs you. Message frequency varies, and message and data rates may apply. Reply STOP to stop, HELP for help.`
+              : "kip texts the number on your account, and this one has none. Add a phone under How you get in."
+          }
+        />
+      </Group>
+
+      {textError ? <FieldNote tone="danger">{textError}</FieldNote> : null}
+
+      {blocked ? (
+        <FieldNote tone="danger">
+          Your carrier is blocking kip's texts: STOP was replied from{" "}
+          {phone ?? "your number"}. kip can't lift that — text START to the
+          number kip texted you from, and this clears the next time a text gets
+          through.
+        </FieldNote>
+      ) : null}
+
+      <FieldNote>
+        Texts cover {TEXTED_EVENTS.length} of the kinds below: {TEXTED_KINDS}.
+        See our{" "}
+        {/* TODO: neither page is built — `screenForHash` knows no such
+              screen, so both land on Home until they are. */}
+        <a className="font-semibold text-accent-ink" href="#/privacy">
+          Privacy Policy
+        </a>{" "}
+        and{" "}
+        <a className="font-semibold text-accent-ink" href="#/terms">
+          Terms
+        </a>
+        .
+      </FieldNote>
 
       <Group>
         {Object.entries(NOTIFY_EVENTS).map(([key, event]) => (

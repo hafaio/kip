@@ -109,7 +109,12 @@ import {
   MAX_SAVED_SEARCHES,
   watchSavedSearches,
 } from "./searches";
-import { setPrefs, watchPrefs } from "./settings";
+import {
+  clearSmsConsent,
+  setPrefs,
+  setSmsNotify,
+  watchPrefs,
+} from "./settings";
 import {
   type AvailabilityWindow,
   type Booking,
@@ -123,6 +128,7 @@ import {
   type Prefs,
   type Profile,
   type Screen,
+  SMS_CONSENT_VERSION,
   type View,
 } from "./types";
 import { createProfile, claimUsername as fbClaimUsername } from "./username";
@@ -268,6 +274,12 @@ type ContextShape = {
   ) => Promise<void>;
   setShareStays: (share: boolean) => Promise<void>;
   setNotify: (key: NotifyKind, on: boolean) => Promise<void>;
+  // One answer for every SMS kind, since one switch collects the consent they
+  // all ride on.
+  setTexts: (on: boolean) => Promise<void>;
+  // For the number leaving the account, which is a withdrawal rather than a
+  // preference: what was agreed to was being texted at THAT phone.
+  dropTexts: () => Promise<void>;
   resendVerification: () => Promise<void>;
 };
 
@@ -1296,6 +1308,41 @@ export function KipProvider({ children }: { children: ReactNode }) {
     [user, prefs],
   );
 
+  const setTexts = useCallback(
+    async (on: boolean) => {
+      if (!user) throw new Error("not signed in");
+      // Consent is to being texted at a number, so there has to be one. The
+      // switch is disabled without it; this is the same fact where a crafted
+      // caller meets it.
+      if (on && !phone) throw new Error("no number to consent about");
+      const notifySms = Object.fromEntries(
+        Object.keys(prefs.notifySms).map((kind) => [kind, on]),
+      ) as Prefs["notifySms"];
+      setPrefsState({
+        ...prefs,
+        notifySms,
+        smsConsentAt: on ? Date.now() : prefs.smsConsentAt,
+        smsConsentVersion: on ? SMS_CONSENT_VERSION : prefs.smsConsentVersion,
+        smsConsentNumber: on ? phone : prefs.smsConsentNumber,
+        smsStopped: on ? false : prefs.smsStopped,
+      });
+      await setSmsNotify(user.uid, on, SMS_CONSENT_VERSION, phone ?? "");
+    },
+    [user, phone, prefs],
+  );
+
+  const dropTexts = useCallback(async () => {
+    if (!user) throw new Error("not signed in");
+    setPrefsState({
+      ...prefs,
+      notifySms: DEFAULT_PREFS.notifySms,
+      smsConsentAt: null,
+      smsConsentVersion: null,
+      smsConsentNumber: null,
+    });
+    await clearSmsConsent(user.uid);
+  }, [user, prefs]);
+
   // Mail only ever goes to a verified address, so this is the way out of that.
   const resendVerification = useCallback(async () => {
     const current = auth().currentUser;
@@ -1430,6 +1477,8 @@ export function KipProvider({ children }: { children: ReactNode }) {
     revokeSlotPortal,
     setShareStays,
     setNotify,
+    setTexts,
+    dropTexts,
     resendVerification,
   };
 

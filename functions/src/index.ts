@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { initializeApp } from "firebase-admin/app";
-import { getAuth } from "firebase-admin/auth";
+import { getAuth, type UserRecord } from "firebase-admin/auth";
 import {
   type DocumentData,
   getFirestore,
@@ -36,11 +36,14 @@ import {
   notifyStateFrom,
   renderEmail,
   renderNotifySaved,
+  renderSms,
   renderUnsubscribeChoices,
   renderUnsubscribeFailed,
   renderUnsubscribed,
   unsubscribeHeaders,
   unsubscribeLink,
+  wantsEmail,
+  wantsSms,
 } from "./messages";
 
 initializeApp();
@@ -51,6 +54,23 @@ const db = getFirestore();
 // rides in every From: line, so it is not a secret; only the password is.
 const GMAIL_USER = "kip.hafaio.noreply@gmail.com";
 const GMAIL_APP_PASSWORD = defineSecret("GMAIL_APP_PASSWORD");
+
+// Empty, so SMS is off: `smsConfigured()` is checked before anything is read,
+// written or sent, the same shape `firebaseConfigured()` has on the web side.
+// Filling these in is not enough on its own — until the 10DLC campaign is
+// approved every US send is blocked with 30034 and billed anyway.
+//
+// An API Key SID and secret rather than the account auth token: revocable and
+// scoped. The account SID is in the URL every request goes to, the key SID and
+// the From number ride in every message, so like GMAIL_USER none of them is a
+// secret; only the API secret is.
+const TWILIO_ACCOUNT_SID = "";
+const TWILIO_KEY_SID = "";
+const TWILIO_FROM = "";
+
+function smsConfigured(): boolean {
+  return Boolean(TWILIO_ACCOUNT_SID && TWILIO_KEY_SID && TWILIO_FROM);
+}
 
 // The `/kip` tail is the GitHub Pages base path; dropping it 404s every link.
 const SITE_ORIGIN = "https://hafaio.github.io/kip";
@@ -85,43 +105,6 @@ async function unsubKeyFor(uid: string, existing: unknown): Promise<string> {
 }
 
 type Recipient = { uid: string; email: string; name: string; unsubKey: string };
-
-// From the Auth account, the only place kip keeps an address. The verified
-// check is what stops someone signing up as victim@example.com and having a
-// second account book them.
-async function recipientFor(
-  uid: string,
-  kind: NotifyKind,
-): Promise<Recipient | null> {
-  const [user, prefs] = await Promise.all([
-    getAuth()
-      .getUser(uid)
-      .catch(() => null),
-    db.doc(prefsPath(uid)).get(),
-  ]);
-
-  // All three are legitimate, but silence made them indistinguishable from a
-  // trigger that never ran.
-  if (!user?.email) {
-    logger.info("skipped: no address on the account", { uid, kind });
-    return null;
-  }
-  if (!user.emailVerified) {
-    logger.info("skipped: address not verified", { uid, kind });
-    return null;
-  }
-  if (prefs.data()?.notify?.[kind] === false) {
-    logger.info("skipped: turned off in Settings", { uid, kind });
-    return null;
-  }
-
-  return {
-    uid,
-    email: user.email,
-    name: user.displayName ?? "",
-    unsubKey: await unsubKeyFor(uid, prefs.data()?.unsubKey),
-  };
-}
 
 function transport() {
   return nodemailer.createTransport({
@@ -240,6 +223,266 @@ async function send(to: Recipient, notice: Notice): Promise<void> {
   }
 }
 
+// From the Auth account, the only place kip keeps an address. The verified check
+// is what stops someone signing up as victim@example.com and having a second
+// account book them. Each skip says which it was: silence made all of them
+// indistinguishable from a trigger that never ran.
+async function emailIfWanted(
+  uid: string,
+  user: UserRecord | null,
+  prefs: DocumentData,
+  notice: Notice,
+): Promise<void> {
+  const kind = notice.kind;
+  if (!user?.email) {
+    logger.info("skipped: no address on the account", { uid, kind });
+    return;
+  }
+  if (!user.emailVerified) {
+    logger.info("skipped: address not verified", { uid, kind });
+    return;
+  }
+  if (!wantsEmail(prefs.notify, kind)) {
+    logger.info("skipped: turned off in Settings", { uid, kind });
+    return;
+  }
+
+  await send(
+    {
+      uid,
+      email: user.email,
+      name: user.displayName ?? "",
+      unsubKey: await unsubKeyFor(uid, prefs.unsubKey),
+    },
+    notice,
+  );
+}
+
+// The Twilio credential is fetched at FIRST USE rather than declared as a
+// `defineSecret` param, and that is a release decision rather than a stylistic
+// one: the CLI resolves every declared secret at deploy, so a non-interactive
+// one fails outright on a secret Secret Manager doesn't hold. Naming it put the
+// whole site's release — rules, triggers and Pages — behind a credential only
+// this switched-off branch has any use for, held up by nothing but a
+// hand-created empty placeholder. Read here it is a runtime condition: a
+// missing one fails the text and says so, and nothing else notices.
+//
+// GMAIL_APP_PASSWORD stays a declared secret. It exists, email is live, and a
+// deploy that can't resolve it is a deploy worth stopping.
+//
+// One REST call each to the metadata server and Secret Manager, which is the
+// same reason Twilio itself is a `fetch`: no dependency to add, and the runtime
+// service account already carries the access.
+const TWILIO_SECRET = "TWILIO_API_SECRET";
+const METADATA_TOKEN_URL =
+  "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token";
+const SECRET_TIMEOUT_MS = 5000;
+
+// Cached across a cold start's lifetime, so a burst of texts costs one lookup.
+// Only a success is kept: a miss is a misconfiguration somebody is in the middle
+// of fixing, and re-reading on the next text is one round trip on a path that
+// runs single digits a day.
+let twilioSecret: string | null = null;
+
+async function metadataToken(): Promise<string> {
+  const response = await fetch(METADATA_TOKEN_URL, {
+    headers: { "Metadata-Flavor": "Google" },
+    signal: AbortSignal.timeout(SECRET_TIMEOUT_MS),
+  });
+  if (!response.ok) {
+    throw new Error(`no runtime token: metadata server ${response.status}`);
+  }
+  const token = ((await response.json()) as { access_token?: string })
+    .access_token;
+  if (!token) throw new Error("no runtime token: metadata server gave none");
+  return token;
+}
+
+async function twilioApiSecret(): Promise<string> {
+  if (twilioSecret) return twilioSecret;
+  const response = await fetch(
+    `https://secretmanager.googleapis.com/v1/projects/${projectID.value()}/secrets/${TWILIO_SECRET}/versions/latest:access`,
+    {
+      headers: { Authorization: `Bearer ${await metadataToken()}` },
+      signal: AbortSignal.timeout(SECRET_TIMEOUT_MS),
+    },
+  );
+  if (!response.ok) {
+    throw new Error(`no ${TWILIO_SECRET}: Secret Manager ${response.status}`);
+  }
+  const payload = ((await response.json()) as { payload?: { data?: string } })
+    .payload;
+  const value = Buffer.from(payload?.data ?? "", "base64").toString().trim();
+  if (!value) throw new Error(`no ${TWILIO_SECRET}: the version is empty`);
+  twilioSecret = value;
+  return value;
+}
+
+// A message resource carries `error_code`, an API refusal carries `code`, and
+// 30034 can arrive either way.
+const TWILIO_STOPPED = 21610;
+const TWILIO_UNREGISTERED = 30034;
+const SMS_TIMEOUT_MS = 10000;
+
+type TwilioResult = {
+  sid?: string;
+  status?: string;
+  code?: number | null;
+  error_code?: number | null;
+  message?: string;
+};
+
+// One form-encoded POST, so the provider is ~30 lines rather than a dependency.
+// Attempted even when the carrier has already taken a STOP: Twilio refuses those
+// before a message is created, so nothing is billed, and the refusal ceasing is
+// the only way a later START can be noticed.
+async function sendText(
+  uid: string,
+  to: string,
+  body: string,
+  kind: NotifyKind,
+  stopped: boolean,
+): Promise<void> {
+  // Outside the try, so a credential that can't be read leaves this the way a
+  // missing one should: raised, settled by `deliver`, logged, and with the
+  // email beside it entirely unaffected.
+  const credentials = Buffer.from(
+    `${TWILIO_KEY_SID}:${await twilioApiSecret()}`,
+  ).toString("base64");
+  try {
+    const response = await fetch(
+      `https://api.twilio.com/2010-04-01/Accounts/${TWILIO_ACCOUNT_SID}/Messages.json`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Basic ${credentials}`,
+          "Content-Type": "application/x-www-form-urlencoded",
+        },
+        body: new URLSearchParams({ To: to, From: TWILIO_FROM, Body: body }),
+        signal: AbortSignal.timeout(SMS_TIMEOUT_MS),
+      },
+    );
+    const result = (await response.json().catch(() => ({}))) as TwilioResult;
+    const code = result.code ?? result.error_code ?? 0;
+
+    if (code === TWILIO_STOPPED) {
+      // Carrier-enforced and above kip's Settings, so it is recorded rather than
+      // obeyed: Settings renders the switch off and says kip can't undo it.
+      logger.info("skipped: the carrier has a STOP for this number", {
+        uid,
+        kind,
+      });
+      if (!stopped) {
+        await db.doc(prefsPath(uid)).set({ smsStopped: true }, { merge: true });
+      }
+    } else if (code === TWILIO_UNREGISTERED) {
+      // The paperwork, not the code: an unregistered 10DLC campaign is a hard
+      // carrier block on every US send, and Twilio bills for it anyway.
+      logger.error("blocked: the 10DLC campaign is not registered", {
+        uid,
+        kind,
+        message: result.message,
+      });
+    } else if (!response.ok || code) {
+      logger.error("text failed", {
+        uid,
+        kind,
+        status: response.status,
+        code,
+        message: result.message,
+      });
+    } else {
+      logger.info("texted", { kind, sid: result.sid, status: result.status });
+      if (stopped) {
+        await db
+          .doc(prefsPath(uid))
+          .set({ smsStopped: false }, { merge: true });
+      }
+    }
+  } catch (error) {
+    logger.error("text failed", { uid, kind, error });
+  }
+}
+
+// A second channel, never a fallback: texting only where there is no address
+// would make the Settings switch a lie for anyone holding both, and route the
+// most urgent message to the slower channel for people who are mid-travel.
+async function textIfWanted(
+  uid: string,
+  user: UserRecord | null,
+  prefs: DocumentData,
+  notice: Notice,
+): Promise<void> {
+  const kind = notice.kind;
+  if (!smsConfigured()) {
+    logger.info("skipped: no SMS provider configured", { uid, kind });
+    return;
+  }
+
+  // Null is a fact about the event, not about this person, so it says nothing.
+  const text = renderSms(notice, SITE_ORIGIN);
+  if (!text) return;
+
+  const number = user?.phoneNumber ?? "";
+  if (!number) {
+    logger.info("skipped: no number on the account", { uid, kind });
+    return;
+  }
+  // The Auth region allowlist is US-only, but a number can reach an account by
+  // routes the web form doesn't own, and this one is checked before spending.
+  if (!number.startsWith("+1")) {
+    logger.info("skipped: number outside the SMS region", { uid, kind });
+    return;
+  }
+  if (!prefs.smsConsentAt) {
+    logger.info("skipped: no SMS consent recorded", { uid, kind });
+    return;
+  }
+  // Consent is to being texted at a PARTICULAR phone, so a record naming
+  // another number is a record about somebody else's. Fails closed, which also
+  // covers every consent stored before the number was part of one.
+  if (prefs.smsConsentNumber !== number) {
+    logger.info("skipped: consent was given for a different number", {
+      uid,
+      kind,
+    });
+    return;
+  }
+  if (!wantsSms(prefs.notifySms, kind)) {
+    logger.info("skipped: texts turned off in Settings", { uid, kind });
+    return;
+  }
+
+  await sendText(uid, number, text, kind, prefs.smsStopped === true);
+}
+
+// Both channels answer for the same person, so the account and the preferences
+// are read once. Settled rather than raced: a Twilio failure must never reach
+// the email path, and neither has anything to say to the other.
+async function deliver(uid: string, notice: Notice): Promise<void> {
+  const [user, stored] = await Promise.all([
+    getAuth()
+      .getUser(uid)
+      .catch(() => null),
+    db.doc(prefsPath(uid)).get(),
+  ]);
+  const prefs = stored.data() ?? {};
+
+  const outcomes = await Promise.allSettled([
+    emailIfWanted(uid, user, prefs, notice),
+    textIfWanted(uid, user, prefs, notice),
+  ]);
+  for (const outcome of outcomes) {
+    if (outcome.status === "rejected") {
+      logger.error("delivery failed", {
+        uid,
+        kind: notice.kind,
+        error: outcome.reason,
+      });
+    }
+  }
+}
+
 const secrets = [GMAIL_APP_PASSWORD];
 
 // A trigger has no session to hop with, but runs as admin, so it reads both
@@ -279,8 +522,7 @@ export const onBookingCreated = onDocumentCreated(
       (await withIdentities(booking)) as never,
       event.params.bookingId,
     );
-    const to = await recipientFor(booking.ownerId, notice.kind);
-    if (to) await send(to, notice);
+    await deliver(booking.ownerId, notice);
   },
 );
 
@@ -302,8 +544,7 @@ export const onBookingChanged = onDocumentUpdated(
     if (!notice) return;
 
     const uid = notice.to === "host" ? after.ownerId : after.guestId;
-    const to = await recipientFor(uid, notice.kind);
-    if (to) await send(to, notice);
+    await deliver(uid, notice);
   },
 );
 
@@ -316,8 +557,7 @@ export const onConnectRequested = onDocumentCreated(
     if (!request) return;
 
     const notice = noticeForConnectRequest(request as never);
-    const to = await recipientFor(request.to, notice.kind);
-    if (to) await send(to, notice);
+    await deliver(request.to, notice);
   },
 );
 
@@ -353,8 +593,7 @@ export const onConnectAnswered = onDocumentDeleted(
       displayName: edge.displayName,
       photoURL: edge.photoURL,
     });
-    const to = await recipientFor(request.from, notice.kind);
-    if (to) await send(to, notice);
+    await deliver(request.from, notice);
   },
 );
 
