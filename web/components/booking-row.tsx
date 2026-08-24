@@ -23,12 +23,19 @@ export default function BookingRow({
   booking,
   lead = "place",
   showCounterpart = true,
+  showDates = true,
 }: {
   booking: Booking;
   lead?: "place" | "person";
   // Off on a list that is already about one person — naming them on every row
   // says nothing, and on a stay you're only watching there is no "with" to it.
   showCounterpart?: boolean;
+  // Off inside one slot's own sheet, where the dates are the title. An ask is
+  // written against the slot's dates and `updateWindow` cancels any ask the
+  // dates move out from under, so repeating them there says nothing. Note the
+  // rules pin the two together only at create and at confirm, not in between —
+  // so this is about noise, and not a claim that they cannot differ.
+  showDates?: boolean;
 }): ReactElement {
   const {
     user,
@@ -75,10 +82,12 @@ export default function BookingRow({
         <span className="block truncate text-[0.9375rem] font-semibold">
           {headline}
         </span>
-        <span className="block truncate text-sm text-muted">
-          {detail}
-          {formatDateRange(booking.start, booking.end)}
-        </span>
+        {showDates || detail ? (
+          <span className="block truncate text-sm text-muted">
+            {detail}
+            {showDates ? formatDateRange(booking.start, booking.end) : null}
+          </span>
+        ) : null}
       </div>
       <Chip tone={status.tone}>{status.label}</Chip>
       <LuChevronRight className="shrink-0 text-faint" />
