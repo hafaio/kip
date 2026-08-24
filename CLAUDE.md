@@ -443,7 +443,10 @@ Rules: [firebase/firestore.rules](./firebase/firestore.rules), [firebase/storage
   stranger reads as "not found" instead of throwing.
 
   **Email is never stored in Firestore:** it lives only on the Firebase Auth account (for sign-in /
-  reset / verification) — the client simply never writes it to the profile. Your own address is read
+  reset / verification). The client never writes it to the profile, and the write rule now pins the
+  key set (`hasOnly(['username', 'displayName', 'photoURL', 'searchable', 'createdAt'])`) so a
+  crafted one can't either — "we simply never write it" was a habit, not enforcement, and the
+  document it would land in is one every friend can read. Your own address is read
   from `auth().currentUser` for the self-only Settings display; a friend's is not available. (Email
   *delivery* for notifications is a separate concern — see Notifications.) Enumeration risk is
   bounded by get-not-list + unguessable handles — **no App Check** (deliberate).
@@ -1332,8 +1335,17 @@ A listing carries up to `MAX_PHOTOS` (8) entries in `photos`, each `{ id, url }`
 in Storage at `listings/{ownerId}/{listingId}/{photoId}`. `utils/photos.ts` owns the round trip.
 `uploadListingPhoto` **shrinks in the browser first** (canvas, 1600px max edge, JPEG q0.82), which
 keeps the bucket small and, deliberately, re-encodes away EXIF: a GPS tag on a photo of someone's
-home should not ride along with a share link. It then mints the download URL once, at upload, and
-returns it to be stored. `components/photo-strip.tsx` is the editable strip (owner view of RoomPage
+home should not ride along with a share link.
+
+**Both ways that re-encode can fail now throw** (`PhotoEncodeError`), and that is the whole point
+of the function rather than an edge case. A canvas with no 2d context, and a source format
+`toBlob` won't take, each used to fall back to the original file — so the two paths that delivered
+an untouched photo were exactly the two that delivered its GPS tag, silently, while the privacy
+page said otherwise. A refused upload is the lesser harm, and it says so in its own words: the two
+callers (`photo-strip.tsx`, `person-page.tsx`) tell a `PhotoEncodeError` from a network failure,
+because nothing about this one gets better on a retry. Proved in `check:exif`, below.
+
+It then mints the download URL once, at upload, and returns it to be stored. `components/photo-strip.tsx` is the editable strip (owner view of RoomPage
 and the listing form; drag or the per-thumbnail arrows reorder, and the first photo is the cover),
 `components/cover-photo.tsx` the read-only cover used by `PlaceCard`, the RoomPage hero and the
 portal page.
@@ -1599,7 +1611,9 @@ TODAY stays editable, which pins the deliberate UTC-vs-local slack); **friend ed
 (you may heal only the entry describing you, you may read only your own side, and an edge that
 isn't there ANSWERS rather than denying — the portal's `areFriends` asks about a stranger every
 time, and a rule touching `resource.data` would refuse it and strand the connect control on
-`unknown`, which is exactly what `connectRequests` does); the **usernames registry + profile integrity**; the
+`unknown`, which is exactly what `connectRequests` does); the **usernames registry + profile
+integrity** (including that an `email` or `phoneNumber` key is refused outright, and that every
+field a profile really has still writes); the
 **discovery gate**; **saved searches** (owner-only, not listable, not plantable by anyone else);
 **shared stays** (a friend of the guest reads the booking, a friend of only the host reads the SLOT
 but not the booking, sharing off closes it and back on reopens it, absent prefs counts as NOT sharing,
@@ -1708,7 +1722,11 @@ decisions above; the re-attach decision (`decideReattach`, see Known limitations
 decision (`gateStep`, when the gate opens, shuts and gives up — see the store bullet); the
 saved-search arithmetic (`countNewSince` ignoring slots written before
 `createdAt` existed and counting slots rather than places; `sameCriteria` treating one place
-geocoded twice as one search); and a drift
+geocoded twice as one search); what leaving does to one booking (`cancellationFor`,
+`functions/src/leaving.ts` — a pure module for the same reason `messages.ts` is one, and split out
+of the teardown so the skip that makes retries safe is pinned: without it a second attempt re-writes
+a booking it already cancelled and tells the other party their stay was called off again, once per
+attempt); and a drift
 check that pins the vocabulary the two packages share but can't import across
 (`NotifyKind`, cancel reasons). That drift **fails open** — the function reads `prefs.notify[kind]`,
 and a key the web side never writes is `undefined`, which `=== false` treats as "not disabled", so a

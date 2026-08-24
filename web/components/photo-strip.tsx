@@ -17,6 +17,7 @@ import {
 import {
   deleteListingPhoto,
   MAX_PHOTOS,
+  PhotoEncodeError,
   photoSrc,
   uploadListingPhoto,
 } from "../utils/photos";
@@ -125,7 +126,11 @@ export default function PhotoStrip({
       if (added.length > 0) await onChange([...photos, ...added]);
     } catch (caught) {
       console.error(caught);
-      setError("That didn't upload. Check your connection and try again.");
+      setError(
+        caught instanceof PhotoEncodeError
+          ? "kip couldn't read that image. Try a different photo."
+          : "That didn't upload. Check your connection and try again.",
+      );
     } finally {
       setBusy(false);
       if (fileInput.current) fileInput.current.value = "";
