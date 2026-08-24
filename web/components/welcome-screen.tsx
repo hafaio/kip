@@ -6,34 +6,33 @@ import SiteFooter from "./site-footer";
 import ThemeButton from "./theme-button";
 import Wordmark from "./wordmark";
 
-// What a stranger who typed the URL sees. There is honestly almost nothing to
-// show them — kip has no public surface by construction — so it doesn't pretend
-// otherwise. Nobody is enrolled
-// here: a new person's front door is a friend's link, and offering a way in
-// would rebuild the wall in different paint.
+// Everyone who belongs on kip was invited by a person, so there is nobody here
+// to persuade. The page confirms that this is the thing their friend meant and
+// gets out of the way: one screen, one object to act on, nothing to scroll past.
+// The smallness is the argument — a feature list would be selling something the
+// visitor was already given.
 //
-// It also serves the one person who DOES belong here: someone with an account on
-// a new device. That is the ONLY thing anyone can act on from this screen, so it
-// is shown rather than hidden behind a reveal — a tap to see the only control on
-// a page buys nothing, and the line above already says who the page is for.
+// Pure render, deliberately: it never touches the fragment, so someone who
+// opened a link to a room while signed out lands on that room the moment the
+// door opens, off the stack the store already seeded.
 export default function WelcomeScreen(): ReactElement {
   return (
     <div className="flex min-h-dvh flex-col">
       <div className="flex justify-end p-4">
         <ThemeButton />
       </div>
-      <main className="flex flex-1 flex-col items-center justify-center gap-8 px-6 pb-24">
-        <div className="flex flex-col items-center gap-5 text-center">
+      <main className="flex flex-1 flex-col items-center justify-center gap-6 px-6 text-center">
+        <div className="flex flex-col items-center gap-4">
           <Wordmark size="lg" />
           <p className="max-w-xs text-[0.9375rem] text-muted">
-            Share a spare room, or your whole place, with friends. For free.
+            Spare rooms and empty flats — shared between friends, for free.
           </p>
         </div>
 
-        <div className="flex w-full max-w-sm flex-col gap-3">
-          <p className="text-center text-sm text-muted">Been here before?</p>
-          <AuthPanel />
-        </div>
+        {/* The card AND the line under it, because that line is also where a
+            problem with the field is said — one node, so the two can never
+            disagree about how tall they are. */}
+        <AuthPanel notice="Nothing on kip is public. Places appear when friends share them — or start by listing yours." />
       </main>
 
       <SiteFooter className="px-4 pb-8" />

@@ -315,7 +315,7 @@ const typedNumber = await page.evaluate(`
 expect(
   "a phone number typed in email mode is accepted",
   !String(typedNumber).includes('"disabled":true') &&
-    !String(typedNumber).includes("doesn't look like"),
+    !String(typedNumber).includes("not an email or a US number"),
   String(typedNumber).slice(0, 200),
 );
 

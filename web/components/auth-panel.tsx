@@ -15,11 +15,11 @@ import ReachField, {
 } from "./reach-field";
 import Button from "./ui/button";
 
-// The returning door, and the only place in kip that deals in getting BACK in
-// rather than getting on with something. No password: a one-time link or code is
-// fewer things to remember and fewer to lose, and retiring it took the whole
-// reset flow — its own screen, its own failure states, its own careful "if an
-// account exists" notice — out of the product.
+// The door — the whole of it, since the same one-time link both makes an account
+// and returns you to one, and the flow never asks which you are. No password: a
+// one-time link or code is fewer things to remember and fewer to lose, and
+// retiring it took the whole reset flow — its own screen, its own failure
+// states, its own careful "if an account exists" notice — out of the product.
 //
 // It offers the SAME three doors as the identity sheet, and that is the point
 // rather than a nicety: an account whose only credential is a phone number could
@@ -28,8 +28,19 @@ import Button from "./ui/button";
 //
 // Nothing here says sign in or sign up, and the omission is deliberate: the same
 // link works whether or not kip has met this address, so there is no question to
-// answer and no wrong door to pick.
-export default function AuthPanel(): ReactElement {
+// answer and no wrong door to pick. Nor does anything spell out the accepted
+// formats — the placeholder and the "Use phone" link carry them, and the US-only
+// limit is said by `reachError` at the moment it bites.
+//
+// It owns the CARD as well as the form, so that the standing notice under the
+// card and the error that replaces it are one node rather than the same string
+// synchronised into two components. `notice` is what that line says when
+// nothing is wrong.
+export default function AuthPanel({
+  notice,
+}: {
+  notice: string;
+}): ReactElement {
   const { configured, signIn } = useKip();
   const { alert } = useDialog();
   const [reach, setReach] = useState<ReachState>(EMPTY_REACH);
@@ -64,7 +75,7 @@ export default function AuthPanel(): ReactElement {
       const mapped = authErrorMessage(caught);
       setError(
         mapped === "Something went wrong. Try again."
-          ? "Couldn't send that. Check it, or use something else."
+          ? "Couldn't send that. Check or change it."
           : mapped,
       );
     } finally {
@@ -85,7 +96,7 @@ export default function AuthPanel(): ReactElement {
         await confirmReach(reach.pending, reach.code);
       } catch (caught) {
         console.error(caught);
-        setError("That code didn't work. Check it, or ask for another.");
+        setError("Wrong code. Check it, or ask for another.");
       } finally {
         setBusy(false);
       }
@@ -108,70 +119,87 @@ export default function AuthPanel(): ReactElement {
 
   // Deliberately identical whether or not kip knows the address — that is what
   // preserves the non-enumeration the old reset notice had to spell out.
-  if (sentTo) {
-    return (
-      <div className="flex flex-col gap-3 text-center">
-        <p className="text-sm text-muted">
-          Open the link we sent to {sentTo} and you're in. It works for about an
-          hour.
-        </p>
-        <Button variant="ghost" onClick={() => setSentTo(null)}>
-          Use something else
-        </Button>
+  const body = sentTo ? (
+    <div className="flex flex-col gap-3 text-center">
+      <p className="text-sm text-muted">
+        Open the link we sent to {sentTo} and you're in. It works for about an
+        hour.
+      </p>
+      <Button variant="ghost" onClick={() => setSentTo(null)}>
+        Use something else
+      </Button>
+    </div>
+  ) : (
+    <form
+      className="flex flex-col gap-3"
+      onSubmit={(event) => {
+        event.preventDefault();
+        submit();
+      }}
+    >
+      <ReachField
+        state={reach}
+        onChange={(next) => {
+          setError(null);
+          setReach(next);
+        }}
+        hostRef={recaptcha}
+        invalid={Boolean(problem)}
+      />
+      <Button
+        type="submit"
+        size="lg"
+        className="w-full"
+        disabled={busy || Boolean(invalid) || !reach.raw}
+      >
+        {busy ? <LuLoaderCircle className="animate-spin" /> : "Continue"}
+      </Button>
+
+      {/* Under the button it stands in for, the same as every other surface
+          that offers it — above, it reads as the recommended route, which is
+          a claim kip has no reason to make about one door of three. */}
+      <div className="flex items-center gap-3 py-0.5">
+        <span className="h-px flex-1 bg-border" />
+        <span className="text-xs text-faint">or</span>
+        <span className="h-px flex-1 bg-border" />
       </div>
-    );
-  }
+      <Button
+        type="button"
+        variant="secondary"
+        size="lg"
+        className="w-full"
+        disabled={busy}
+        onClick={() => run(signIn)}
+      >
+        <FaGoogle />
+        Continue with Google
+      </Button>
+    </form>
+  );
 
   return (
-    <div className="flex flex-col gap-3">
-      <form
-        className="flex flex-col gap-3"
-        onSubmit={(event) => {
-          event.preventDefault();
-          submit();
-        }}
-      >
-        <ReachField
-          state={reach}
-          onChange={(next) => {
-            setError(null);
-            setReach(next);
-          }}
-          hostRef={recaptcha}
-        />
-        {/* Below the field, above the button, as on the sheets. */}
-        <p className={`text-sm ${problem ? "text-danger" : "text-muted"}`}>
-          {problem ?? "Whichever you added to kip."}
-        </p>
-        <Button
-          type="submit"
-          size="lg"
-          className="w-full"
-          disabled={busy || Boolean(invalid) || !reach.raw}
-        >
-          {busy ? <LuLoaderCircle className="animate-spin" /> : "Continue"}
-        </Button>
+    <>
+      {/* No heading and no label. An email field over a Continue button is
+          self-evidently the way in, and "no sign-up, no password" is said by
+          the absence of a toggle and a password field rather than by a line
+          claiming it. */}
+      <div className="w-full max-w-sm rounded-3xl bg-surface p-6 text-left shadow-panel">
+        {body}
+      </div>
+      {/* The card's caption, and the height belongs to the slot rather than to
+          the copy: the notice's own two lines are reserved whether it or an
+          error is speaking, so a problem appearing, changing or clearing never
+          moves the card above it. The page is a centred column, so anything
+          that changes height here re-centres and shifts the door itself.
 
-        {/* Under the button it stands in for, the same as every other surface
-            that offers it — above, it reads as the recommended route, which is
-            a claim kip has no reason to make about one door of three. */}
-        <div className="flex items-center gap-3 py-0.5">
-          <span className="h-px flex-1 bg-border" />
-          <span className="text-xs text-faint">or</span>
-          <span className="h-px flex-1 bg-border" />
-        </div>
-        <Button
-          type="button"
-          variant="secondary"
-          size="lg"
-          className="w-full"
-          disabled={busy}
-          onClick={() => run(signIn)}
-        >
-          <FaGoogle />
-          Continue with Google
-        </Button>
-      </form>
-    </div>
+          One line of error is a budget rather than a hope, pinned by
+          `tests/auth-copy.test.ts`. */}
+      <p
+        aria-live="polite"
+        className={`max-w-sm min-h-10 text-sm leading-5 ${problem ? "text-danger" : "text-muted"}`}
+      >
+        {problem ?? notice}
+      </p>
+    </>
   );
 }
