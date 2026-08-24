@@ -225,12 +225,15 @@ async function addPhone(page, number) {
   );
   const code = await latestCode(number);
   if (!code) throw new Error(`no code was texted to ${number}`);
-  await page.evaluate(
+  // Typed and never submitted: a full code has nothing left to decide, so the
+  // field submits its own form. Setting the whole value in one event is also
+  // what a paste looks like, so this covers that too. Clicking afterwards would
+  // pass whether or not any of it works, and by then there is no button left.
+  return page.evaluate(
     run(`
     setValue(document.querySelector("[role=dialog] input"), ${JSON.stringify(code)});
-    await pause(400);
-    document.querySelector("[role=dialog] button[type=submit]").click();
-    await pause(4000);
+    await pause(5000);
+    return !document.querySelector("[role=dialog] input[autocomplete='one-time-code']");
   `),
   );
 }
@@ -345,7 +348,7 @@ await page.evaluate("location.reload()");
 await new Promise((done) => setTimeout(done, 9000));
 
 console.log("\nan account that has never wanted texts is not asked about them");
-await addPhone(page, FIRST);
+expect("a full code submits itself", await addPhone(page, FIRST));
 await showTexts(page);
 await page.shot("1-first-number-added");
 expect("no dialog when there is no consent to carry", !(await dialogAsked(page)));

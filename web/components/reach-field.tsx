@@ -10,6 +10,7 @@ import {
 } from "../utils/auth";
 import { isForeignNumber, parseDestination } from "../utils/destination";
 import { auth } from "../utils/firebase";
+import CodeInput, { CODE_LENGTH } from "./ui/code-input";
 import Input from "./ui/input";
 
 // One field for both doors, shared by the two sheets that collect a way to
@@ -86,6 +87,14 @@ export async function sendReach(
   throw new Error("nothing to send to");
 }
 
+// The one place that says what a finished code looks like. Four surfaces gate a
+// button on it, and each of them used to ask whether `code` was non-empty —
+// which offers to send a single digit, and now also disagrees with the field,
+// since it submits itself on the sixth.
+export function codeReady(state: ReachState): boolean {
+  return state.code.length === CODE_LENGTH;
+}
+
 export async function confirmReach(
   pending: ConfirmationResult,
   code: string,
@@ -128,16 +137,11 @@ export default function ReachField({
         <p className="text-sm text-muted">
           We texted a code to {state.sentTo}. Standard message rates apply.
         </p>
-        <Input
-          autoComplete="one-time-code"
-          inputMode="numeric"
+        <CodeInput
           autoFocus
           invalid={invalid}
           value={state.code}
-          onChange={(event) =>
-            onChange({ ...state, code: event.target.value.trim() })
-          }
-          placeholder="123456"
+          onChange={(code) => onChange({ ...state, code })}
         />
         {/* A code that never arrives must not trap the ask. Backing out returns
             to the field with everything else intact, so the request can still
