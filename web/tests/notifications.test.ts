@@ -10,16 +10,22 @@ import {
   noticeForConnectAccepted,
   noticeForConnectRequest,
   noticeForNewBooking,
+  type Notice,
+  type NotifyKind,
   notifyFromForm,
   notifyStateFrom,
   ONE_CLICK_BODY,
   renderEmail,
   renderNotifySaved,
+  renderSms,
   renderUnsubscribeChoices,
   renderUnsubscribeFailed,
   renderUnsubscribed,
+  toGsm7,
   unsubscribeHeaders,
   unsubscribeLink,
+  wantsEmail,
+  wantsSms,
 } from "../../functions/src/messages";
 import { NOTIFY_EVENTS } from "../utils/types";
 
@@ -455,6 +461,226 @@ describe("rendering an email", () => {
       'href="https://hafaio.github.io/kip/#/friends"',
     );
     expect(connect.subject).toBe("Priya wants to connect on kip");
+  });
+});
+
+// GSM 03.38's basic set — the only characters that cost one septet. Written out
+// rather than derived from the sender's own allowlist, so a mistake there is
+// caught rather than mirrored.
+const GSM7 =
+  "@£$¥èéùìòÇ\nØø\rÅåΔ_ΦΓΛΩΠΨΣΘΞÆæßÉ !\"#¤%&'()*+,-./0123456789:;<=>?¡ABCDEFGHIJKLMNOPQRSTUVWXYZÄÖÑÜ§¿abcdefghijklmnopqrstuvwxyzäöñüà";
+// GSM-7 too, but two septets each, which is what makes counting to 160 a lie.
+const GSM7_EXTENDED = "^{}\\[~]|€\f";
+
+// One character outside the set collapses the whole message to UCS-2, where the
+// limit is 70 UTF-16 units rather than 160 septets.
+function segments(text: string): number {
+  let septets = 0;
+  for (const character of text) {
+    if (GSM7.includes(character)) septets += 1;
+    else if (GSM7_EXTENDED.includes(character)) septets += 2;
+    else return Math.ceil(text.length / 70);
+  }
+  return septets <= 160 ? 1 : Math.ceil(septets / 153);
+}
+
+// Curly quotes, accents and an emoji: every one of them a source of UCS-2.
+const HOSTILE_NAME = "Ítalo “Zé” Ünderscøre 🏔️ Nguyễn";
+// One token as far as `firstName` is concerned, and so the whole of it reaches
+// the subject — nothing bounds a display name server-side, `validateDisplayName`
+// being a client check.
+const LONG_NAME = "Ítalo".repeat(60);
+// Two words that `firstName` cannot see, because the space between them is a
+// non-breaking one: `toGsm7` folds it into a plain space and the subject grows a
+// boundary that was never there when the name was taken.
+const GIVEN = "Bartholomew";
+// Long enough that the subject must be shortened, short enough that cutting at
+// the first space would still have left the second part whole — which is the
+// shape the old cut got backwards.
+const TWO_PART_NAME = `${GIVEN}\u00a0${"Fitzwilliam".repeat(6)}`;
+// Past that, and the whole thing after the first space no longer fits: the old
+// fallback then sent a truncated name and a link, saying nothing.
+const LONG_TWO_PART_NAME = `${GIVEN}\u00a0${"Fitzwilliam-Smythe".repeat(8)}`;
+
+// What a text says after the name: everything between the leading name and the
+// link. Taken from the same notice rendered for a short name, so the assertion
+// is "this is what it says", not a second copy of the wording.
+function wordingOf(text: string): string {
+  return text.slice(text.indexOf(" ") + 1, text.lastIndexOf(" "));
+}
+
+// Every notice there is, so a new one can't quietly arrive un-texted or
+// un-checked. `noticeForBookingChange` returns null where nothing is worth
+// sending.
+function everyNotice(name: string): Notice[] {
+  const both = { ...booking, hostName: name, guestName: name };
+  const asked = { ...both, status: "REQUESTED" };
+  const confirmed = { ...both, status: "CONFIRMED" };
+  return [
+    noticeForNewBooking(asked, BOOKING_ID),
+    noticeForNewBooking(confirmed, BOOKING_ID),
+    noticeForBookingChange(asked, confirmed, BOOKING_ID),
+    noticeForBookingChange(
+      asked,
+      { ...both, status: "CANCELLED", cancelledBy: "host" },
+      BOOKING_ID,
+    ),
+    noticeForBookingChange(
+      asked,
+      {
+        ...both,
+        status: "CANCELLED",
+        cancelledBy: "host",
+        cancelReason: "SLOT_MOVED",
+      },
+      BOOKING_ID,
+    ),
+    noticeForBookingChange(
+      confirmed,
+      { ...both, status: "CANCELLED", cancelledBy: "host" },
+      BOOKING_ID,
+    ),
+    noticeForBookingChange(
+      confirmed,
+      { ...both, status: "CANCELLED", cancelledBy: "guest" },
+      BOOKING_ID,
+    ),
+    noticeForConnectRequest({ fromName: name, fromUsername: "sam_okafor" }),
+    noticeForConnectAccepted({
+      uid: "aBcD1234efGH5678ijKL9012mnOP",
+      displayName: name,
+    }),
+  ].filter((notice): notice is Notice => notice !== null);
+}
+
+describe("what a text can carry", () => {
+  const ORIGIN = "https://hafaio.github.io/kip";
+
+  it("says the one line the subject already is, and links to it", () => {
+    expect(renderSms(noticeForNewBooking(booking, BOOKING_ID), ORIGIN)).toBe(
+      "Sam asked to stay https://hafaio.github.io/kip/#/booking/bk_42",
+    );
+  });
+
+  // Eligibility is this function's answer rather than a third table to drift.
+  it("has nothing to say about news", () => {
+    const taken = noticeForNewBooking(
+      { ...booking, status: "CONFIRMED" },
+      BOOKING_ID,
+    );
+    expect(renderSms(taken, ORIGIN)).toBeNull();
+    expect(
+      renderSms(noticeForConnectRequest({ fromName: "Priya" }), ORIGIN),
+    ).toBeNull();
+  });
+
+  it("texts exactly the four kinds the table marks", () => {
+    const texted = new Set(
+      everyNotice("Sam Okafor")
+        .filter((notice) => renderSms(notice, ORIGIN) !== null)
+        .map((notice) => notice.kind),
+    );
+    const marked = Object.entries(NOTIFY_EVENTS)
+      .filter(([, event]) => event.sms)
+      .map(([kind]) => kind);
+    expect([...texted].sort()).toEqual(marked.sort() as NotifyKind[]);
+  });
+
+  // The en dash `dateRange` emits is the one every message would otherwise
+  // carry, and a name is whatever someone typed.
+  it("keeps characters that would cost 70", () => {
+    expect(toGsm7(dateRange("2026-08-14", "2026-08-19"))).toBe(
+      "Aug 14 - Aug 19",
+    );
+    expect(toGsm7("Ítalo “Zé”")).toBe('Italo "Ze"');
+    expect(toGsm7("Sam 🏔️ Okafor")).toBe("Sam Okafor");
+    expect(toGsm7("a\u00a0b")).toBe("a b");
+  });
+
+  it("is one segment for every notice, whatever the name", () => {
+    for (const name of [
+      "Sam Okafor",
+      "Someone",
+      HOSTILE_NAME,
+      LONG_NAME,
+      TWO_PART_NAME,
+      LONG_TWO_PART_NAME,
+    ]) {
+      for (const notice of everyNotice(name)) {
+        const text = renderSms(notice, ORIGIN);
+        if (!text) continue;
+        expect(segments(text)).toBe(1);
+        expect(text).toContain(ORIGIN);
+      }
+    }
+  });
+
+  // The name leads every subject, so it is what gets shortened — the wording
+  // after it is the half that says what happened.
+  it("shortens the name and keeps the wording", () => {
+    const notice = noticeForConnectAccepted({
+      uid: "aBcD1234efGH5678ijKL9012mnOP",
+      displayName: LONG_NAME,
+    });
+    const text = renderSms(notice, ORIGIN) ?? "";
+    expect(text).toContain("... agreed to be friends");
+  });
+
+  // A name is shortened from its END. It used to be cut at the first space,
+  // which for a two-part name kept the surname and dropped the given name —
+  // "Bart... Fitzwilliam-Smythe agreed to be friends".
+  it("keeps the front of a two-part name, not its back", () => {
+    const notice = noticeForConnectAccepted({
+      uid: "aBcD1234efGH5678ijKL9012mnOP",
+      displayName: TWO_PART_NAME,
+    });
+    const text = renderSms(notice, ORIGIN) ?? "";
+    expect(text.startsWith(`${GIVEN} Fitzwilliam`)).toBe(true);
+    expect(text).toContain("... agreed to be friends");
+  });
+
+  // The wording is what the text is FOR, so it survives a name of any length —
+  // including one long enough that the old fallback dropped the wording outright
+  // and sent a truncated name plus a link.
+  it("says what happened however long the name is", () => {
+    for (const name of [LONG_NAME, LONG_TWO_PART_NAME]) {
+      const short = everyNotice("Sam").map(
+        (notice) => renderSms(notice, ORIGIN) ?? "",
+      );
+      everyNotice(name).forEach((notice, index) => {
+        const text = renderSms(notice, ORIGIN);
+        if (!text) return;
+        expect(text).toContain(wordingOf(short[index]));
+        expect(text).toContain(ORIGIN);
+      });
+    }
+  });
+});
+
+// A rename used to cost a message nobody could take back: the stored map had no
+// entry for the new key, and `!== false` read that as "not disabled".
+describe("which preferences the sender reads", () => {
+  it("takes a stored choice over the default", () => {
+    expect(wantsEmail({ bookingRequested: false }, "bookingRequested")).toBe(
+      false,
+    );
+    expect(wantsSms({ bookingRequested: true }, "bookingRequested")).toBe(true);
+  });
+
+  it("falls back to the default for a kind nobody has answered for", () => {
+    expect(wantsEmail({}, "stayCancelled")).toBe(true);
+    expect(wantsSms({}, "stayCancelled")).toBe(false);
+  });
+
+  it("refuses a kind it doesn't know, however the map reads", () => {
+    expect(wantsEmail({ bookingAsked: true }, "bookingAsked")).toBe(false);
+    expect(wantsSms({ bookingTaken: true }, "bookingTaken")).toBe(false);
+    expect(wantsEmail(undefined, "toString")).toBe(false);
+  });
+
+  it("survives prefs that were never written", () => {
+    expect(wantsEmail(undefined, "bookingRequested")).toBe(true);
+    expect(wantsSms(null, "bookingRequested")).toBe(false);
   });
 });
 

@@ -1,16 +1,23 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "bun:test";
-import { NOTIFY_EVENTS } from "../utils/types";
+import {
+  NOTIFY_DEFAULTS,
+  NOTIFY_SMS_DEFAULTS,
+} from "../../functions/src/messages";
+import {
+  DEFAULT_NOTIFY,
+  DEFAULT_NOTIFY_SMS,
+  NOTIFY_EVENTS,
+} from "../utils/types";
 
 // `functions/` is a separate package on a different runtime, so it can't import
-// from `web/` — it keeps its own copy of the vocabulary they share. Nothing forces
-// the two to agree, and the drift FAILS OPEN: the function reads
-// `prefs.notify[kind]`, and a key the web side never writes comes back
-// `undefined`, which `=== false` treats as "not disabled". So a renamed event
-// doesn't error, it silently starts emailing people who opted out.
-//
-// This pins them together so drift breaks CI instead.
+// from `web/` — it keeps its own copy of the vocabulary they share, and nothing
+// forces the two to agree. The sender fails CLOSED on a kind it doesn't know, so
+// a rename now costs silence rather than a message to someone who opted out —
+// but silence about a cancelled stay is its own bug, and nobody reports a text
+// they never got. This pins them together so drift breaks CI instead.
 const FUNCTIONS_SOURCE = readFileSync("../functions/src/messages.ts", "utf8");
+const TRIGGERS_SOURCE = readFileSync("../functions/src/index.ts", "utf8");
 
 function unionMembers(typeName: string): string[] {
   const declaration = FUNCTIONS_SOURCE.split(`type ${typeName} =`)[1];
@@ -25,6 +32,35 @@ describe("web and functions share a vocabulary", () => {
     expect(unionMembers("NotifyKind")).toEqual(
       Object.keys(NOTIFY_EVENTS).sort(),
     );
+  });
+
+  it("the texted subset matches", () => {
+    expect(unionMembers("NotifySmsKind")).toEqual(
+      Object.entries(NOTIFY_EVENTS)
+        .filter(([, event]) => event.sms)
+        .map(([kind]) => kind)
+        .sort(),
+    );
+  });
+
+  // The values, not just the keys: the sender answers for a kind nobody has
+  // stored anything for out of its own copy of this table.
+  it("both channels default the same way on each side", () => {
+    expect(NOTIFY_DEFAULTS).toEqual(DEFAULT_NOTIFY);
+    expect(NOTIFY_SMS_DEFAULTS).toEqual(DEFAULT_NOTIFY_SMS);
+  });
+
+  // The map PATH is the one thing nothing else pins, and the new one is a typo
+  // away from reading email's answers to decide whether to text.
+  it("reads each channel's preferences from its own map", () => {
+    expect(TRIGGERS_SOURCE).toContain("wantsEmail(prefs.notify, kind)");
+    expect(TRIGGERS_SOURCE).toContain("wantsSms(prefs.notifySms, kind)");
+  });
+
+  // The one thing binding a stored consent to the phone it was given about, and
+  // the failure it prevents is a text to someone who never agreed to one.
+  it("checks a text against the number consent names", () => {
+    expect(TRIGGERS_SOURCE).toContain("prefs.smsConsentNumber !== number");
   });
 
   it("every cancel reason the client writes is handled or defaulted", () => {

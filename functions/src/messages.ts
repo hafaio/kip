@@ -323,6 +323,61 @@ export const NOTIFY_LABELS: Record<NotifyKind, string> = {
   connectAccepted: "Someone agrees to be friends",
 };
 
+// The web app's defaults, copied because this package can't import across — and
+// the VALUES, not just the keys, because the read below has to answer for a kind
+// nobody has stored anything for.
+export const NOTIFY_DEFAULTS: Record<NotifyKind, boolean> = {
+  bookingRequested: true,
+  bookingTaken: true,
+  bookingDecision: true,
+  stayCancelled: true,
+  connectRequest: true,
+  connectAccepted: true,
+};
+
+// The four worth interrupting someone for. `bookingTaken` and `connectRequest`
+// are news, to people who have an address anyway.
+export type NotifySmsKind =
+  | "bookingRequested"
+  | "bookingDecision"
+  | "stayCancelled"
+  | "connectAccepted";
+
+// Every one off: a verified number proves possession, never consent, so a text
+// is sent only where a switch carrying the disclosures turned one on.
+export const NOTIFY_SMS_DEFAULTS: Record<NotifySmsKind, boolean> = {
+  bookingRequested: false,
+  bookingDecision: false,
+  stayCancelled: false,
+  connectAccepted: false,
+};
+
+// Fails CLOSED on a kind it doesn't recognise. Reading the stored map directly
+// answered `undefined` for a renamed key, and `!== false` took that for "not
+// disabled" — so drift started sending to people who had opted out, where it now
+// costs silence, which someone reports.
+function wanted<Kind extends string>(
+  defaults: Record<Kind, boolean>,
+  stored: unknown,
+  kind: string,
+): boolean {
+  if (!Object.hasOwn(defaults, kind)) return false;
+  const map =
+    typeof stored === "object" && stored
+      ? (stored as Record<string, unknown>)
+      : {};
+  const chosen = map[kind];
+  return typeof chosen === "boolean" ? chosen : defaults[kind as Kind];
+}
+
+export function wantsEmail(stored: unknown, kind: string): boolean {
+  return wanted(NOTIFY_DEFAULTS, stored, kind);
+}
+
+export function wantsSms(stored: unknown, kind: string): boolean {
+  return wanted(NOTIFY_SMS_DEFAULTS, stored, kind);
+}
+
 // Unrecognised is null, never a default — silencing the wrong thing is worse
 // than not working. `hasOwn`, not `in`, or `?kind=toString` would pass.
 export function asNotifyKind(value: unknown): NotifyKind | null {
@@ -365,16 +420,11 @@ export const ALL_OFF: NotifyState = Object.fromEntries(
   KINDS.map((kind) => [kind, false]),
 ) as NotifyState;
 
-// Absence means "not disabled", the same test `recipientFor` applies. Derived
-// rather than copying the web app's defaults, so the page can't lie about what
-// will actually arrive.
+// The same test the sender applies, so the page can't lie about what will
+// actually arrive.
 export function notifyStateFrom(stored: unknown): NotifyState {
-  const map: Record<string, unknown> =
-    typeof stored === "object" && stored
-      ? (stored as Record<string, unknown>)
-      : {};
   return Object.fromEntries(
-    KINDS.map((kind) => [kind, map[kind] !== false]),
+    KINDS.map((kind) => [kind, wantsEmail(stored, kind)]),
   ) as NotifyState;
 }
 
@@ -684,4 +734,82 @@ kip sends this because something happened that needs you. <a class="kip-link" hr
     text: `${notice.body}\n\n${notice.cta}: ${url}\n\nUnsubscribe: ${assets.unsubscribeUrl}`,
     html,
   };
+}
+
+// One non-GSM-7 character switches the whole message to UCS-2, where the
+// 160-character segment becomes 70 — which every one of these would blow. Two
+// live sources: the en dash `dateRange` emits, and display names, which are
+// whatever someone typed.
+const GSM_SUBSTITUTES: Record<string, string> = {
+  "–": "-",
+  "—": "-",
+  "−": "-",
+  "‘": "'",
+  "’": "'",
+  "‚": "'",
+  "“": '"',
+  "”": '"',
+  "„": '"',
+  "«": '"',
+  "»": '"',
+  "…": "...",
+  "•": "-",
+  "·": "-",
+  "€": "EUR",
+};
+
+// The extension characters (^{}\[~]|) are GSM-7 but cost two septets each, which
+// would make counting to 160 a lie; they are dropped with everything else.
+const GSM_KEEP = /[A-Za-z0-9 !"#$%&'()*+,\-./:;<=>?@_]/;
+
+export function toGsm7(text: string): string {
+  // Decomposed first, so an accent is a mark to drop rather than a letter to
+  // lose: é survives as e instead of disappearing.
+  const substituted = Array.from(text.normalize("NFKD").replace(/\p{M}/gu, ""))
+    .map((character) => GSM_SUBSTITUTES[character] ?? character)
+    .join("");
+  return Array.from(substituted)
+    .filter((character) => GSM_KEEP.test(character))
+    .join("")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+const SMS_SEGMENT = 160;
+const TRUNCATION = "...";
+
+// A subject is a name and then the wording that says what happened. The wording
+// is short and fixed, the name is neither, so the name is the only part that is
+// ever shortened — truncating from the right leaves a text that is half a name
+// and a link, with nothing saying why it arrived.
+//
+// The split is made on the RAW subject, where the name is whatever `firstName`
+// returned and so cannot contain a space. `toGsm7` can INTRODUCE one — it folds
+// a non-breaking space, a newline and a tab into a plain space — so converting
+// first and then looking for the boundary finds it inside the name, which is how
+// a two-part name used to lose its first half and keep its second. The halves
+// are converted apart and rejoined for the same reason.
+function fitLeadingName(subject: string, budget: number): string {
+  const space = subject.indexOf(" ");
+  const name = toGsm7(space === -1 ? subject : subject.slice(0, space));
+  const wording = toGsm7(space === -1 ? "" : subject.slice(space + 1));
+  if (!wording) return name.slice(0, Math.max(budget, 0));
+  if (!name) return wording.slice(0, Math.max(budget, 0));
+  const room = budget - wording.length - 1;
+  if (name.length <= room) return `${name} ${wording}`;
+  // Nothing left to hold a name and an ellipsis: the wording goes alone rather
+  // than the other way round.
+  return room > TRUNCATION.length
+    ? `${name.slice(0, room - TRUNCATION.length)}${TRUNCATION} ${wording}`
+    : wording.slice(0, Math.max(budget, 0));
+}
+
+// Null for a kind with no text, so eligibility is one function's answer rather
+// than a third table to drift. The subject already IS the one-line summary an
+// SMS wants; the body is the same thing at length.
+export function renderSms(notice: Notice, origin: string): string | null {
+  if (!Object.hasOwn(NOTIFY_SMS_DEFAULTS, notice.kind)) return null;
+  const url = linkTo(origin, notice.path);
+  const summary = fitLeadingName(notice.subject, SMS_SEGMENT - url.length - 1);
+  return summary ? `${summary} ${url}` : url;
 }

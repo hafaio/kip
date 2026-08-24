@@ -801,7 +801,33 @@ Rules: [firebase/firestore.rules](./firebase/firestore.rules), [firebase/storage
   `appId` and `firebaseConfigured()` returns false — `authReady` settles immediately on the
   sign-in screen and the sign-in button shows a "not set up yet" dialog — so the app still
   builds and runs before any Firebase project exists.
-- **Settings is four sections, and Privacy is one question.** Account (display name, email),
+- **An account can hold more than the door it arrived through.** Settings → Account carries a
+  **How you get in** group — email, phone, Google — each set, absent or in conflict, because an
+  account with one credential is one lost inbox from unrecoverable and kip has no password to fall
+  back on. Adding reuses the identity sheet's own doors; removing unlinks and **refuses the last one
+  standing**, since an account that looks credentialed but behaves like a ticket would then be
+  refused handle claims and new listings by `hasCredential()`.
+
+  That guard is client-side and cannot be otherwise — rules cannot see Auth providers — so two tabs
+  each removing a different door can still strand a uid. Accepted: the window is small and the
+  alternative is a server in the request path.
+
+  **Removing a door takes the address or number with it**, which an emulator probe settled and no
+  doc states: unlinking `password` clears `email` AND `emailVerified` from the Auth record, and
+  unlinking `phone` clears `phoneNumber` — so the sender stops writing to them and Notifications
+  correctly reads as having no address. **Google is the exception**: unlinking `google.com` leaves
+  the top-level email behind and kip keeps mailing it. The confirm leads with that difference,
+  because "remove a way of signing in" and "stop kip emailing you" turning out to be the same act is
+  the kind of thing a user should be told before they tap, not after.
+
+  **A credential that already belongs to someone else signs you INTO that account and changes the
+  uid** (`sameAccount: false`), which has bitten twice; all three doors route it through one alert.
+  And the rows read `email`/`phone`/`doors` from **store state, never off `user` at render** —
+  Firebase mutates the `User` in place, so a link changes the fields without changing the reference
+  and React never re-renders. `unlink` is worse: it persists the shortened `providerData` and
+  notifies nobody, so `removeDoor` ends with a `reload()` to make the row follow the server.
+
+- **Settings is four sections, and Privacy is one question.** Account (display name, the doors above),
   **Privacy** (findable by username, let friends see where I'll be staying, public profile link),
   **Notifications**, Appearance. Discoverability and stay-visibility were separate sections until
   they were read as the same question — who sees what about you — and merged.
@@ -1601,40 +1627,219 @@ expect when it does.
   section you navigate to. Worth thinking about whether the same treatment belongs on a room card
   and on your own profile.
 
-- **SMS notifications are the obvious next step, and the long pole is paperwork.** A phone-only
-  account is durable but unreachable: every notification kip sends is email, so someone who proved
-  a number and never added an address hears nothing until they open the app. The reach card is the
+- **SMS notifications are BUILT and ship switched off. The provider is Twilio.** A phone-only
+  account is durable but unreachable — every notification kip sends is email, so someone who proved a
+  number and never added an address hears nothing until they open the app. The reach card is the
   standing answer; SMS is the real one.
 
-  It needs no new function — it rides the four triggers that already exist, and the number is read
-  per send off the Auth account exactly as the address is, so it never touches Firestore. Twilio
-  keeps its own message logs, which is the honest caveat: the confinement is a shade weaker than
-  email's.
+  It rides the four triggers that already exist and needs no new function, and the number is read per
+  send off the Auth account (`user.phoneNumber`, E.164) exactly as the address is, so it never
+  touches Firestore. Twilio keeps its own message logs, which is the honest caveat: the confinement
+  is a shade weaker than email's.
+
+  **`recipientFor` is gone, and it was wrong rather than merely incomplete.** It bundled four
+  decisions and returned null if any failed — two of them email-specific — so it exited at
+  `if (!user?.email)` before preferences were ever consulted, and a phone-only account never reached
+  `send` at all. That is precisely the population this feature exists for. It is now an email branch
+  and an SMS branch under one `deliver`, joined by `Promise.allSettled` so a Twilio throw can never
+  reach the email path. `unsubKeyFor` runs a Firestore transaction and lives
+  inside the email branch only; SMS has no unsubscribe key. And SMS is a second channel, **not a
+  fallback** — "text only if there is no verified email" halves the cost but makes the Settings
+  switch a lie for anyone holding both, and routes the most urgent message to the slower channel for
+  the people most likely to be mid-travel.
+
+  **Registration is split across two lanes and you need half of each — this cost an evening, so it
+  is written down.** Twilio segments A2P by customer type: **console for direct customers, API for
+  ISVs**. That segmentation is enforced by the API, and the two halves do not meet:
+  - `RN13dc4be8861a10924a79c35eaa4d812c` "Starter Customer Profile for **direct customers**" needs
+    only name/email/phone plus an address — **no primary customer profile at all**. Creating one over
+    the API is refused: *"This operation is restricted via API for Starter Customer Profiles (Direct
+    customers)."* Console only. And the new console (`1console.twilio.com`, GA 5 May 2026) does not
+    surface the sole-proprietor wizard that would create it — every reachable surface routes a direct
+    customer into the Standard business lane, whose Business Type list is Partnership / Corporation /
+    Co-operative / LLC / Non-profit and contains no sole proprietorship.
+  - `RN806dd6cd175f314e1f96a9727ee271f4` "Starter Customer Profile of type **Business**" is the ISV
+    one, is API-creatable, and requires a **primary customer profile** in approved-or-in-review
+    (error **22217**). The ISV walkthrough marks that attachment "applicable only for ISV customers",
+    which means *ISVs fetch it from the parent account* — NOT that it is optional. Skipping it fails
+    evaluation with "Primary customer profile is null".
+  - `RN670d5d2e282a6130ae063b234b6019c8` "Sole Proprietor TrustProduct" accepts EITHER starter type,
+    which is what makes a hybrid possible at all.
+
+  **The primary profile is the real wall, and it is one field.** Its policy
+  (`RN6433641899984f951173ef1738c3bdd0`) fails with "Business Registration Type is invalid" when
+  `business_registration_identifier` is empty. `"Other"` passes, with
+  `business_registration_number` blank — and that combination is TRUE for a US sole proprietor, who
+  has no registry. Worth knowing that the evaluator checks **presence, not enum membership**: it
+  passed `"Partnership"` just as happily, so a green evaluation proves nothing about whether Twilio's
+  human reviewer will accept the value. Submitting the primary is *also* API-restricted (*"Use Twilio
+  Console instead"*), and the console runs a registry check that fails for a sole proprietor — but it
+  offers **"Continue without resubmission"**, which submits anyway and lands `pending-review`. That
+  satisfies 22217, because the requirement checks the attached bundle's STATUS and nothing else.
+
+  **None of that reaches the registry.** TCR's own CSP guide lists `SOLE_PROPRIETOR` as a first-class
+  entity type and says a brand with no EIN registers under it; for a `BrandType=SOLE_PROPRIETOR`
+  brand the entity type comes from the brand call, and TCR receives the personal identity in the
+  starter bundle plus the OTP-verified mobile. The primary's business fields are Twilio-internal KYC.
+
+  **Everything is free until `POST /v1/a2p/BrandRegistrations`**, which is $4.50 and where a
+  per-account gate would surface as [error 30734](https://www.twilio.com/docs/api/errors/30734). Each
+  `Evaluations` call is a free oracle — use it before every submit rather than guessing.
+
+  **If this ever breaks again, the fallback is Telnyx**, which documents sole-proprietor 10DLC for
+  direct customers *"without a federal Tax ID (EIN)"* at the same TCR economics ($4 + $15 + $2/mo,
+  SMS-OTP identity). Nothing is lost by switching: the TCR lifetime caps (3 uses of the OTP mobile,
+  10 of the email and address) are only consumed by an actual brand registration.
 
   **The gotcha that decides the schedule: US A2P 10DLC registration.** Unregistered
   application-to-person traffic to US numbers from a 10-digit number is a HARD BLOCK, not
   degraded delivery — [blocked since 1 September 2023](https://www.twilio.com/en-us/changelog/-u-s--a2p-10dlc--full-blocking-of-traffic-sent-from-unregistered),
   returning [error 30034](https://www.twilio.com/docs/api/errors/30034), and Twilio still bills for
-  the blocked send. Brand and campaign registration runs through TCR with a vetting fee, monthly
-  campaign fees, and a review measured in days — so file it FIRST; the code is not the long pole.
-  Worth addressing the "but I've sent Twilio texts instantly" memory head-on, because it is a
-  reasonable one: a trial account texting its own verified numbers still works, as does non-US.
-  One thing this gets right that kip's email does not: a blocked SMS fails loudly with an error
-  code, where Gmail accepts everything and silently files it as spam.
+  the blocked send. Worth addressing the "but I've sent Twilio texts instantly" memory head-on,
+  because it is a reasonable one: a trial account texting its own verified numbers still works, as
+  does non-US. One thing this gets right that kip's email does not: a blocked SMS fails loudly with
+  an error code, where Gmail accepts everything and silently files it as spam.
+
+  **"File it first" is true of the BRAND and false of the CAMPAIGN**, which an earlier version of
+  this note got wrong. Brand registration depends on nothing in the repo — file it the moment the
+  decision is made. The campaign form asks you to describe and screenshot the **opt-in flow**, so it
+  cannot be filed until the consent UI exists. Order: brand → build the Settings consent switch →
+  campaign. Registration is Sole Proprietor: **$4 brand, $15 campaign vetting, $2/campaign/month**,
+  flat and NOT usage-scaled (the tier is defined as under 1,000 messages/day on one number through
+  one campaign), plus $1.15/month for the number. Identity is verified by OTP to a personal mobile,
+  which must not be the sending number. Brand approval is usually under a day; campaign review runs
+  ~10–15 days and full carrier approval (AT&T is the slow one) can reach 3–6 weeks.
+
+  **Why Twilio and not AWS**, since AWS is cheaper per message ($0.005 vs ~$0.011) and was the
+  obvious thing to ask about: **AWS End User Messaging cannot register a sole proprietor at all.**
+  Its 10DLC brand form requires a Tax ID or Business Registration Number — for a US entity a
+  nine-digit EIN matched against IRS records — and its legal-form options are private for-profit,
+  public for-profit, US government and not-for-profit, with no individual path. Using it would mean
+  obtaining an EIN solely to send a few texts. It is also slower by its own documentation (campaign
+  up to 4 weeks, number request up to 10 days, association ~14 more, and 1 MPS until a separate
+  rate-increase request), and it would add a second cloud account to a project that is otherwise
+  entirely Firebase. The per-message saving is a couple of dollars a month against ~$3 of fixed fees.
+  Note the registration burden itself is identical everywhere — 10DLC is carrier policy via TCR, not
+  a vendor's — so the provider choice is only about which one will register YOU. **Skip the Twilio
+  Node SDK**: the send is one form-encoded POST with basic auth, which keeps the functions package at
+  one dependency and makes a future swap a ~30-line file. What does not transfer on a swap is the
+  paperwork, since campaigns are provider-scoped in practice.
 
   **Four events would justify one**, not all six: `bookingRequested` (a decision is wanted),
   `bookingDecision` (answers your dates), `connectAccepted` (the share-link visitor's first ask,
   and they are exactly the no-address population), `stayCancelled` (the one you would regret
   missing). Out: `bookingTaken` and `connectRequest`, which are news, to people who have an
-  address anyway.
+  address anyway. The `connectRequest`/`connectAccepted` split looks backwards until you name the
+  POPULATION: a request reaches the person whose link was opened, an established user who almost
+  certainly has an address; an acceptance reaches the visitor who just arrived through it, who is
+  exactly the phone-only account.
 
-  **Preferences become event × channel**, still derived from the single `NOTIFY_EVENTS` table.
-  Stored as a SECOND merge-over-defaults map beside `notify`, so nothing migrates — absence
-  already means the default. The cross-package drift test must then pin kind × channel, since the
-  fail-open failure it exists to catch gets twice the surface.
+  **Preferences are event × channel**, derived from the single `NOTIFY_EVENTS` table (add an
+  `sms: true` flag to each entry and derive the subset as a mapped type, so the compiler checks it).
+  Stored as a SECOND merge-over-defaults map, `notifySms`, beside `notify` — NOT as
+  `notify[kind] = {email, sms}`, which would change the shape of data already stored and which the
+  `unsubscribe` function writes `{[kind]: false}` straight into. A sibling map migrates nothing and
+  needs no rules change. `notify` thereby becomes email-specific under a generic name; renaming it
+  would migrate, so it keeps the name and this sentence is the documentation.
 
-  Also: **STOP is carrier-enforced and outranks kip's Settings**, and TCPA consent lands on the
-  sheet's number field — neither maps onto the `List-Unsubscribe` machinery already built.
+  **The UI is ONE switch, not a second column.** `Switch` is a full-width row carrying a label and a
+  description; two per row means bare checkboxes, a lost label→channel binding, and a screen reader
+  saying "Someone asks to stay, switch, switch". What people actually decide is "text me the
+  important stuff", so: one "Also text me" switch governing all four, reading
+  `Object.values(prefs.notifySms).some(Boolean)`. The storage is already per-kind, so per-event
+  granularity later is a UI change with no migration.
+
+  **TCPA consent is collected on that switch, NOT on the sheet's number field** — the reverse of what this
+  note used to say, and the reason matters: consent to marketing-adjacent automated texts must be
+  UNBUNDLED from anything else. The number in `reach-field.tsx` is collected to sign in, so attaching
+  notification consent there bundles it with account creation, which is the specific pattern the rule
+  forbids, and loads friction onto the one screen — a stranger on a share link — the whole design
+  exists to keep frictionless. The switch carries the four required disclosures (automated texts,
+  frequency varies, message and data rates may apply, reply STOP/HELP) and writes `smsConsentAt`,
+  `smsConsentVersion` plus `smsConsentNumber` into prefs; you have to be able to say what wording
+  someone agreed to, and the wording will change. A verified number proves POSSESSION, never consent.
+
+  **Consent is to being texted at a NUMBER, so the record names one and everything checks it.** Left
+  unbound it was two bugs at once: removing the phone door left the switch rendering ON and greyed
+  out — no number in the copy beneath it, and nothing to turn it off with — and adding a DIFFERENT
+  number later resumed texting on an agreement given about the first. Settings reads the switch as on
+  only while `smsConsentNumber` equals the number on the account, `textIfWanted` refuses a send whose
+  recipient the consent doesn't name (which also fails closed for every consent stored before the
+  field existed), and removing the phone door clears the record outright — taking a number off the
+  account is the plainest way there is of saying stop texting me, so re-adding the same one asks
+  again. The sender's check is pinned by `tests/drift.test.ts`, since nothing else can see it. `reach-field.tsx` carries one line for it:
+  the code step appends "Standard message rates apply."
+
+  **STOP is carrier-enforced, outranks kip's Settings, and needs no webhook.** Twilio absorbs
+  STOP/START/HELP before kip's code sees them. kip finds out at the next send, which is rejected
+  synchronously with [error 21610](https://www.twilio.com/docs/api/errors/21610) before a message is
+  created, so it is not billed. "Sooner" buys nothing, since nothing was going to be sent in the
+  interval — so no inbound webhook and no second HTTP function. Catch 21610, write `smsStopped` into
+  prefs, and CLEAR it on the next successful send so a START self-heals: the same re-derive-rather-
+  than-sweep shape as guest markers and portal grants. Settings must then render the switch off AND
+  disabled with an honest line — kip cannot undo a carrier block, and a switch that flips back on and
+  does nothing is the worst available answer. None of this touches `List-Unsubscribe`, which is an
+  email header pointing at a public function; STOP is a fact kip only ever observes.
+
+  **One segment, always, and that is an assertion rather than an aspiration.** `renderSms` belongs in
+  `messages.ts` beside `renderEmail`, returning `string | null` — null for a kind with no SMS, so
+  eligibility is one function's answer instead of a third table to drift. It composes `subject` plus
+  the link, never `body`: the subjects already ARE the one-line summary SMS wants. GSM-7 gives 160
+  characters; the link costs ~59, leaving ~96, and every current subject fits. **The trap is that ONE
+  non-GSM-7 character forces the whole message to UCS-2, where the limit collapses to 70** — which
+  every one of these would blow. Two live sources of them: `dateRange` emits an en dash (U+2013), and
+  display names are user input. So `renderSms` must transliterate to GSM-7 and truncate the name, and
+  the test worth having renders every notice, including a hostile-name fixture, to one segment. Do
+  NOT use a public link shortener: carriers filter bit.ly-class domains in A2P traffic regardless of
+  registration.
+
+  **The drift test doubles in importance, and the code fails CLOSED.** The old read,
+  `prefs.notify?.[kind] === false`, treated an unknown key as "not disabled", so a rename starts mailing
+  people who opted out — and an unwanted text is a carrier spam report and a TCPA exposure, not
+  merely an annoyance. The read is inverted: the functions side carries the default VALUES, looks the kind up
+  in that table, and returns false for a kind it does not know. Drift then costs silence, which
+  someone reports, instead of a message nobody can take back. The test has three jobs — the kind
+  union, the `sms: true` subset, and both tables' default values — plus a fourth worth its keep:
+  assert the literal strings `"notify"` and `"notifySms"` appear in `index.ts`, since the map PATH is
+  the one thing it has never pinned and the new one is the likelier to be mistyped.
+
+  **It ships able to be off, and the credential is never a deploy-time condition.** One gate —
+  `smsConfigured()`, the empty `TWILIO_ACCOUNT_SID`/key SID/`TWILIO_FROM` constants — checked before
+  anything is read, written or sent, the same shape as `firebaseConfigured()` on the web side.
+
+  The credential itself is **fetched at first use** from Secret Manager's REST API, with the runtime
+  service account's own metadata-server token and cached for the life of the instance. That is a
+  release decision, not a stylistic one: in firebase-functions v2 a secret named in a trigger's
+  `secrets: []` is resolved by the CLI at deploy, and a non-interactive deploy (which is what
+  `.github/workflows/web.yml` is) FAILS on one Secret Manager doesn't hold — so naming it put the
+  whole site's release, rules and triggers and Pages, behind a credential only this switched-off
+  branch has any use for, held up by nothing but a hand-created empty placeholder. Read at send time
+  it is a runtime condition instead: a missing one raises, `deliver` settles it, the email beside it
+  is untouched, and nothing else notices. `GMAIL_APP_PASSWORD` stays a declared secret — it exists,
+  email is live, and a deploy that can't resolve it is a deploy worth stopping. What proves the
+  decoupling is the discovery output the CLI itself reads: `functions.__endpoint
+  .secretEnvironmentVariables` on all four triggers names GMAIL_APP_PASSWORD and nothing else. The
+  gate is also what stays off through the 3–6 week approval window, since a present credential is not sufficient:
+  before the campaign is approved every send returns 30034 and is billed anyway. Use an **API Key SID
+  + Secret**, not the account auth token — revocable and scoped; the SID and the From number are
+  plain constants like `GMAIL_USER`, since an identifier and a number that rides in every message are
+  not secrets.
+
+  **The sole-proprietor throughput cap does not bite.** It is ~1,000 messages/day to T-Mobile and ~15
+  message parts/minute to AT&T, one campaign, one number. kip's traffic is four transactional 1:1
+  kinds on an app with no public discovery surface — single digits per day. Adding availability sends
+  nothing at all (window creates have no trigger), so the only fan-out is cancellation:
+  `cancelWindowAsOwner` (one slot), `deleteListing` (one place), and the real worst case `leaveKip`,
+  which cancels every live stay in both directions and could fire dozens at once. Even that must
+  exceed fifteen CONFIRMED stays to touch the per-minute limit, and Twilio queues past MPS rather
+  than rejecting — so the consequence is minutes of delay, not lost messages.
+
+  **Geography is pinned in three places and they must move together**: `parseDestination`'s US-only
+  refusal, `US_DIGITS` in `utils/destination.ts`, and the Firebase Auth SMS region allowlist (already
+  US-only on the live project). `textIfWanted` ALSO checks the number starts with `+1` before
+  spending, since a number can reach an Auth account by routes the web form does not own. 10DLC is US
+  carrier policy, so international traffic skips TCR entirely but costs 5–20× per segment and carries
+  its own per-country sender rules.
 
 - **Emailing a saved-search digest is deferred, and the reasons are specific.** Saved searches ship
   without any notification: the in-app count and "new" badge are free, and the email is the
