@@ -1,8 +1,9 @@
 "use client";
 
 import { useState } from "react";
+import { StaleSession } from "../utils/auth";
 import { auth } from "../utils/firebase";
-import { leaveKip, StaleSession } from "../utils/leave";
+import { leaveKip } from "../utils/leave";
 import { useKip } from "../utils/store";
 import { useDialog } from "./dialog";
 

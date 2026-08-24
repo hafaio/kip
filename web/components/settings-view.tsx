@@ -1,23 +1,402 @@
 "use client";
 
 import { useTheme } from "next-themes";
-import { type ReactElement, useEffect, useState } from "react";
-import { LuChevronRight } from "react-icons/lu";
-import { leaveKip, StaleSession } from "../utils/leave";
+import {
+  type ReactElement,
+  type ReactNode,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
+import { LuChevronRight, LuLoaderCircle, LuX } from "react-icons/lu";
+import {
+  authErrorMessage,
+  EMAIL_DOOR,
+  GOOGLE_DOOR,
+  PHONE_DOOR,
+  PhoneAlreadySet,
+  removeDoor,
+  StaleSession,
+  sendAttachLink,
+} from "../utils/auth";
+import { parseDestination } from "../utils/destination";
+import { leaveKip } from "../utils/leave";
 import { useKip } from "../utils/store";
 import { asThemeChoice, type ThemeChoice } from "../utils/theme";
 import { NOTIFY_EVENTS, type NotifyKind } from "../utils/types";
 import { useDialog } from "./dialog";
-import { useNameGate } from "./name-gate";
+import { otherAccountAlert, useNameGate } from "./name-gate";
+import ReachField, {
+  confirmReach,
+  EMPTY_REACH,
+  type ReachState,
+  reachError,
+  sendReach,
+} from "./reach-field";
 import Button from "./ui/button";
+import Chip from "./ui/chip";
 import FieldNote from "./ui/field-note";
+import IconButton from "./ui/icon-button";
+import Input from "./ui/input";
 import { Group, Row, Section } from "./ui/list";
 import Segmented from "./ui/segmented";
+import Sheet from "./ui/sheet";
 import Switch from "./ui/switch";
 import { useLeave } from "./use-leave";
 
+// One way in. The value is the address it carries once it's set, and the sub-
+// line otherwise says what adding it buys — a Google account already supplies an
+// address, so "no email" would be a lie on the row that most needs to be true.
+function DoorRow({
+  name,
+  value,
+  note,
+  chip,
+  busy,
+  onAdd,
+  // Absent when this is the only way in, which must never be removable.
+  onRemove,
+}: {
+  name: string;
+  value: string | null;
+  note: string;
+  chip?: ReactNode;
+  busy: boolean;
+  onAdd: () => void;
+  onRemove: (() => void) | null;
+}): ReactElement {
+  return (
+    <Row>
+      <span className="flex min-w-0 flex-1 flex-col">
+        <span className="truncate text-[0.9375rem] font-medium">{name}</span>
+        {/* A long address wraps and clips at 390px, so it ends in an ellipsis
+            instead — the same treatment the profile page gives the same
+            string. */}
+        <span className="truncate text-sm text-muted">{value ?? note}</span>
+      </span>
+      {chip}
+      {value === null ? (
+        <Button variant="secondary" onClick={onAdd} disabled={busy}>
+          Add
+        </Button>
+      ) : onRemove ? (
+        <IconButton
+          variant="danger"
+          label={`Remove ${name}`}
+          onClick={onRemove}
+          disabled={busy}
+        >
+          <LuX />
+        </IconButton>
+      ) : null}
+    </Row>
+  );
+}
+
+// The field defaults to email, and this sheet's door is a keypad from the first
+// tap — `only` pins the route, this only picks the keyboard.
+const PHONE_REACH: ReachState = { ...EMPTY_REACH, mode: "phone" };
+
+// What this account can be reached and re-entered by. kip has no password, so
+// there is no reset to fall back on: one credential is one lost inbox from
+// unrecoverable, which is the whole reason this is a list rather than a line.
+//
+// Every row reads the store's snapshot rather than `user`, because linking and
+// unlinking change those fields without changing the uid — Firebase hands React
+// the same object and a row reading it never re-renders.
+function DoorsSection(): ReactElement {
+  const { doors, emailVerified, signIn } = useKip();
+  const { confirm, alert } = useDialog();
+  // Which sheet is up, rather than one flag each: they draw over the same note
+  // and only one can be answered at a time.
+  const [sheet, setSheet] = useState<"email" | "phone" | null>(null);
+  const [address, setAddress] = useState("");
+  const [sentTo, setSentTo] = useState<string | null>(null);
+  const [reach, setReach] = useState<ReachState>(PHONE_REACH);
+  const recaptcha = useRef<HTMLDivElement>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const emailDoor = doors.find((door) => door.providerId === EMAIL_DOOR);
+  const phoneDoor = doors.find((door) => door.providerId === PHONE_DOOR);
+  const googleDoor = doors.find((door) => door.providerId === GOOGLE_DOOR);
+  const spare = doors.length > 1;
+  const numberProblem = reachError(reach.raw, "phone");
+
+  function openEmail(): void {
+    setAddress("");
+    setSentTo(null);
+    setError(null);
+    setSheet("email");
+  }
+
+  function openPhone(): void {
+    setReach(PHONE_REACH);
+    setError(null);
+    setSheet("phone");
+  }
+
+  // Clearing on the way out, because the note under the group shows the same
+  // `error` — so a rejected address would follow the sheet back onto a screen
+  // with no field on it.
+  function close(): void {
+    setError(null);
+    setSheet(null);
+  }
+
+  // No conflict can surface here: an address that belongs to someone else is
+  // indistinguishable at send time — `enableImprovedEmailPrivacy` is what makes
+  // it so — and `/continue/` is where it finally refuses and says so.
+  async function sendLink(): Promise<void> {
+    const parsed = parseDestination(address);
+    if (parsed.kind !== "email") {
+      setError("That doesn't look like an email address.");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      // No host: this was added from Settings, where there is no request for
+      // the landing page to name.
+      await sendAttachLink(parsed.value, "");
+      setSentTo(parsed.value);
+    } catch (caught) {
+      console.error(caught);
+      setError(authErrorMessage(caught));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // Both steps of the phone door, since the sheet's one button finishes
+  // whichever is showing: a code that has been sent is waiting to be typed.
+  async function submitNumber(): Promise<void> {
+    if (numberProblem) return;
+    setBusy(true);
+    setError(null);
+    try {
+      if (reach.pending) {
+        const { sameAccount } = await confirmReach(reach.pending, reach.code);
+        setSheet(null);
+        // The number was already on kip, so they are IN that account now — a
+        // different uid, with its own places, friends and stays. Nothing here
+        // can merge the two.
+        if (!sameAccount) await alert(otherAccountAlert("number"));
+        return;
+      }
+      const holder = recaptcha.current;
+      if (!holder) throw new Error("no element for the check to bind to");
+      // No host: this was added from Settings, where there is no request for
+      // a landing page to name.
+      const sent = await sendReach(reach.raw, "", holder);
+      setReach({ ...reach, pending: sent.pending, sentTo: sent.sentTo });
+    } catch (caught) {
+      console.error(caught);
+      if (reach.pending) {
+        setError("That code didn't work. Check it, or ask for another.");
+      } else if (caught instanceof PhoneAlreadySet) {
+        // The row offered Add, so this account grew a number somewhere else —
+        // another tab, or the sheet that collects one beside an ask.
+        setError("This account already has a number. Reload kip to see it.");
+      } else {
+        setError(authErrorMessage(caught));
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function addGoogle(): Promise<void> {
+    setBusy(true);
+    setError(null);
+    try {
+      const { sameAccount } = await signIn();
+      // That Google account already existed, so they have MOVED to it — the
+      // listings, friends and stays on screen a second ago belong to a uid they
+      // no longer are, and nothing here can merge the two.
+      if (!sameAccount) await alert(otherAccountAlert("Google account"));
+    } catch (caught) {
+      console.error(caught);
+      setError(authErrorMessage(caught));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function remove(providerId: string, name: string): Promise<void> {
+    const sure = await confirm({
+      title: `Remove ${name}?`,
+      body: "You'll still get in the other ways listed here, and you can add this one back anytime.",
+      confirmLabel: "Remove",
+      tone: "danger",
+    });
+    if (!sure) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await removeDoor(providerId);
+    } catch (caught) {
+      console.error(caught);
+      if (caught instanceof StaleSession) {
+        await alert({
+          title: "Come back in first",
+          body: "Firebase only changes what an account signs in with on a fresh sign-in. Sign out, come back in, and remove it then.",
+        });
+      } else {
+        setError("Couldn't remove that. Try again.");
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Section title="How you get in">
+      <Group>
+        <DoorRow
+          name="Email"
+          value={emailDoor?.value ?? null}
+          note="A one-time link, sent to your inbox"
+          chip={
+            // A label, not a second offer: confirming is what the Notifications
+            // section asks for, since being unconfirmed costs you mail rather
+            // than a way in.
+            emailDoor && !emailVerified ? (
+              <Chip tone="pending">Unconfirmed</Chip>
+            ) : undefined
+          }
+          busy={busy}
+          onAdd={openEmail}
+          onRemove={spare ? () => remove(EMAIL_DOOR, "email") : null}
+        />
+        <DoorRow
+          name="Phone"
+          value={phoneDoor?.value ?? null}
+          note="A one-time code, texted to you"
+          busy={busy}
+          onAdd={openPhone}
+          onRemove={spare ? () => remove(PHONE_DOOR, "phone") : null}
+        />
+        <DoorRow
+          name="Google"
+          value={googleDoor?.value ?? null}
+          note="One tap, no link to wait for"
+          busy={busy}
+          onAdd={addGoogle}
+          onRemove={spare ? () => remove(GOOGLE_DOOR, "Google") : null}
+        />
+      </Group>
+
+      {error && !sheet ? (
+        <FieldNote tone="danger">{error}</FieldNote>
+      ) : (
+        <FieldNote>
+          {doors.length > 1
+            ? "Never shown to other users or used to find you."
+            : "kip has no password, so these are the only ways back in — a second one means losing the first isn't losing your kip."}
+        </FieldNote>
+      )}
+
+      <Sheet open={sheet === "email"} onClose={close} title="Add an email">
+        {sentTo ? (
+          <div className="flex flex-col gap-3">
+            <p className="text-sm text-muted">
+              Check {sentTo} and open the link — that's what attaches it. It
+              lands on this account whichever device opens it. Reload kip
+              afterwards to see it here.
+            </p>
+            <Button size="lg" onClick={close}>
+              Done
+            </Button>
+          </div>
+        ) : (
+          <form
+            className="flex flex-col gap-3"
+            onSubmit={(event) => {
+              event.preventDefault();
+              sendLink();
+            }}
+          >
+            <Input
+              autoComplete="email"
+              inputMode="email"
+              autoFocus
+              value={address}
+              onChange={(event) => {
+                setError(null);
+                setAddress(event.target.value);
+              }}
+              placeholder="you@example.com"
+            />
+            <p className={`text-sm ${error ? "text-danger" : "text-muted"}`}>
+              {error ??
+                "kip sends a one-time link. Opening it adds the address to this account."}
+            </p>
+            <Button type="submit" size="lg" disabled={busy || !address}>
+              {busy ? (
+                <LuLoaderCircle className="animate-spin" />
+              ) : (
+                "Send the link"
+              )}
+            </Button>
+          </form>
+        )}
+      </Sheet>
+
+      <Sheet open={sheet === "phone"} onClose={close} title="Add a number">
+        <form
+          className="flex flex-col gap-3"
+          onSubmit={(event) => {
+            event.preventDefault();
+            submitNumber();
+          }}
+        >
+          <ReachField
+            state={reach}
+            onChange={(next) => {
+              setError(null);
+              setReach(next);
+            }}
+            hostRef={recaptcha}
+            only="phone"
+          />
+          {/* The code step names itself, so the line below it is only ever a
+              refusal — leaving the muted copy up there would describe a step
+              already taken. */}
+          {error || numberProblem || !reach.pending ? (
+            <p
+              className={`text-sm ${error || numberProblem ? "text-danger" : "text-muted"}`}
+            >
+              {error ??
+                numberProblem ??
+                "kip texts a code to check the number is yours. It's a way back in, not a subscription — being texted when things happen is its own switch."}
+            </p>
+          ) : null}
+          <Button
+            type="submit"
+            size="lg"
+            disabled={
+              busy ||
+              Boolean(numberProblem) ||
+              (reach.pending ? !reach.code : !reach.raw)
+            }
+          >
+            {busy ? (
+              <LuLoaderCircle className="animate-spin" />
+            ) : reach.pending ? (
+              "Add the number"
+            ) : (
+              "Text me a code"
+            )}
+          </Button>
+        </form>
+      </Sheet>
+    </Section>
+  );
+}
+
 // Your name and handle are edited on your profile, where they're actually shown;
-// this section is what's left — the address you sign in with, and a way through.
+// this section is what's left — the ways into the account, and the way out.
 function AccountSection(): ReactElement | null {
   const {
     user,
@@ -105,21 +484,7 @@ function AccountSection(): ReactElement | null {
         </Row>
       </Group>
 
-      {user.email ? (
-        <div className="flex flex-col gap-1.5">
-          <div className="px-1 text-sm font-semibold text-muted">Email</div>
-          <div className="flex h-11 items-center rounded-xl bg-surface-muted px-3.5 text-base text-muted">
-            {/* A long address in a fixed-height pill wraps and clips at 390px,
-                so it ends in an ellipsis instead — the same treatment the
-                profile page gives the same string. */}
-            <span className="truncate">{user.email}</span>
-          </div>
-          <FieldNote>
-            Used only to reach you and to get you back into kip — never shown to
-            other users or used to find you.
-          </FieldNote>
-        </div>
-      ) : null}
+      <DoorsSection />
 
       {/* The deliberate exit, and the ONLY one an account with no credential is
           offered. It is destruction rather than sign-out — the uid lives in this
@@ -290,7 +655,7 @@ function DiscoverabilitySection(): ReactElement | null {
 // with a way to fix it, or it just looks broken.
 function NotificationsSection(): ReactElement | null {
   const { askIdentity } = useNameGate();
-  const { user, emailVerified, prefs, setNotify, resendVerification } =
+  const { user, email, emailVerified, prefs, setNotify, resendVerification } =
     useKip();
   const [sent, setSent] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -314,13 +679,13 @@ function NotificationsSection(): ReactElement | null {
           can't trust is a confirm; no address at all is an ask — and without
           this split the second rendered "Confirm undefined", which nobody saw
           only because these sessions could not reach Settings. */}
-      {user.email ? (
+      {email ? (
         emailVerified ? null : (
           <div className="flex flex-col gap-3 rounded-3xl bg-surface p-4 shadow-card">
             <p className="text-sm text-muted">
               kip only emails an address that's been confirmed — otherwise
               anyone could enter someone else's and have kip mail them. Confirm{" "}
-              {user.email} to start receiving these.
+              {email} to start receiving these.
             </p>
             {sent ? (
               <FieldNote tone="success">

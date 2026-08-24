@@ -362,6 +362,7 @@ function SelfIdentity(): ReactElement | null {
 export default function PersonPage({ uid }: { uid: string }): ReactElement {
   const {
     user,
+    email: myEmail,
     profile: myProfile,
     prefs,
     friends,
@@ -455,7 +456,7 @@ export default function PersonPage({ uid }: { uid: string }): ReactElement {
       outgoing?.toPhotoURL ??
       null);
   // Only on the Auth account, so a friend's is simply not available.
-  const email = isSelf ? (user?.email ?? undefined) : undefined;
+  const email = isSelf ? (myEmail ?? undefined) : undefined;
   // `||` not `??`: an old friend edge stores username as "", which is falsy but
   // not nullish, and the fetched profile's handle is the better answer.
   const username = isSelf

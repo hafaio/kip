@@ -17,7 +17,13 @@ import {
   useRef,
   useState,
 } from "react";
-import { authSettled, googleSignIn } from "./auth";
+import {
+  authSettled,
+  type Door,
+  doorsOf,
+  googleSignIn,
+  sameDoors,
+} from "./auth";
 import {
   type BookingOutcome,
   cancelBookingAsGuest,
@@ -130,11 +136,18 @@ type ContextShape = {
   // screen is the last snapshot rather than the truth.
   listenersLost: boolean;
   user: User | null;
-  // Snapshots of two mutable `user` fields — see their state declarations for
-  // why they can't be read off the object. Anonymous is a share-link ticket
-  // rather than an account, so it counts as signed out everywhere in the app.
+  // Snapshots of the mutable `user` fields the app branches on — see their state
+  // declarations for why they can't be read off the object. Anonymous is a
+  // share-link ticket rather than an account, so it counts as signed out
+  // everywhere in the app.
   anonymous: boolean;
   emailVerified: boolean;
+  email: string | null;
+  // E.164, and the only address a text can go to: kip never stores a number, so
+  // the Auth account is the whole record of one.
+  phone: string | null;
+  // Every way in this account has, in the order Firebase reports them.
+  doors: readonly Door[];
   profile: Profile | null;
   // Distinguishes "still loading" from "loaded, needs onboarding".
   profileReady: boolean;
@@ -453,12 +466,16 @@ export function KipProvider({ children }: { children: ReactNode }) {
   const configured = firebaseConfigured();
 
   const [user, setUser] = useState<User | null>(null);
-  // Snapshots of the two User fields the app branches on. They can't be read off
+  // Snapshots of the User fields the app branches on. They can't be read off
   // `user` at render: Firebase mutates that object IN PLACE and only notifies
-  // onAuthStateChanged when the uid changes, so linking or verifying leaves the
-  // same reference holding new values with nothing for React to re-render on.
+  // onAuthStateChanged when the uid changes, so linking, unlinking or verifying
+  // leaves the same reference holding new values with nothing for React to
+  // re-render on.
   const [anonymous, setAnonymous] = useState(false);
   const [emailVerified, setEmailVerified] = useState(false);
+  const [email, setEmail] = useState<string | null>(null);
+  const [phone, setPhone] = useState<string | null>(null);
+  const [doors, setDoors] = useState<readonly Door[]>([]);
   // Lives in Firestore, not on the Auth user, so it's subscribed not derived.
   const [profile, setProfile] = useState<Profile | null>(null);
   const [profileReady, setProfileReady] = useState(false);
@@ -656,6 +673,12 @@ export function KipProvider({ children }: { children: ReactNode }) {
       setUser(next);
       setAnonymous(next?.isAnonymous ?? false);
       setEmailVerified(next?.emailVerified ?? false);
+      setEmail(next?.email ?? null);
+      setPhone(next?.phoneNumber ?? null);
+      // A fresh array every refresh would re-render the whole app for nothing:
+      // the primitives above bail by value, this one has to be told how.
+      const opened = doorsOf(next);
+      setDoors((held) => (sameDoors(held, opened) ? held : opened));
       setAuthReady(true);
     });
   }, [configured]);
@@ -1336,6 +1359,9 @@ export function KipProvider({ children }: { children: ReactNode }) {
     user,
     anonymous,
     emailVerified,
+    email,
+    phone,
+    doors,
     profile,
     profileReady,
     profileUnreachable,

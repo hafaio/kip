@@ -35,12 +35,20 @@ export const EMPTY_REACH: ReachState = {
   sentTo: null,
 };
 
-export function reachError(raw: string): string | null {
+// `only` is the caller saying its surface names one door — the Settings row that
+// adds a number — so an address typed into it is a mistake rather than the other
+// route, and saying "or an email address" there would offer something the sheet
+// around it cannot do.
+export function reachError(raw: string, only?: "phone"): string | null {
   if (!raw) return null;
   const parsed = parseDestination(raw);
+  if (only && parsed.kind === "email") return "That's an email, not a number.";
   if (parsed.kind !== "unknown") return null;
-  return isForeignNumber(raw)
-    ? "Phone codes are US-only for now — an email works from anywhere."
+  if (isForeignNumber(raw)) {
+    return "Phone codes are US-only for now — an email works from anywhere.";
+  }
+  return only
+    ? "That doesn't look like a US phone number."
     : "That doesn't look like an email address or a US phone number.";
 }
 
@@ -90,11 +98,15 @@ export default function ReachField({
   state,
   onChange,
   hostRef,
+  only,
 }: {
   state: ReachState;
   onChange: (next: ReachState) => void;
   // Owned by the caller because the SEND needs it, and the send lives there.
   hostRef: RefObject<HTMLDivElement | null>;
+  // Pins the field to one door and drops the offer of the other. See
+  // `reachError`.
+  only?: "phone";
 }): ReactElement {
   // The code step replaces the field rather than sitting under it: at that point
   // the number is settled and the only thing left to type is six digits. It
@@ -108,7 +120,7 @@ export default function ReachField({
             with nothing saying anything was texted, or where to, was the one
             step the restructure was meant to make legible. */}
         <p className="text-sm text-muted">
-          We texted a code to {state.sentTo}.
+          We texted a code to {state.sentTo}. Standard message rates apply.
         </p>
         <Input
           autoComplete="one-time-code"
@@ -129,7 +141,9 @@ export default function ReachField({
           onClick={() => onChange({ ...EMPTY_REACH, mode: state.mode })}
           className="self-start text-sm font-semibold text-accent-ink hover:opacity-80"
         >
-          Didn't get it? Use something else
+          {only
+            ? "Didn't get it? Start over"
+            : "Didn't get it? Use something else"}
         </button>
       </>
     );
@@ -153,7 +167,7 @@ export default function ReachField({
         placeholder={phoneMode ? "(415) 555-0123" : "you@example.com"}
         wideSuffix
         suffix={
-          state.raw ? undefined : (
+          state.raw || only ? undefined : (
             <button
               type="button"
               onClick={() =>

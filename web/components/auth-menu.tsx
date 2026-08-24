@@ -10,11 +10,12 @@ import { useLeave } from "./use-leave";
 // the WelcomeScreen, so this is the profile menu: your profile, Settings (the
 // dock has no room for it), and sign-out.
 export default function AuthMenu(): ReactElement | null {
-  const { user, anonymous, profile, signOut, setView, navigate } = useKip();
+  const { user, anonymous, email, profile, signOut, setView, navigate } =
+    useKip();
   const { leave, leaving } = useLeave();
   const [open, setOpen] = useState(false);
 
-  const displayName = profile?.displayName ?? user?.displayName ?? user?.email;
+  const displayName = profile?.displayName ?? user?.displayName ?? email;
   const photoURL = profile?.photoURL ?? user?.photoURL ?? null;
 
   async function doSignOut() {

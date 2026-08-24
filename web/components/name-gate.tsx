@@ -40,6 +40,20 @@ type NameGateValue = {
 
 const NameGateContext = createContext<NameGateValue | null>(null);
 
+// Said the same way wherever a link turns out to be a sign-in: the sheet here,
+// and the Settings rows that add a way in. It names the ONE thing nobody can
+// fix from inside kip — there is no merge — so it has to end with a choice
+// rather than an apology.
+export function otherAccountAlert(door: string): {
+  title: string;
+  body: string;
+} {
+  return {
+    title: "You're in your other account",
+    body: `That ${door} was already on kip, so you're signed into it now. kip can't combine two accounts — keep whichever has more history, and delete the other from its own Settings. Whatever you were doing, start it again from here.`,
+  };
+}
+
 // Routes that own their identity flow. Matched on a trailing segment so the
 // GitHub Pages base path doesn't change the answer.
 function ownRoute(pathname: string): boolean {
@@ -64,8 +78,14 @@ export default function NameGateProvider({
 }: {
   children: ReactNode;
 }): ReactElement {
-  const { user, profile, profileReady, anonymous, signIn, completeOnboarding } =
-    useKip();
+  const {
+    profile,
+    profileReady,
+    anonymous,
+    email,
+    signIn,
+    completeOnboarding,
+  } = useKip();
   const { alert } = useDialog();
   const [held, setHeld] = useState<{
     action: () => Promise<void>;
@@ -123,7 +143,7 @@ export default function NameGateProvider({
   // Credentialed is not the same as reachable: a phone-only account has a way
   // back in and still no address kip can write to, and gating on `anonymous`
   // handed exactly that person a sheet with nothing in it.
-  const needsReach = anonymous || !user?.email;
+  const needsReach = anonymous || !email;
   const reachInvalid = reachError(reach.raw);
   const invalid = name && needsName ? validateDisplayName(name) : null;
   const problem = invalid ?? reachInvalid ?? error;
@@ -150,10 +170,7 @@ export default function NameGateProvider({
         // just left, and for the account they landed in both fields compute
         // away — leaving a sentence, a dead submit and a divider.
         setHeld(null);
-        await alert({
-          title: "You're in your other account",
-          body: "That Google account was already on kip, so you're signed into it now. Whatever you were doing, start it again from here.",
-        });
+        await alert(otherAccountAlert("Google account"));
         return;
       }
       const known = auth().currentUser?.displayName?.trim();
@@ -191,10 +208,7 @@ export default function NameGateProvider({
         if (!sameAccount) {
           setBusy(false);
           setHeld(null);
-          await alert({
-            title: "You're in your other account",
-            body: "That number was already on kip, so you're signed into it now. Whatever you were doing, start it again from here.",
-          });
+          await alert(otherAccountAlert("number"));
           return;
         }
       } catch (caught) {
