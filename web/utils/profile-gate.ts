@@ -34,15 +34,21 @@ export type GateEvent =
 // its 10s handshake timer, faster and better informed than any constant here.
 export const GATE_BACKSTOP_MS = 15_000;
 
-// An absence from cache is the one unbelievable snapshot: it is byte-identical
-// for "no profile" and "offline with nothing cached", and believing it would
-// put a returning user through onboarding, whose write merges over the name
-// they already have. A cached EXISTING profile is believable — it's their own.
+// An absence from cache is two facts wearing one face, and the snapshot carries
+// nothing that separates them. The SDK raises it the moment the listener
+// attaches, before it has spoken to anyone, as soon as the target carries a
+// resume token from a previous visit — and it raises exactly the same event
+// when it concludes it is offline with nothing cached. Read as the offline
+// verdict it tells an ordinary reload that the device can't reach kip; read as
+// an answer it would put a returning user through onboarding, whose write
+// merges over the name they already have. So it proves nothing by itself: the
+// cache has to be asked which of the two raised it, which is `watchOwnProfile`'s
+// job. A cached EXISTING profile needs no such asking — it's their own.
 export function classifySnapshot(
   exists: boolean,
   fromCache: boolean,
-): "answered" | "silence" {
-  return exists || !fromCache ? "answered" : "silence";
+): "answered" | "unproven" {
+  return exists || !fromCache ? "answered" : "unproven";
 }
 
 export function gateStep(state: GateState, event: GateEvent): GateState {
@@ -74,4 +80,30 @@ export function gateStep(state: GateState, event: GateEvent): GateState {
         return state;
       }
   }
+}
+
+// Which attempt an answer belongs to. `watchOwnProfile` asks the cache a
+// question whose answer arrives on its own schedule, and Firestore's own promise
+// not to call back after `unsubscribe` does not extend to it — so the listener
+// has one escape hatch through which a torn-down attempt can still speak.
+//
+// It has to be attempt identity and not the uid: a `generation` re-attach opens
+// a new listener for the SAME person, so a straggler from the old one carries
+// the right uid and nothing outside this closure can tell it from an answer.
+// Ordering and teardown are the same question — `stop()` is just "no later
+// answer is current, ever" — which is why one counter serves both.
+export function attempt(): {
+  mint: () => () => boolean;
+  stop: () => void;
+} {
+  let latest = 0;
+  return {
+    mint: () => {
+      const mine = ++latest;
+      return () => mine === latest;
+    },
+    stop: () => {
+      latest += 1;
+    },
+  };
 }
