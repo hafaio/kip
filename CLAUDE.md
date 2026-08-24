@@ -1754,9 +1754,18 @@ gcloud iam service-accounts add-iam-policy-binding kip-deployer@... \
 ```
 
 The deployer holds `firebase.admin`, `cloudfunctions.admin`, `run.admin`, `artifactregistry.admin`,
-`cloudbuild.builds.editor`, `iam.serviceAccountUser`, `serviceusage.serviceUsageConsumer` and
-`secretmanager.admin`. That is a powerful principal — it can deploy code that runs with admin access
-to the database — which is exactly why it's reachable only from this repo and never as a stored key.
+`cloudbuild.builds.editor`, `iam.serviceAccountUser`, `serviceusage.serviceUsageConsumer`,
+`secretmanager.admin` and `cloudscheduler.admin`. That is a powerful principal — it can deploy code
+that runs with admin access to the database — which is exactly why it's reachable only from this
+repo and never as a stored key.
+
+**A scheduled function needs two grants nothing else here does**, and the reaper was the first one,
+so the deploy that introduced it failed twice. `firebase.admin` carries no `cloudscheduler.*`
+permission at all (nor any `pubsub.*`) — hence the explicit role — and the deployer also can't turn
+an API on, holding `serviceUsageConsumer` rather than `serviceUsageAdmin`, so
+`cloudscheduler.googleapis.com` had to be enabled on the project by hand. Deliberately not widened:
+an API being enabled by an owner once is a smaller standing power than a deploy principal that can
+enable any of them.
 
 `bun run test` runs everything that needs no emulator: plain `bun test` with the rules suite
 excluded by path, since that one does. It was an ALLOWLIST of filenames, and that list was copied
