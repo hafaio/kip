@@ -40,6 +40,7 @@ import {
 import { useDialog } from "./dialog";
 import { otherAccountAlert, useNameGate } from "./name-gate";
 import ReachField, {
+  codeReady,
   confirmReach,
   EMPTY_REACH,
   type ReachState,
@@ -120,6 +121,30 @@ const LOSES: Record<string, string> = {
   [EMAIL_DOOR]: "The address goes with it, so kip's email stops. ",
   [PHONE_DOOR]: "The number goes with it, so kip's texts stop. ",
 };
+
+// The one message line both sheets end on, mounted whether or not it has
+// anything to say: a live region announces a CHANGE, so one that appears
+// together with its text is one a screen reader never reads out. It carries its
+// own top margin rather than taking a gap from the column, so an empty one costs
+// no height at all — which is why it sits in a gapless wrapper with the button
+// it follows rather than beside it.
+//
+// It used to stand at one line always, reserved so a refusal could not lift the
+// field off the thumb of whoever was typing into it. What made that a fair trade
+// was standing copy filling the line the rest of the time; both sheets have
+// since run out of anything to say there, and 32px of empty sheet under the
+// button on every render reads as the layout having broken rather than as room
+// being kept.
+function Problem({ message }: { message: string | null }): ReactElement {
+  return (
+    <p
+      aria-live="polite"
+      className={`text-sm leading-5 text-danger ${message ? "mt-3" : ""}`}
+    >
+      {message}
+    </p>
+  );
+}
 
 // What this account can be reached and re-entered by. kip has no password, so
 // there is no reset to fall back on: one credential is one lost inbox from
@@ -389,26 +414,16 @@ function DoorsSection(): ReactElement {
               }}
               placeholder="you@example.com"
             />
-            <Button type="submit" size="lg" disabled={busy || !address}>
-              {busy ? (
-                <LuLoaderCircle className="animate-spin" />
-              ) : (
-                "Send the link"
-              )}
-            </Button>
-            {/* Under the control, like the door's — the field and the button
-                are the form, and anything about them is a footnote to it.
-                Reserved at one line even when empty: a bottom sheet is
-                anchored at the bottom and grows upward, so a line appearing
-                here still lifts the field out from under the thumb. Nothing
-                stands in it — the button says what the step does, and the
-                screen after sending says the rest. */}
-            <p
-              aria-live="polite"
-              className={`min-h-5 text-sm leading-5 ${error ? "text-danger" : "text-muted"}`}
-            >
-              {error}
-            </p>
+            <div className="flex flex-col">
+              <Button type="submit" size="lg" disabled={busy || !address}>
+                {busy ? (
+                  <LuLoaderCircle className="animate-spin" />
+                ) : (
+                  "Send the link"
+                )}
+              </Button>
+              <Problem message={error} />
+            </div>
           </form>
         )}
       </Sheet>
@@ -431,39 +446,26 @@ function DoorsSection(): ReactElement {
             only="phone"
             invalid={Boolean(error || numberProblem)}
           />
-          <Button
-            type="submit"
-            size="lg"
-            disabled={
-              busy ||
-              Boolean(numberProblem) ||
-              (reach.pending ? !reach.code : !reach.raw)
-            }
-          >
-            {busy ? (
-              <LuLoaderCircle className="animate-spin" />
-            ) : reach.pending ? (
-              "Add the number"
-            ) : (
-              "Text me a code"
-            )}
-          </Button>
-          {/* Under the control, like the door's. The code step names itself,
-              so this is only ever a refusal by then — leaving the muted copy
-              up would describe a step already taken. Only the TEXT goes: the
-              node stays one line tall, or a wrong code lifts the sheet at the
-              moment a keypad is under the thumb. What stands is the one thing
-              said nowhere else, since the button already names the step:
-              adding a number is not agreeing to be texted, which is the
-              switch in Notifications. */}
-          <p
-            aria-live="polite"
-            className={`min-h-5 text-sm leading-5 ${error || numberProblem ? "text-danger" : "text-muted"}`}
-          >
-            {error ??
-              numberProblem ??
-              (reach.pending ? null : "A way back in, not a subscription.")}
-          </p>
+          <div className="flex flex-col">
+            <Button
+              type="submit"
+              size="lg"
+              disabled={
+                busy ||
+                Boolean(numberProblem) ||
+                (reach.pending ? !codeReady(reach) : !reach.raw)
+              }
+            >
+              {busy ? (
+                <LuLoaderCircle className="animate-spin" />
+              ) : reach.pending ? (
+                "Add the number"
+              ) : (
+                "Text me a code"
+              )}
+            </Button>
+            <Problem message={error ?? numberProblem} />
+          </div>
         </form>
       </Sheet>
     </Section>

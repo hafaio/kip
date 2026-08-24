@@ -7,6 +7,7 @@ import { authErrorMessage } from "../utils/auth";
 import { useKip } from "../utils/store";
 import { useDialog } from "./dialog";
 import ReachField, {
+  codeReady,
   confirmReach,
   EMPTY_REACH,
   type ReachState,
@@ -150,7 +151,11 @@ export default function AuthPanel({
         type="submit"
         size="lg"
         className="w-full"
-        disabled={busy || Boolean(invalid) || !reach.raw}
+        disabled={
+          busy ||
+          Boolean(invalid) ||
+          (reach.pending ? !codeReady(reach) : !reach.raw)
+        }
       >
         {busy ? <LuLoaderCircle className="animate-spin" /> : "Continue"}
       </Button>

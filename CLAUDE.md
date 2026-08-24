@@ -803,6 +803,35 @@ Rules: [firebase/firestore.rules](./firebase/firestore.rules), [firebase/storage
   writing the sheet's over them is destructive, and a held action belongs to the uid they left.
   Returned and ignored, it silently overwrote a real profile with whatever was typed in a sheet.
 
+  **The code step is six boxes over ONE input, and the count is the point.** `components/ui/code-input.tsx`
+  draws six boxes wearing `Input`'s own shell and lays a single transparent `one-time-code` field
+  across all of them, because the OS keyboard's "From Messages: 123456" strip, paste, backspace and
+  select-all are things the platform already does to one field — six real inputs would mean
+  imitating every one of them with index-juggling refs, and would still lose the autofill, which
+  fills one field and gives up. The caret is drawn as the ring on whichever box comes next, so a tap
+  landing mid-string is walked back to the end rather than left disagreeing with it.
+
+  It **submits its own form on the sixth digit** — a full code has nothing left to decide, so the
+  tap after it exists only because the form has a button — fired from an effect, or the caller's
+  submit would read the state from before the digit that completed it. `codeReady` is the one place
+  that says what a finished code looks like; all four surfaces gate their button on it, where each
+  used to ask whether `code` was non-empty and so offered to send a single digit.
+
+  One trap worth keeping: **React's `autoFocus` focuses the node itself during commit and never goes
+  through `onFocus`**, so `focused` is seeded from the prop. Left at `false` the field opened as six
+  identical empty boxes with nothing saying where the next digit lands — proved in a browser, where
+  `document.activeElement` was already the input and every box still read `border-border`. A real
+  tap fires both events normally; `element.blur()` and `element.click()` from a script do not, which
+  is why that probe has to be a dispatched mouse event.
+
+  Neither sheet reserves an empty message line any more. Both stood one line tall whatever happened,
+  which was a fair trade while standing copy filled it — the phone sheet's said adding a number was
+  not agreeing to be texted, which the Notifications switch says where it bites. With nothing left
+  to stand there it spent 32px of empty sheet under the button on every render, which reads as the
+  layout having broken. `Problem` stays MOUNTED and drops to zero height instead, in a gapless
+  wrapper with the button: a live region announces a CHANGE, so one that appears together with its
+  text is one a screen reader never reads out.
+
   `app/page.tsx` gates in order: `authReady` splash → **`WelcomeScreen`** (no session at all) →
   `profileReady` splash → the app. There is **no onboarding screen**: a missing display name is
   collected by the identity sheet (`components/name-gate.tsx`, and the portal page's own copy) at
@@ -1626,6 +1655,10 @@ record; re-adding the SAME number asks rather than resuming; and a NEW number as
 accepting writing a fresh record naming it and keeping the superseded one, declining writing nothing
 operative. It reads the DOCUMENT rather than the screen for each, since a switch drawn from state
 nobody has read back proves the render and not the write.
+
+It also pins that **a full code submits itself** — `check:consent` is the only check that types
+one. The code goes in and nothing is clicked; the assertion is that the sheet has gone anyway.
+Setting the whole value in one event is what a paste looks like too, so that covers both.
 
 Two traps it teaches, both of which cost a run here. The emulator keeps its **Auth accounts** for as
 long as it is up, so a fixed test number belongs to the previous run's account by the second run and
