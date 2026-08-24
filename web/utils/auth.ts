@@ -215,10 +215,28 @@ export type ContinuePayload = {
   host: string;
 };
 
+// Everything kip adds rides in the FRAGMENT, and Firebase's own `oobCode`,
+// `mode` and `apiKey` are appended to the query when its handler redirects —
+// verified against the Auth emulator, whose 303 keeps the fragment untouched.
+// Browsers never send a fragment to a server and strip it from `Referer`, so
+// what kip puts there stays out of the static host's access log, which records
+// the request line of the very load that opens this page and which no amount of
+// tidying up afterwards can reach. Same trick, and the same reason, as the
+// portal token.
+//
+// The one thing this cannot cover is `oobCode`: Firebase decides where that
+// goes, and it goes in the query. It is single-use and spent by the open, where
+// an ID token is neither.
+//
+// Moving `email` across is also what makes a lost fragment fail LOUDLY. The page
+// refuses a link with no address, so a browser or a mail client that dropped the
+// fragment lands on "this link can't be used" — where leaving the address in the
+// query would have left an ATTACH link looking exactly like a RETURNING one, and
+// signed someone into a second account instead of joining the first.
 function continueUrl(payload: ContinuePayload): string {
   const base = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
-  const query = new URLSearchParams(payload).toString();
-  return `${window.location.origin}${base}/continue/?${query}`;
+  const carried = new URLSearchParams(payload).toString();
+  return `${window.location.origin}${base}/continue/#${carried}`;
 }
 
 // Attaches an address to the account that is ALREADY asking, rather than making
@@ -261,10 +279,11 @@ export function tokenExpired(idToken: string): boolean {
 // attach to, and `/continue/` reads its absence as "sign this person in" rather
 // than "link this address". Same one-time link, same landing page, two modes.
 export async function sendReturnLink(email: string): Promise<void> {
-  const base = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
-  const query = new URLSearchParams({ email }).toString();
   await sendSignInLinkToEmail(auth(), email, {
-    url: `${window.location.origin}${base}/continue/?${query}`,
+    // Through the same builder, so the two doors cannot disagree about where
+    // kip's half of the link lives. There is no token on this one; the address
+    // is carried for the same reason it is there — see `continueUrl`.
+    url: continueUrl({ email }),
     handleCodeInApp: true,
   });
 }
