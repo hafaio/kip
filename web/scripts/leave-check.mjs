@@ -105,7 +105,7 @@ await page.evaluate(`
 })()`);
 const codes = await (await fetch(`${AUTH}/emulator/v1/projects/${AUTH_PROJECT}/oobCodes`)).json();
 const code = new URL(codes.oobCodes?.at(-1)?.oobLink).searchParams.get("oobCode");
-await page.go(`${APP}/continue/?mode=signIn&lang=en&apiKey=fake-api-key&oobCode=${encodeURIComponent(code)}&email=${encodeURIComponent(EMAIL)}`, 10000);
+await page.go(`${APP}/continue/?mode=signIn&lang=en&apiKey=fake-api-key&oobCode=${encodeURIComponent(code)}#email=${encodeURIComponent(EMAIL)}`, 10000);
 const accounts = await (await fetch(`${AUTH}/identitytoolkit.googleapis.com/v1/projects/${AUTH_PROJECT}/accounts:query`, {
   method: "POST",
   headers: { Authorization: "Bearer owner", "Content-Type": "application/json" },

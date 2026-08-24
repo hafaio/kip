@@ -309,7 +309,7 @@ if (!sent) {
 }
 const link = new URL(sent.oobLink).searchParams.get("oobCode");
 await page.go(
-  `${APP}/continue/?mode=signIn&lang=en&apiKey=fake-api-key&oobCode=${encodeURIComponent(link)}&email=${encodeURIComponent(EMAIL)}`,
+  `${APP}/continue/?mode=signIn&lang=en&apiKey=fake-api-key&oobCode=${encodeURIComponent(link)}#email=${encodeURIComponent(EMAIL)}`,
   10000,
 );
 const accounts = await (

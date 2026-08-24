@@ -48,6 +48,83 @@ type Outcome = "working" | "done" | "expired" | "stalled" | "taken" | "failed";
 // belongs to is held by the account that was asking, not by the address.
 const EMAIL_EXISTS = "EMAIL_EXISTS";
 
+// What the link carried, read out of the address bar exactly once.
+type Link = {
+  // The URL as it arrived. `signInWithEmailLink` parses the code out of it
+  // itself, so it has to be kept rather than rebuilt.
+  href: string;
+  idToken: string;
+  email: string;
+  oobCode: string;
+  host: string | null;
+};
+
+const LINK_KEY = "kip:continue";
+
+// The ATTACH link carries an ID token, which is a live credential for the
+// account asking — an hour of one — and leaving it standing in the address bar
+// puts it in the static host's access log, in this browser's history, and in
+// whatever that history syncs to. It cannot be kept out of the first request
+// (that request is how the page loads at all), but it has no business outliving
+// it, so it is read once and wiped with `replaceState`.
+//
+// Mirrored into `sessionStorage` first, because wiping it breaks two things
+// otherwise: the retry button re-reads the link, and a RELOAD would find an
+// attach link with no token and fall through to the RETURNING branch — which
+// signs in rather than links, minting a second account for an address whose
+// whole point was to join the first. Per tab, gone when it closes, and sent
+// nowhere; strictly better than the address bar, which is where it was.
+function readLink(): Link | null {
+  // kip's half of the link is in the FRAGMENT; Firebase's `oobCode` and friends
+  // are in the query. See `continueUrl` in `utils/auth.ts` for why, and for why
+  // a fragment that never arrives lands on "this link can't be used" rather than
+  // quietly signing someone into the wrong account.
+  const carried = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+  const query = new URLSearchParams(window.location.search);
+  const email = carried.get("email");
+  if (email) {
+    const link: Link = {
+      href: window.location.href,
+      idToken: carried.get("idToken") ?? "",
+      email,
+      oobCode: query.get("oobCode") ?? "",
+      host: carried.get("host"),
+    };
+    let mirrored = true;
+    try {
+      sessionStorage.setItem(LINK_KEY, JSON.stringify(link));
+    } catch {
+      mirrored = false;
+    }
+    // Only once there is a safer copy. Wiping is worth doing BECAUSE the token
+    // is held somewhere better; with nowhere to hold it, wiping destroys the
+    // only copy and a reload lands on a page that can no longer finish. And the
+    // browsers that refuse storage are private windows, which keep no history
+    // to leak into — so the wipe buys least exactly where it would cost most.
+    if (mirrored) {
+      window.history.replaceState(null, "", window.location.pathname);
+    }
+    return link;
+  } else {
+    try {
+      const held = sessionStorage.getItem(LINK_KEY);
+      return held ? (JSON.parse(held) as Link) : null;
+    } catch {
+      return null;
+    }
+  }
+}
+
+// Once the code is spent there is nothing left to retry and no reason to keep a
+// credential around.
+function forgetLink(): void {
+  try {
+    sessionStorage.removeItem(LINK_KEY);
+  } catch {
+    // Nothing to do, and nothing depends on it having worked.
+  }
+}
+
 export default function ContinuePage(): ReactElement {
   const [outcome, setOutcome] = useState<Outcome>("working");
   const [mode, setMode] = useState<"attach" | "return">("attach");
@@ -61,17 +138,20 @@ export default function ContinuePage(): ReactElement {
   // second mount always found the code spent, so the email door was the one
   // path a local run could never verify.
   const spent = useRef<string | null>(null);
+  // Read once and held, because reading it is what WIPES it: after the first
+  // pass the address bar carries nothing, so the retry button has only this.
+  const link = useRef<Link | null>(null);
 
   const attach = useCallback((retrying = false): (() => void) => {
-    const query = new URLSearchParams(window.location.search);
-    const idToken = query.get("idToken") ?? "";
-    const email = query.get("email") ?? "";
-    setHost(query.get("host"));
+    link.current ??= readLink();
+    const held = link.current;
 
-    if (!email) {
+    if (!held) {
       setOutcome("failed");
       return () => undefined;
     }
+    const { idToken, email } = held;
+    setHost(held.host);
     // The discriminator between the two modes. An ID token means an anonymous
     // account is asking for this address to be attached to it; its absence means
     // someone is coming back to an account they already have, and the same call
@@ -83,11 +163,13 @@ export default function ContinuePage(): ReactElement {
     // token, so an expired open must not burn one that still works. A returning
     // link carries no token, so only the code's own lifetime applies.
     if (!returning && tokenExpired(idToken)) {
+      // Nothing can be done with it and no retry is offered, so it goes.
+      forgetLink();
       setOutcome("expired");
       return () => undefined;
     }
 
-    const code = query.get("oobCode") ?? "";
+    const code = held.oobCode;
     // A retry is a deliberate second send, and this guard is only about the
     // second MOUNT — refusing one left the page on `working` with nothing on it,
     // since returning here sets no outcome at all.
@@ -111,17 +193,13 @@ export default function ContinuePage(): ReactElement {
     // passing an idToken makes the endpoint LINK the address to that account
     // rather than mint one, and this browser is disposable.
     const work: Promise<unknown> = returning
-      ? signInWithEmailLink(auth(), email, window.location.href)
+      ? signInWithEmailLink(auth(), email, held.href)
       : fetch(
           `${identityToolkit()}/v1/accounts:signInWithEmailLink?key=${firebaseConfig.apiKey}`,
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              email,
-              oobCode: query.get("oobCode") ?? "",
-              idToken,
-            }),
+            body: JSON.stringify({ email, oobCode: code, idToken }),
           },
         ).then(async (response) => {
           if (response.ok) return;
@@ -141,6 +219,14 @@ export default function ContinuePage(): ReactElement {
       .then((result) => {
         if (!live) return;
         clearTimeout(timer);
+        // Spent, or refused for a reason nothing can change, so the credential
+        // stops being kept. `failed` keeps it because a RELOAD is the only retry
+        // it has — the screen deliberately offers no button, since a call that
+        // ANSWERED has spent the code — and the one failure worth another go, a
+        // request that never reached the server, lands here too. `stalled` is
+        // the outcome with a button, and it never reaches this line at all: the
+        // timeout sets it, not the work.
+        if (result !== "failed") forgetLink();
         setOutcome(result);
       });
 
