@@ -21,7 +21,7 @@ import {
   sendAttachLink,
 } from "../utils/auth";
 import { parseDestination } from "../utils/destination";
-import { leaveKip } from "../utils/leave";
+import { requestDeletion } from "../utils/leave";
 import { useKip } from "../utils/store";
 import { asThemeChoice, type ThemeChoice } from "../utils/theme";
 import { NOTIFY_EVENTS, type NotifyKind } from "../utils/types";
@@ -428,15 +428,7 @@ function DoorsSection(): ReactElement {
 // Your name and handle are edited on your profile, where they're actually shown;
 // this section is what's left — the ways into the account, and the way out.
 function AccountSection(): ReactElement | null {
-  const {
-    user,
-    anonymous,
-    navigate,
-    myListings,
-    trips,
-    incomingBookings,
-    friends,
-  } = useKip();
+  const { user, anonymous, navigate } = useKip();
   const { confirm, alert } = useDialog();
   // Shared with the menu, so the two exits cannot say different things or do
   // different amounts of work.
@@ -444,11 +436,9 @@ function AccountSection(): ReactElement | null {
   const [leaving, setLeaving] = useState(false);
 
   // Deletion, not sign-out, and it says what other people lose too — a host
-  // cancelling stays and a guest cancelling trips is what step one of this does,
-  // and nobody should discover that after the fact.
+  // cancelling stays and a guest cancelling trips is what the first phase of it
+  // does, and nobody should discover that after the fact.
   async function deleteAccount(): Promise<void> {
-    // Same reason as `useLeave`: a second run re-cancels what the first already
-    // cancelled, and the rules refusing that reads as a failure.
     if (!user || leaving) return;
     const sure = await confirm({
       title: "Delete your kip?",
@@ -457,39 +447,20 @@ function AccountSection(): ReactElement | null {
       tone: "danger",
     });
     if (!sure) return;
-    await teardown();
-  }
-
-  // Shared by both exits, because both must dismantle rather than merely leave.
-  // Every step is a no-op on what is already gone, so pressing again after a
-  // failure finishes the job rather than starting a second one.
-  async function teardown(then?: () => Promise<void>): Promise<void> {
-    if (!user) return;
     setLeaving(true);
     try {
-      await leaveKip(
-        user.uid,
-        myListings,
-        trips,
-        incomingBookings,
-        friends.map((friend) => friend.uid),
-      );
-      await then?.();
+      // Asking is the whole of it: a Cloud Function does the teardown and
+      // retries on its own, so this tab is free to be closed. It used to be a
+      // chain of writes from here, and closing the tab partway through left an
+      // account nothing would ever finish.
+      await requestDeletion(user.uid);
     } catch (error) {
       console.error(error);
       setLeaving(false);
-      await alert(
-        error instanceof StaleSession
-          ? {
-              title: "Almost done",
-              body: "Your places, stays and friends are gone. Firebase needs a fresh sign-in to remove the account itself — come back in and press it once more.",
-            }
-          : {
-              // Silence here left someone half dismantled with no idea of it.
-              title: "That didn't finish",
-              body: "Some of it went through. Check your connection and press it again — it picks up where it stopped.",
-            },
-      );
+      await alert({
+        title: "Couldn't start that",
+        body: "Nothing has been deleted. Check your connection and try again.",
+      });
     }
   }
 

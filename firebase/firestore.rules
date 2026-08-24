@@ -225,10 +225,11 @@ service cloud.firestore {
             || get(/databases/$(database)/documents/usernames/$(request.resource.data.username)).data.uid == userId)
         && (request.resource.data.get('searchable', false) == false
             || request.resource.data.get('username', '') != '');
-      // Explicit, because the rule above can never pass for one: a delete has no
-      // `request.resource.data`, so every clause it names errors, and an error
-      // is a denial. Leaving was therefore impossible rather than forbidden.
-      allow delete: if isSignedIn() && request.auth.uid == userId;
+      // No delete verb at all, for anyone. Leaving is a request now — see
+      // `deletions` below — and the teardown runs with the Admin SDK, which
+      // rules don't apply to. A client that could still delete its own profile
+      // could do it WITHOUT asking for the teardown, which is the half-dismantled
+      // account this whole change exists to stop producing.
 
       match /settings/{doc} {
         allow read, write: if isSignedIn() && request.auth.uid == userId;
@@ -490,6 +491,51 @@ service cloud.firestore {
           && exists(/databases/$(database)/documents/portals/$(portalId));
         allow delete: if isSignedIn() && request.auth.uid == accountId;
       }
+    }
+
+    // Leaving, as a request rather than a chain of writes. The client creates
+    // this and a Cloud Function dismantles the account with the Admin SDK,
+    // retrying on its own until it finishes — which is the point: a browser is
+    // the one participant in a teardown that can simply walk away, and the one
+    // it left behind (profile and friends intact, stays already cancelled) is
+    // invisible to the reaper, which collects only accounts with nothing
+    // attached.
+    //
+    // The function owns the lifecycle while it is running: no update at all, so
+    // the phase it reports can't be rewritten by the account being torn down,
+    // and no delete until it has given up — see the delete rule below. No list
+    // either — who is leaving is nobody else's business.
+    //
+    // Deliberately NOT gated on a recent sign-in. An ID token lives an hour, so
+    // there is no stale one left to steal; the same session can already cancel
+    // every stay and delete every listing directly, so a freshness check here
+    // would guard nothing it doesn't already have. What it WOULD do is lock out
+    // the one population that can never refresh `auth_time` — a participant with
+    // no credential to re-authenticate with, for whom this is the only exit.
+    // Firebase's own `deleteUser` demanded exactly that recency, and stranding
+    // people in front of advice they couldn't follow is why the client path
+    // needed a special case for it at all.
+    match /deletions/{userId} {
+      allow get: if isSignedIn() && request.auth.uid == userId;
+      allow list: if false;
+      allow create: if isSignedIn()
+        && request.auth.uid == userId
+        && request.resource.data.keys().hasOnly(['requestedAt'])
+        && request.resource.data.requestedAt == request.time;
+      allow update: if false;
+      // A teardown that gives up leaves this document standing forever, and
+      // while it stands the app draws the deletion screen ahead of every other
+      // gate, on every device — so the account is locked out of kip by a
+      // failure it can do nothing about, and nothing else removes one: there is
+      // no TTL, and the reaper skips an account that still has a profile.
+      //
+      // Only once it carries the error the trigger writes when it stops trying.
+      // Mid-teardown there is nothing to cancel out of, and re-asking is a
+      // create, so clearing a failed one is also how the attempt budget starts
+      // over.
+      allow delete: if isSignedIn()
+        && request.auth.uid == userId
+        && resource.data.get('error', '') != '';
     }
 
     // Write-only diagnostics. Nothing can read one back, which is what separates

@@ -54,6 +54,7 @@ import {
   watchFriends,
   watchOwnProfile,
 } from "./friends";
+import { watchDeletion } from "./leave";
 import {
   addWindow as fbAddWindow,
   createListing as fbCreateListing,
@@ -120,6 +121,7 @@ import {
   type Booking,
   type ConnectRequest,
   DEFAULT_PREFS,
+  type DeletionRequest,
   type Friend,
   type Listing,
   type ListingPhoto,
@@ -157,6 +159,13 @@ type ContextShape = {
   profile: Profile | null;
   // Distinguishes "still loading" from "loaded, needs onboarding".
   profileReady: boolean;
+  // Their account is being dismantled by the trigger that watches
+  // `deletions/{uid}`, and the phase it last reported. Null means no such
+  // document, which is both "not leaving" and "finished".
+  deletion: DeletionRequest | null;
+  // Whether that has been answered at all — the app renders behind it, so a
+  // teardown must never be raced past by a screen drawn before the answer.
+  deletionReady: boolean;
   // The gate above could not be settled: no answer is coming right now.
   // Self-healing — a late answer still opens the gate. Distinct from
   // `listenersLost`, which is data going stale AFTER it arrived.
@@ -492,6 +501,11 @@ export function KipProvider({ children }: { children: ReactNode }) {
   const [profile, setProfile] = useState<Profile | null>(null);
   const [profileReady, setProfileReady] = useState(false);
   const [profileUnreachable, setUnreachable] = useState(false);
+  const [deletion, setDeletion] = useState<DeletionRequest | null>(null);
+  const [deletionReady, setDeletionReady] = useState(false);
+  // The uid whose teardown this session has actually SEEN, so the document
+  // going away can be told from never having been there.
+  const leaving = useRef<string | null>(null);
   // Firebase restores a session asynchronously, so this stops the gate flashing
   // the sign-in screen at someone already signed in.
   const [authReady, setAuthReady] = useState(false);
@@ -740,6 +754,53 @@ export function KipProvider({ children }: { children: ReactNode }) {
     };
   }, [configured, user, generation]);
 
+  // Watched beside the profile rather than with the owned bundle below, which
+  // this one pauses: everything in that bundle is being deleted, so a listener
+  // on it spends the re-attach budget reporting a teardown that is going to
+  // plan. Silence is not fatal — after the backstop the app renders anyway,
+  // since blocking everyone on a listener that never answered would be a worse
+  // failure than the rare screen this gate exists to show.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `generation` is unread on purpose — bumping it is how a lost listener gets re-attached.
+  useEffect(() => {
+    if (!configured || !user) {
+      setDeletion(null);
+      setDeletionReady(true);
+      leaving.current = null;
+      return;
+    }
+    const uid = user.uid;
+    setDeletionReady(false);
+    const stop = watchDeletion(
+      uid,
+      (request) => {
+        setDeletion(request);
+        setDeletionReady(true);
+        if (request) {
+          // Only while it is still running. A teardown that has GIVEN UP can be
+          // cleared from the screen it puts up — the rule allows exactly that
+          // one delete — so its disappearance is somebody choosing to stay, and
+          // reading it as the ending signed them out of an account that is
+          // still there. The function never deletes a request it wrote an error
+          // on, so nothing else can arrive at this absence.
+          leaving.current = request.failed ? null : uid;
+        } else if (leaving.current === uid) {
+          // The document is deleted last, after the Auth account it belongs to,
+          // so this is the ending: the session is signed in as somebody who no
+          // longer exists. `force`, because an account with no credential has
+          // just been destroyed on purpose.
+          leaving.current = null;
+          fbSignOut(auth()).catch((error) => console.error("signOut", error));
+        }
+      },
+      () => setDeletionReady(true),
+    );
+    const timer = setTimeout(() => setDeletionReady(true), GATE_BACKSTOP_MS);
+    return () => {
+      clearTimeout(timer);
+      stop();
+    };
+  }, [configured, user, generation]);
+
   // Subscribe to everything owned by the signed-in user.
   // biome-ignore lint/correctness/useExhaustiveDependencies: `generation` is unread on purpose — bumping it is how a lost listener gets re-attached.
   useEffect(() => {
@@ -755,6 +816,7 @@ export function KipProvider({ children }: { children: ReactNode }) {
       return;
     }
     const uid = user.uid;
+    if (deletion) return;
     const unsubs = [
       watchFriends(uid, setFriends),
       watchIncomingConnectRequests(uid, setIncoming),
@@ -768,7 +830,7 @@ export function KipProvider({ children }: { children: ReactNode }) {
     return () => {
       for (const unsub of unsubs) unsub();
     };
-  }, [configured, user, generation]);
+  }, [configured, user, generation, deletion]);
 
   // Live windows for each of my own listings, keyed on the ids rather than the
   // array (like `friendUidsKey` below) because a re-attach re-delivers the same
@@ -1412,6 +1474,8 @@ export function KipProvider({ children }: { children: ReactNode }) {
     profile,
     profileReady,
     profileUnreachable,
+    deletion,
+    deletionReady,
     prefs,
     friends,
     incomingRequests,
