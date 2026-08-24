@@ -324,6 +324,7 @@ export default function NameGateProvider({
                 }}
                 hostRef={recaptcha}
                 invalid={Boolean(reachInvalid || error)}
+                busy={busy}
               />
             ) : null}
 

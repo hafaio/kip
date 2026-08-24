@@ -599,6 +599,7 @@ function NameForm({
         }}
         hostRef={recaptcha}
         invalid={Boolean(reachInvalid || error)}
+        busy={busy}
       />
       {/* Below both fields and above the button: it describes the reach field
           it follows, and carries whatever is wrong. Nothing sits between the

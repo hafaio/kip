@@ -146,6 +146,7 @@ export default function AuthPanel({
         }}
         hostRef={recaptcha}
         invalid={Boolean(problem)}
+        busy={busy}
       />
       <Button
         type="submit"

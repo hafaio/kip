@@ -454,6 +454,7 @@ function DoorsSection(): ReactElement {
             hostRef={recaptcha}
             only="phone"
             invalid={Boolean(error || numberProblem)}
+            busy={busy}
           />
           <div className="flex flex-col">
             <Button

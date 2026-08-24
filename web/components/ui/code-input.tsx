@@ -30,11 +30,15 @@ export default function CodeInput({
   onChange,
   invalid = false,
   autoFocus = false,
+  busy = false,
 }: {
   value: string;
   onChange: (next: string) => void;
   invalid?: boolean;
   autoFocus?: boolean;
+  // The caller's in-flight flag. See `readOnly` below — this is what stops one
+  // code being confirmed twice.
+  busy?: boolean;
 }): ReactElement {
   const field = useRef<HTMLInputElement>(null);
   // Seeded from `autoFocus` rather than starting false: React focuses the node
@@ -87,10 +91,22 @@ export default function CodeInput({
         autoFocus={autoFocus}
         aria-label="6-digit code"
         aria-invalid={invalid || undefined}
-        maxLength={CODE_LENGTH}
+        // Deliberately NO `maxLength`: the browser applies it to the RAW value
+        // before any handler runs, so it truncates a paste by CHARACTERS and
+        // this field then strips digits out of the remains. Measured in Chrome:
+        // "429-103" arrives as "429-10" and loses its last digit, and a pasted
+        // "Your kip code is 429103" arrives as "Your k" and leaves the field
+        // empty. Both are what someone actually pastes. The slice below is the
+        // real bound, and it counts the digits it keeps.
+        //
+        // Frozen while a code is in flight, or the race is: submit starts on the
+        // sixth digit, nothing on screen has changed yet, so a backspace and a
+        // retype take the value 6 -> 5 -> 6, the effect fires again, and the
+        // same single-use code is confirmed twice. `requestSubmit` does not
+        // consult the submit button's `disabled`, so the button being greyed is
+        // no guard at all.
+        readOnly={busy}
         value={value}
-        // Non-digits are dropped rather than refused, so a code pasted with a
-        // space or a dash in it still lands.
         onChange={(event) =>
           onChange(event.target.value.replace(/\D/g, "").slice(0, CODE_LENGTH))
         }
