@@ -443,6 +443,35 @@ Rules: [firebase/firestore.rules](./firebase/firestore.rules), [firebase/storage
   notifies each one (`slot-moved`), behind a confirm dialog that says so, rather than silently
   redefining what someone asked for.
 
+  **Who is waiting is shown where the dates are.** The slot sheet lists every `REQUESTED` booking on
+  that slot, oldest first, above the date fields — so the confirm that cancels them is not the first
+  the host hears of them. Rows are `BookingRow` (`lead="person"`), the same component the Guests and
+  Cancelled lists use, and they only navigate: confirming is a transaction with its own failure
+  states, all of which live on the booking page, and CLAUDE.md's own "confirming a stranger called
+  'Someone' is the moment identity matters most" argues against a one-tap confirm that skips looking.
+
+  It renders in all three of the sheet's states, not just the open one, and the two extra cases are
+  the point rather than tidiness. **Confirming does not cancel the losers** — `confirmBooking`
+  touches only the winning booking and the window — so a BOOKED slot carries the asks that lost the
+  race, and they can never be confirmed (`bookingMatchesOpenSlot` requires OPEN). An **expired** slot
+  can hold them too. Both are answerable only by declining, which the sheet says outright, and this
+  is the only surface that reaches them from the dates they are about.
+
+  **Both Availability lists carry a count**, and without it none of the above is findable: a slot two
+  people are waiting on otherwise looks exactly like one nobody has asked about, and the host would
+  have to open every slot in turn. **Past dates** carries it too, and that is where it earns most —
+  nothing ages an ask out, so a request for dates that have gone sits in someone's list until it is
+  declined, and a past slot is the last place anyone would look.
+
+  Opening a slot also **names it in the URL** (in place, so it adds nothing to go back through) —
+  tapping a request pushes the booking on top of it, and back returns to the slot still open instead
+  of a room that has forgotten which one it was. That is why a room's `windowId` is deliberately NOT
+  part of `screenKey` in `app/page.tsx`: a sheet is an overlay on the room, not a different screen,
+  and counting it scrolled the page under the sheet to the top on open and again on close. For the
+  same family of reason `replaceEntry` now carries `historyScroll()` forward — a replace changes what
+  an entry POINTS AT, not where the reader is standing in it, and defaulting to 0 meant every in-place
+  rewrite silently forgot the position.
+
   **A slot holds at most one stay, and is born free.** `bookingMatchesOpenSlot` requires the slot to
   be `OPEN` as well as to hold the claimed dates, at BOTH ends of a stay's life — asking and
   confirming. Without the `OPEN` half, a booked slot's frozen dates would happily match a second
@@ -1182,7 +1211,10 @@ cd web && bun dev:emulated
 ```
 
 One command, and the emulators live only as long as it does — so a plain `bun dev` can never
-quietly be talking to a fake backend, and nothing is left listening after Ctrl-C.
+quietly be talking to a fake backend, and nothing is left listening after Ctrl-C. It needs the same
+**JRE** the rules suite does, and says so unhelpfully — `An unexpected error has occurred` with the
+real reason buried above it — so export `JAVA_HOME` first. It also holds ports 8080 and 9099, which
+the rules suite wants: run one or the other, not both.
 
 **An emulated Firestore starts EMPTY**, which is the one thing worth knowing before using it: real
 share links point at portal docs that do not exist there, so every one of them reads as "this link
@@ -1213,14 +1245,21 @@ asserts what a visitor actually sees AND what it leaves behind: the link resolve
 room render, the ask opens the identity sheet, submitting it sends a `REQUESTED` booking — never a
 confirmed one, since a link is not friendship — carrying the dates that were shown, and the guest's
 profile ends up holding the name they typed. A booking carries no name by design, so the two are
-checked separately; that split IS the `knownBy` design, asserted. It exits non-zero on the
+checked separately; that split IS the `knownBy` design, asserted. It also pins two things about the
+form itself: a phone number typed while the field reads Email is accepted — the mode sets the
+keyboard, never the verdict — and Google stands BELOW the submit after the divider, since it
+authenticates first and takes the name from the account rather than the form. It exits non-zero on the
 first failure, so it reads like a test even though it cannot gate CI — it needs a browser and a
 running dev server:
 
 ```sh
-cd web && bun run dev:emulated      # one shell
+cd web && bun run dev:emulated      # one shell, serves on 3001
 bun run check:portal                # another
 ```
+
+It serves on **3001**, not Next's default, so an emulated server can never quietly answer for the
+ordinary `bun dev` on 3000 — the two would be indistinguishable in a browser and the emulated one
+has an empty database. Both the script and the check are pinned to it; `KIP_ORIGIN` still overrides.
 
 Run it after touching the portal page, the identity sheet, or `utils/auth.ts`. Everything this path
 has broken — a link that resolved for nobody, a code step that swallowed a wrong code, a returning
@@ -1232,6 +1271,55 @@ does NOT change the project the SDK thinks it is talking to, and the emulator na
 project. So a fixture seeded under `--project demo-kip` is invisible to a client configured for
 `hafaio-kip-dev`, and every link reads as revoked. Seed under the CLIENT's project id. This cost an
 hour and looked exactly like the product being broken.
+
+**The two emulators disagree about which project that is**, which is the same trap wearing a
+different hat. Firestore namespaces under the CLIENT's id, for the reason just given. **Auth
+namespaces under the id the emulator was STARTED with** (`demo-kip`), because the client
+authenticates with a fake API key and there is no project in the request to honour. So a sign-in
+link that was definitely sent is simply absent from
+`/emulator/v1/projects/hafaio-kip-dev/oobCodes` and sitting in `demo-kip`'s.
+
+**Never scrape a uid out of browser storage.** The SDK moves a session between `localStorage` and
+IndexedDB as it sees fit, so a uid read off `firebase:authUser:` was real when read and wrong by the
+next page load — and a fixture seeded against it belongs to nobody, which renders as a place that
+will not load. Ask the emulator instead: `POST
+/identitytoolkit.googleapis.com/v1/projects/demo-kip/accounts:query`.
+
+**And attach to the browser's exceptions from OUTSIDE the page.** `app/error.tsx` catches a render
+throw and paints "This page couldn't load" over it, so an in-page `console.error` hook installed
+after navigation sees nothing — the stack survives only in CDP's own `Runtime.exceptionThrown` and
+`Runtime.consoleAPICalled` events. Both checks now collect those and print them before their
+assertions run, so a crash reports its cause rather than its symptom.
+
+## Driving the host's side
+
+`bun run check:host` is the other half of the same booking: `check:portal` is a visitor asking,
+this is the person being asked. It signs a host in through the **email door** — the Auth emulator
+publishes the link it would have mailed, which is what makes it unattended — seeds a place with one
+slot and two asks against it, and then asserts what the host sees: a **count on the row** in
+Availability, both askers **named inside the slot**, oldest first, sitting **above the date fields**,
+and the open slot **named in the URL**.
+
+```sh
+cd web && bun run dev:emulated      # one shell, serves on 3001
+bun run check:host                  # another
+```
+
+Then it books the slot out from under those asks and checks the losers are still listed BELOW the
+stay that won, and finally that opening a slot leaves the host's scroll position alone.
+
+Each of those is a bug the other suites cannot see. The count is what makes the requests
+findable at all — without it a slot two people are waiting on looks exactly like an untouched one.
+The ordering is first-come, which is the only ordering the host has reason to read. The position is
+what makes the confirm that cancels those asks legible BEFORE a date is touched. And the URL is what
+lets the host tap through to a request and come back to the slot they left open, since the sheet is
+component state and a room page that has forgotten which slot was open is where they landed
+otherwise.
+
+One thing it caught immediately, worth keeping: **a listing with no `location` crashes the room page
+outright** (`DetailBlock` reads `listing.location.label`). Unreachable in production — every write
+path sets one — so this is a note about FIXTURES, not a bug: seed the field, or spend the time
+reading a stack trace for a state that cannot exist.
 
 ## Security-rules tests
 

@@ -296,6 +296,16 @@ function OwnerView({ listing }: { listing: Listing }): ReactElement {
     if (focusedWindowId) replace({ kind: "room", id: listing.id });
   }
 
+  // Opening it names it in the URL — in place, so it adds no entry to go back
+  // through. Without this, tapping a request inside the sheet pushed the
+  // booking on top of a room that had forgotten which slot was open, and back
+  // returned to a bare room page. The deep-link variant already existed; this
+  // just makes an ordinary tap arrive at the same address.
+  function openSlotSheet(windowId: string): void {
+    setEditingWindowId(windowId);
+    replace({ kind: "room", id: listing.id, windowId });
+  }
+
   const allWindows = [...(myWindows[listing.id] ?? [])].sort((left, right) =>
     left.start.localeCompare(right.start),
   );
@@ -316,6 +326,15 @@ function OwnerView({ listing }: { listing: Listing }): ReactElement {
   const activeBookings = bookings.filter(
     (booking) => booking.status !== "CANCELLED",
   );
+  // How many are still waiting on an answer for one slot. The sheet filters
+  // `incomingBookings` again for itself rather than being handed this — both
+  // read the one subscription and both take `REQUESTED`, which is what keeps the
+  // count and the rows behind it in step.
+  const askedOn = (windowId: string): number =>
+    bookings.filter(
+      (booking) =>
+        booking.windowId === windowId && booking.status === "REQUESTED",
+    ).length;
   // Not a guest any more, but this is the only way in to it.
   const cancelledBookings = bookings
     .filter((booking) => booking.status === "CANCELLED")
@@ -367,42 +386,12 @@ function OwnerView({ listing }: { listing: Listing }): ReactElement {
             ) : (
               <Group>
                 {windows.map((window) => (
-                  <Row
+                  <SlotSummaryRow
                     key={window.id}
-                    onClick={() => setEditingWindowId(window.id)}
-                    ariaLabel={formatDateRange(window.start, window.end)}
-                  >
-                    <div className="min-w-0 flex-1">
-                      <span className="block text-[0.9375rem] font-semibold">
-                        {formatDateRange(window.start, window.end)}
-                        <span className="font-normal text-muted">
-                          {" "}
-                          · {nights(window.start, window.end)} nights
-                        </span>
-                      </span>
-                      {window.status === "BOOKED" || window.autoAccept ? (
-                        <span className="mt-1 flex flex-wrap items-center gap-2">
-                          {window.status === "BOOKED" ? (
-                            <Chip tone="booked">Booked</Chip>
-                          ) : (
-                            <Chip tone="instant" icon={<LuZap size={12} />}>
-                              Instant
-                            </Chip>
-                          )}
-                          {window.details ? (
-                            <span className="text-sm text-muted">
-                              {window.details}
-                            </span>
-                          ) : null}
-                        </span>
-                      ) : window.details ? (
-                        <span className="block text-sm text-muted">
-                          {window.details}
-                        </span>
-                      ) : null}
-                    </div>
-                    <LuChevronRight className="shrink-0 text-faint" />
-                  </Row>
+                    window={window}
+                    asked={askedOn(window.id)}
+                    onOpen={() => openSlotSheet(window.id)}
+                  />
                 ))}
               </Group>
             )}
@@ -418,23 +407,12 @@ function OwnerView({ listing }: { listing: Listing }): ReactElement {
             <Section title="Past dates">
               <Group className="opacity-70">
                 {expired.map((window) => (
-                  <Row
+                  <PastSlotRow
                     key={window.id}
-                    onClick={() => setEditingWindowId(window.id)}
-                    ariaLabel={formatDateRange(window.start, window.end)}
-                  >
-                    <div className="min-w-0 flex-1">
-                      <span className="block text-[0.9375rem] font-semibold">
-                        {formatDateRange(window.start, window.end)}
-                      </span>
-                      <span className="block text-sm text-muted">
-                        {window.status === "BOOKED"
-                          ? "Someone stayed"
-                          : "Nobody booked these"}
-                      </span>
-                    </div>
-                    <LuChevronRight className="shrink-0 text-faint" />
-                  </Row>
+                    window={window}
+                    asked={askedOn(window.id)}
+                    onOpen={() => openSlotSheet(window.id)}
+                  />
                 ))}
               </Group>
             </Section>
@@ -538,6 +516,93 @@ function OwnerView({ listing }: { listing: Listing }): ReactElement {
   );
 }
 
+function SlotSummaryRow({
+  window,
+  asked,
+  onOpen,
+}: {
+  window: AvailabilityWindow;
+  asked: number;
+  onOpen: () => void;
+}): ReactElement {
+  const chips = window.status === "BOOKED" || window.autoAccept || asked > 0;
+  return (
+    <Row onClick={onOpen} ariaLabel={formatDateRange(window.start, window.end)}>
+      <div className="min-w-0 flex-1">
+        <span className="block text-[0.9375rem] font-semibold">
+          {formatDateRange(window.start, window.end)}
+          <span className="font-normal text-muted">
+            {" "}
+            · {nights(window.start, window.end)} nights
+          </span>
+        </span>
+        {chips ? (
+          <span className="mt-1 flex flex-wrap items-center gap-2">
+            {window.status === "BOOKED" ? (
+              <Chip tone="booked">Booked</Chip>
+            ) : window.autoAccept ? (
+              <Chip tone="instant" icon={<LuZap size={12} />}>
+                Instant
+              </Chip>
+            ) : null}
+            {/* What makes the requests inside the sheet findable: without it a
+                slot two people are waiting on looks exactly like one nobody has
+                asked about, and the host has to open every slot to find out. */}
+            {asked > 0 ? (
+              <Chip tone="pending">
+                {asked === 1 ? "1 asked" : `${asked} asked`}
+              </Chip>
+            ) : null}
+            {window.details ? (
+              <span className="text-sm text-muted">{window.details}</span>
+            ) : null}
+          </span>
+        ) : window.details ? (
+          <span className="block text-sm text-muted">{window.details}</span>
+        ) : null}
+      </div>
+      <LuChevronRight className="shrink-0 text-faint" />
+    </Row>
+  );
+}
+
+function PastSlotRow({
+  window,
+  asked,
+  onOpen,
+}: {
+  window: AvailabilityWindow;
+  asked: number;
+  onOpen: () => void;
+}): ReactElement {
+  return (
+    <Row onClick={onOpen} ariaLabel={formatDateRange(window.start, window.end)}>
+      <div className="min-w-0 flex-1">
+        <span className="block text-[0.9375rem] font-semibold">
+          {formatDateRange(window.start, window.end)}
+        </span>
+        <span className="mt-0.5 flex flex-wrap items-center gap-2">
+          <span className="text-sm text-muted">
+            {window.status === "BOOKED"
+              ? "Someone stayed"
+              : "Nobody booked these"}
+          </span>
+          {/* Here too, and this is where it matters most: nothing ages an ask
+              out, so a request for dates that have gone sits in someone's list
+              until it is declined, and a past slot is the last place a host
+              would think to look for one. */}
+          {asked > 0 ? (
+            <Chip tone="pending">
+              {asked === 1 ? "1 asked" : `${asked} asked`}
+            </Chip>
+          ) : null}
+        </span>
+      </div>
+      <LuChevronRight className="shrink-0 text-faint" />
+    </Row>
+  );
+}
+
 function SlotSheet({
   listing,
   window,
@@ -552,7 +617,6 @@ function SlotSheet({
   const listingId = listing.id;
   const {
     incomingBookings,
-    knownPerson,
     updateWindow,
     setWindowAutoAccept,
     cancelWindow,
@@ -569,15 +633,25 @@ function SlotSheet({
   // Reviving these would be a new set of dates wearing an old slot's history —
   // its share link, and whatever was asked of it — so they can only be cleared.
   const expired = isExpired(window.end);
-  const guestBooking = incomingBookings.find(
-    (booking) =>
-      booking.windowId === window.id && booking.status !== "CANCELLED",
-  );
-  // Read through the stay itself, which only works once it's confirmed — hence
-  // shown only when the slot is BOOKED.
-  const guestName = guestBooking
-    ? knownPerson(guestBooking.guestId)?.displayName || "your guest"
-    : null;
+  // Listed in the sheet AND consulted by Save: a pending ask can never be
+  // confirmed onto different nights, so moving the dates cancels it.
+  const pending = incomingBookings
+    .filter(
+      (booking) =>
+        booking.windowId === window.id && booking.status === "REQUESTED",
+    )
+    // Oldest first: these are queueing for one slot, and who asked first is the
+    // only ordering the host has any reason to read.
+    .sort((left, right) => left.createdAt - right.createdAt);
+  // By id, not by "the first live booking on this slot". A slot that lost a race
+  // keeps the losers' asks alongside the winner, so a `find` on status-not-
+  // cancelled returned whichever the array happened to hold first — naming a
+  // pending asker as the person staying, and offering their booking as the stay
+  // to cancel. The slot itself names its holder; nothing else has to be guessed.
+  const guestBooking = window.bookingId
+    ? incomingBookings.find((booking) => booking.id === window.bookingId)
+    : undefined;
+
   const dirty =
     start !== window.start || end !== window.end || details !== window.details;
   const clash =
@@ -587,12 +661,6 @@ function SlotSheet({
   const gone = Boolean(end) && isExpired(end);
   const valid = Boolean(start && end && end > start) && !clash && !gone;
 
-  // A pending ask can never be confirmed onto different nights, so moving the
-  // dates cancels it — which has to be said, not done quietly behind Save.
-  const pending = incomingBookings.filter(
-    (booking) =>
-      booking.windowId === window.id && booking.status === "REQUESTED",
-  );
   const datesMoved = start !== window.start || end !== window.end;
 
   async function save(): Promise<void> {
@@ -635,6 +703,50 @@ function SlotSheet({
     onClose();
   }
 
+  // Who has asked for these nights, which is the thing that decides what to do
+  // with them: moving the dates cancels every one of these, and the confirm that
+  // says so should not be the first the host hears of it.
+  //
+  // Placed per branch rather than above all three, because the right position
+  // differs. On an OPEN slot it belongs over the date fields, for the reason
+  // just given. On a BOOKED one the stay that actually holds the nights outranks
+  // the asks that missed them. It appears in both, and in expired, deliberately:
+  // confirming does not cancel the losers and nothing ages an ask out, so those
+  // are still sitting in someone's list waiting for an answer, and this is the
+  // only surface that reaches them from the dates they are about.
+  const asks =
+    pending.length > 0 ? (
+      <div className="flex flex-col gap-2">
+        <span className="text-sm font-semibold text-muted">
+          {pending.length === 1
+            ? "1 person asked"
+            : `${pending.length} people asked`}
+        </span>
+        <Group>
+          {pending.map((booking) => (
+            <BookingRow
+              key={booking.id}
+              booking={booking}
+              lead="person"
+              showDates={false}
+            />
+          ))}
+        </Group>
+        {/* Only where it is a dead end. On an open slot the rows lead to a page
+            that can answer them, which needs no caption. */}
+        {booked || expired ? (
+          <p className="px-1 text-sm text-muted">
+            {/* Expired wins: a slot that is both has a stay that already
+                happened, and "went to someone else" is present-tense race
+                language for a race that finished long ago. */}
+            {expired
+              ? "These dates have passed, so these can only be declined."
+              : "These dates went to someone else, so these can only be declined."}
+          </p>
+        ) : null}
+      </div>
+    ) : null;
+
   return (
     <Sheet
       open
@@ -648,17 +760,19 @@ function SlotSheet({
           photo={listing.photos[0]}
           className="aspect-[16/9] max-h-44 w-full"
         />
+
         {expired ? (
           <>
             <p className="text-[0.9375rem] text-muted">
               These dates have passed —{" "}
               {booked ? "someone stayed" : "nobody booked them"}. There's
-              nothing left to change here; new availability means new dates. You
-              can still clear these off your calendar.
+              nothing left to change about the dates; new availability means new
+              dates. You can still clear these off your calendar.
             </p>
             {window.details ? (
               <p className="text-sm text-muted">{window.details}</p>
             ) : null}
+            {asks}
             {/* A link minted while these dates were live is still live. Removing
                 the slot deletes it, but turning it off must not require that. */}
             {window.publicPortalId ? (
@@ -678,11 +792,34 @@ function SlotSheet({
             ) : null}
           </>
         ) : booked ? (
-          <p className="text-[0.9375rem] text-muted">
-            Booked by {guestName}. Cancelling frees the dates and notifies them.
-          </p>
+          <>
+            {/* A sentence naming the guest led nowhere: owner-cancel and
+                everything else about the stay live on its own page, reachable
+                from here only by closing the sheet and finding the Guests list.
+                The row names them now, so the sentence keeps only what the row
+                cannot say. */}
+            {guestBooking ? (
+              <Group>
+                <BookingRow
+                  booking={guestBooking}
+                  lead="person"
+                  showDates={false}
+                />
+              </Group>
+            ) : null}
+            {/* Nameless on purpose in the second case: a slot reads BOOKED for
+                a beat before the booking holding it reaches this client, and
+                there is nobody to name until it does. */}
+            <p className="text-[0.9375rem] text-muted">
+              {guestBooking
+                ? "Cancelling frees these dates and notifies your guest."
+                : "Cancelling frees these dates and notifies whoever booked them."}
+            </p>
+            {asks}
+          </>
         ) : (
           <>
+            {asks}
             <div className="grid grid-cols-2 gap-3">
               <label className="flex flex-col gap-1.5 text-sm text-muted">
                 From

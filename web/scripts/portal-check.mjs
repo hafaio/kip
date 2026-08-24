@@ -74,6 +74,16 @@ async function seed() {
   await put(`listings/portal-check-listing`, {
     ownerId: str(HOST),
     title: str("The spare room"),
+  location: {
+    mapValue: {
+      fields: {
+        label: str("Lisbon"),
+        lat: { doubleValue: 38.7223 },
+        lng: { doubleValue: -9.1393 },
+        geohash: str("eycs0p"),
+      },
+    },
+  },
     type: str("ROOM"),
     description: str("A room"),
     photos: { arrayValue: {} },

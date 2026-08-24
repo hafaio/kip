@@ -174,9 +174,13 @@ export default function Page(): ReactElement {
   }
 
   // The screen's identity, not the object, which is rebuilt on every render.
+  // A room's `windowId` is deliberately NOT part of it: it names a sheet OVER
+  // the room rather than a different screen, so counting it meant opening a slot
+  // scrolled the page under the sheet back to the top, and closing it did so
+  // again — losing the host's place in their own calendar on every tap.
   const screenKey = `${screen.kind}:${"id" in screen ? screen.id : ""}:${
     screen.kind === "tab" ? screen.tab : ""
-  }:${screen.kind === "room" ? (screen.windowId ?? "") : ""}`;
+  }`;
   // Written continuously, not on the way out: a browser Back gives no chance to
   // save anything first.
   useEffect(() => {

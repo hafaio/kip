@@ -439,7 +439,11 @@ function pushEntry(stack: readonly Screen[]): void {
 function replaceEntry(stack: readonly Screen[], depth = historyDepth()): void {
   if (!routable()) return;
   window.history.replaceState(
-    entryState(stack, depth),
+    // Carrying the scroll, because a replace changes what this entry POINTS AT
+    // and not where the reader is standing in it. Defaulting to 0 meant any
+    // in-place rewrite silently forgot the position, so coming back to the entry
+    // later landed at the top of a list the reader had scrolled deep into.
+    entryState(stack, depth, historyScroll()),
     "",
     screenHash(stack[stack.length - 1]),
   );
