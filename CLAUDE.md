@@ -403,10 +403,22 @@ Rules: [firebase/firestore.rules](./firebase/firestore.rules), [firebase/storage
   3. `users` write refuses `searchable: true` without a `username` — being findable and having a
      handle are one decision, enforced server-side.
 
+  **A handle needs a credential someone PROVED, not merely one that exists.** `hasCredential()`
+  used to pass on a non-empty `identities` map, and an email+password account has one — but
+  Firebase's password signup verifies nothing and the web API key is public, so kip's UI never
+  offering passwords is no protection at all: a script could mint accounts for addresses it does not
+  own and park good handles, which are permanent and never released. The rule now also requires
+  `email_verified`, a phone identity, or Google. Every door kip actually offers passes — an email
+  link sets `email_verified` (checked against the emulator rather than assumed), and the other two
+  prove themselves — so only the address nobody answered is refused. Both sides are pinned in
+  `rules.test.ts`, and the refusal was confirmed to fail the suite when the rule is reverted.
+
   **A handle can never be claimed anonymously.** Anonymous sign-in exists so a share-link visitor
   can hold a grant, and Firebase reaps those accounts after 30 days — so an anonymous claim would
   leave a permanent registry entry owned by a dead uid, unreclaimable, and one script could take
-  every good name. The create rule refuses `sign_in_provider == 'anonymous'`.
+  every good name. `hasCredential()` refuses it, since an anonymous token carries no identities at
+  all — an earlier version of this note named `sign_in_provider`, which the rule no longer reads
+  and whose own comment says why it was the wrong test.
 
   **Handles are permanent** — `usernames/{handle}` has **no delete rule at all**. That's precisely
   what makes going private reversible: your name can't be released and re-squatted while you're
