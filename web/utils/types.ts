@@ -121,9 +121,9 @@ export type Booking = {
 };
 
 // Every notification kip can send, defined once — the types, the defaults and
-// the Settings rows all derive from this, so they can't drift. `sms` marks the
-// four worth interrupting someone for; the rest are news, to people who have an
-// address anyway.
+// the Settings rows all derive from this, so they can't drift. `sms` marks what
+// a text can carry, which is currently all of them; see the note on
+// `NotifySmsKind` below for why the flag survives having nothing to exclude.
 export const NOTIFY_EVENTS = {
   bookingRequested: {
     label: "Someone asks to stay",
@@ -135,7 +135,7 @@ export const NOTIFY_EVENTS = {
     label: "Someone books instantly",
     note: "They took dates you'd marked as instant — nothing for you to do.",
     default: true, // purely news, which is why it's split from the ask above
-    sms: false,
+    sms: true,
   },
   bookingDecision: {
     label: "Your request is answered",
@@ -153,7 +153,7 @@ export const NOTIFY_EVENTS = {
     label: "Someone asks to be friends",
     note: "By your username, or through a link you shared.",
     default: true, // the only route in for a stranger holding your link
-    sms: false, // reaches an established user, who has an address
+    sms: true,
   },
   connectAccepted: {
     label: "Someone agrees to be friends",
@@ -172,6 +172,15 @@ export const DEFAULT_NOTIFY: NotifyPrefs = Object.fromEntries(
 
 // Read off the table rather than listed again, so marking an event `sms` is the
 // only edit adding one takes.
+//
+// Every kind is textable today. The flag stays rather than collapsing into
+// `NotifyKind`, because the distinction it draws is real and a kind that wants
+// it is already queued: a saved-search digest is not caused by a person acting
+// on you, and belongs in an inbox rather than on a lock screen. It used to
+// exclude two — one purely news, one reaching an established user who has an
+// address — and both were cost judgements at a volume where a text costs about
+// a cent. What decides whether a text arrives is the switch, and every one of
+// them is off until someone turns it on.
 export type NotifySmsKind = {
   [K in NotifyKind]: (typeof NOTIFY_EVENTS)[K]["sms"] extends true ? K : never;
 }[NotifyKind];

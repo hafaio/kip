@@ -107,6 +107,12 @@ function DoorRow({
   );
 }
 
+// kip has no number to text from, so nothing can be sent and nothing may be
+// agreed to. The same "ships able to be off" shape as `smsConfigured()` on the
+// sender and `firebaseConfigured()` on the client: one constant, checked before
+// anything is offered. Provisioning a number is what turns the section on.
+const SMS_LIVE = Boolean(SMS_FROM);
+
 // The field defaults to email, and this sheet's door is a keypad from the first
 // tap — `only` pins the route, this only picks the keyboard.
 const PHONE_REACH: ReachState = { ...EMPTY_REACH, mode: "phone" };
@@ -232,7 +238,10 @@ function DoorsSection(): ReactElement {
           // different uid, with its own places, friends and stays. Nothing here
           // can merge the two.
           await alert(otherAccountAlert("number"));
-        } else if (reach.sentTo && standingConsent(prefs)) {
+        } else if (SMS_LIVE && reach.sentTo && standingConsent(prefs)) {
+          // Gated too, not just the switch: this is the OTHER way a consent gets
+          // written, and re-presenting the disclosures for texts kip cannot send
+          // takes an agreement it has no use for.
           await offerTexts(reach.sentTo);
         }
         return;
@@ -698,16 +707,12 @@ function DiscoverabilitySection(): ReactElement | null {
   );
 }
 
-// The kinds a text can carry and the kinds it can't, both read off the one table
-// rather than listed again: the texted ones become rows, and the rest become the
-// sentence explaining why they have none.
-const TEXTED_EVENTS = Object.entries(NOTIFY_EVENTS).filter(
-  ([, event]) => event.sms,
-);
-const EMAIL_ONLY_KINDS = Object.values(NOTIFY_EVENTS)
-  .filter((event) => !event.sms)
-  .map((event) => event.label.toLowerCase())
-  .join(", ");
+// One list, walked by both channels, so the two read label for label. The kinds
+// a text cannot carry are still ROWS on the text side — saying "email only"
+// where the toggle would be — because a channel that silently drops two of six
+// looks like it forgot them. That replaces a sentence under the group naming the
+// missing kinds, which was four rows away from the gap it explained.
+const EVENTS = Object.entries(NOTIFY_EVENTS);
 
 // Two channels, each with its own way of reaching nobody: email needs a verified
 // address, and a text needs a number on the account plus consent that was given
@@ -760,7 +765,12 @@ function NotificationsSection(): ReactElement | null {
   // rendered ON and greyed out over an account whose phone door had been
   // removed — nothing to turn it off with — and a different number added later
   // resumed texting on an agreement about the old one.
+  //
+  // ANDed with `SMS_LIVE`, or an account that agreed before kip lost its number
+  // renders every text row ON while nothing can be sent — a switch claiming kip
+  // texts about this is the one thing the section must never say.
   const texting =
+    SMS_LIVE &&
     prefs.smsConsentNumber !== null &&
     prefs.smsConsentNumber === phone &&
     Object.values(prefs.notifySms).some(Boolean);
@@ -855,7 +865,7 @@ function NotificationsSection(): ReactElement | null {
         ) : (
           <div className="flex flex-col items-start gap-3 rounded-3xl bg-surface p-4 shadow-card">
             <p className="text-sm text-muted">
-              {phone
+              {phone && SMS_LIVE
                 ? "kip has no address for you, so none of this arrives by email. A text can still reach you — turn those on below."
                 : "kip has no way to reach you when you're not looking at it. Add an address to hear when things happen."}
             </p>
@@ -866,7 +876,7 @@ function NotificationsSection(): ReactElement | null {
         )}
 
         <Group>
-          {Object.entries(NOTIFY_EVENTS).map(([key, event]) => (
+          {EVENTS.map(([key, event]) => (
             <Switch
               key={key}
               checked={prefs.notify[key as NotifyKind]}
@@ -892,30 +902,48 @@ function NotificationsSection(): ReactElement | null {
           <Switch
             checked={texting}
             onChange={toggleTexts}
-            disabled={!phone}
+            disabled={!SMS_LIVE || !phone}
             label="Text me"
             description={
-              phone
-                ? `Automated texts to ${phone} for the kinds below. Message frequency varies, and message and data rates may apply. Reply STOP to stop, HELP for help.`
-                : "kip texts the number on your account, and this one has none. Add a phone under How you get in, above."
+              !SMS_LIVE
+                ? "kip has no number to text from yet, so nothing can be sent and there is nothing to agree to. This turns on when it has one."
+                : phone
+                  ? `Automated texts to ${phone} for the kinds below. Message frequency varies, and message and data rates may apply. Reply STOP to stop, HELP for help.`
+                  : "kip texts the number on your account, and this one has none. Add a phone under How you get in, above."
             }
           />
-          {TEXTED_EVENTS.map(([key, event]) => (
-            <Switch
-              key={key}
-              // Not the stored map alone: consent bound to a number that has since
-              // changed leaves trues standing that nothing will act on, and a
-              // greyed-out row drawn ON would be saying kip texts about this.
-              checked={texting && prefs.notifySms[key as NotifySmsKind]}
-              // One condition for no phone, no consent and consent about another
-              // number — all three are answered by the row above, which is why
-              // none of them needs its own line here.
-              disabled={!texting}
-              onChange={(next) => toggleKind(key as NotifySmsKind, next)}
-              label={event.label}
-              srSuffix="by text"
-            />
-          ))}
+          {EVENTS.map(([key, event]) =>
+            event.sms ? (
+              <Switch
+                key={key}
+                // Not the stored map alone: consent bound to a number that has
+                // since changed leaves trues standing that nothing will act on,
+                // and a greyed-out row drawn ON would be saying kip texts about
+                // this. `texting` already folds in the no-number-at-all case.
+                checked={texting && prefs.notifySms[key as NotifySmsKind]}
+                // One condition for no sender, no phone, no consent and consent
+                // about another number — every one of them is answered by the
+                // row above, which is why none needs its own line here.
+                disabled={!texting}
+                onChange={(next) => toggleKind(key as NotifySmsKind, next)}
+                label={event.label}
+                srSuffix="by text"
+              />
+            ) : (
+              // Nothing takes this branch today — every kind is textable — and it
+              // is kept because the next one may not be: a saved-search digest is
+              // not caused by a person acting on you and belongs in an inbox. The
+              // table decides, so adding such a kind is one flag rather than a
+              // second list here.
+              <Switch
+                key={key}
+                checked={false}
+                onChange={() => {}}
+                label={event.label}
+                unavailable="Email only"
+              />
+            ),
+          )}
         </Group>
 
         {textError ? <FieldNote tone="danger">{textError}</FieldNote> : null}
@@ -929,7 +957,7 @@ function NotificationsSection(): ReactElement | null {
           block lifts silently, and kip finds out only by trying. Without it the
           answer is "wait until kip next has something to text you about", which
           for a quiet week is indistinguishable from still being blocked. */}
-        {blocked ? (
+        {SMS_LIVE && blocked ? (
           <FieldNote tone="danger">
             <span>
               Your carrier is blocking kip's texts: STOP was replied from{" "}
@@ -975,11 +1003,10 @@ function NotificationsSection(): ReactElement | null {
           </FieldNote>
         ) : null}
 
-        {/* How the two impossible cells read as "not applicable": there are no
-          rows for them, and this says why there aren't. */}
+        {/* Required beside an SMS consent, and they stay whether or not kip can
+          send today. */}
         <FieldNote>
-          These arrive by email only: {EMAIL_ONLY_KINDS}. They're news rather
-          than something waiting on you. See our{" "}
+          See our{" "}
           <Link className="font-semibold text-accent-ink" href="/privacy/">
             Privacy Policy
           </Link>{" "}
