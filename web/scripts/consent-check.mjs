@@ -183,6 +183,13 @@ async function browser() {
   await send("Runtime.enable");
   return {
     thrown,
+    // A REAL paste. `setValue` below dispatches a synthetic React input event,
+    // which is not the path a paste takes — and the path a paste takes is the
+    // one `maxLength` used to truncate.
+    paste: async (text) => {
+      await send("Input.insertText", { text });
+      await new Promise((done) => setTimeout(done, 600));
+    },
     shot: async (name) => {
       const { data } = await send("Page.captureScreenshot", { format: "png" });
       await writeFile(`${SHOTS}/${name}.png`, Buffer.from(data, "base64"));
@@ -253,16 +260,19 @@ async function addPhone(page, number) {
   );
   const code = await latestCode(number);
   if (!code) throw new Error(`no code was texted to ${number}`);
-  // Typed and never submitted: a full code has nothing left to decide, so the
-  // field submits its own form. Setting the whole value in one event is also
-  // what a paste looks like, so this covers that too. Clicking afterwards would
-  // pass whether or not any of it works, and by then there is no button left.
+  // PASTED, with a separator in it, and never submitted. Two things at once, and
+  // both were broken: a full code has nothing left to decide, so the field
+  // submits its own form; and a `maxLength` on that field would truncate this
+  // paste by CHARACTERS before any handler saw it, so "621-695" arrived as
+  // "621-69" and quietly lost a digit. Clicking a button afterwards would pass
+  // either way, and by then there is no button left to click.
+  await page.evaluate(
+    run(`document.querySelector("[role=dialog] input").focus(); await pause(200);`),
+  );
+  await page.paste(`${code.slice(0, 3)}-${code.slice(3)}`);
+  await new Promise((done) => setTimeout(done, 5000));
   return page.evaluate(
-    run(`
-    setValue(document.querySelector("[role=dialog] input"), ${JSON.stringify(code)});
-    await pause(5000);
-    return !document.querySelector("[role=dialog] input[autocomplete='one-time-code']");
-  `),
+    "!document.querySelector(\"[role=dialog] input[autocomplete='one-time-code']\")",
   );
 }
 
@@ -376,7 +386,10 @@ await page.evaluate("location.reload()");
 await new Promise((done) => setTimeout(done, 9000));
 
 console.log("\nan account that has never wanted texts is not asked about them");
-expect("a full code submits itself", await addPhone(page, FIRST));
+expect(
+  "a code pasted with a separator lands whole and submits itself",
+  await addPhone(page, FIRST),
+);
 
 // Everything past here is about a consent kip can act on. With no sender there
 // is none to give, so the run checks the gate instead and stops: the switch is

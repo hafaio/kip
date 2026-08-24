@@ -109,6 +109,7 @@ export default function ReachField({
   hostRef,
   only,
   invalid = false,
+  busy = false,
 }: {
   state: ReachState;
   onChange: (next: ReachState) => void;
@@ -122,6 +123,9 @@ export default function ReachField({
   // message: what is wrong may be the typed address (`reachError`) or the send
   // that followed it, and only the caller has both.
   invalid?: boolean;
+  // Passed straight through to the code step, where it freezes the field. Every
+  // caller already holds it for its own button; see `CodeInput`.
+  busy?: boolean;
 }): ReactElement {
   // The code step replaces the field rather than sitting under it: at that point
   // the number is settled and the only thing left to type is six digits. It
@@ -140,6 +144,7 @@ export default function ReachField({
         <CodeInput
           autoFocus
           invalid={invalid}
+          busy={busy}
           value={state.code}
           onChange={(code) => onChange({ ...state, code })}
         />
