@@ -5,6 +5,11 @@
 //   cd web && bun run dev:emulated      # in one shell (serves on 3001)
 //   bun run check:consent               # in another
 //
+// While kip has no number to text from (`SMS_FROM` empty) none of that is
+// reachable, so the run checks the GATE instead and stops — the switch is off,
+// refuses the press, writes no consent when pressed, and says why. Provision a
+// number and the five states below run as written.
+//
 // It signs someone in through the email door, then works the phone door and the
 // Texts switch in Settings while reading the stored prefs back after every step:
 // a number added by an account that never wanted texts is never asked about
@@ -15,7 +20,16 @@
 // destroying the record. Exits non-zero on the first failure.
 
 import { spawn, spawnSync } from "node:child_process";
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+
+// The same constant Settings reads. Empty means kip has no number to text from,
+// so the five states below are not merely untested but unreachable — the switch
+// is off and cannot be pressed. Rather than skip, the run then checks THAT: the
+// gate is the behaviour while it stands, and a check that quietly passes over a
+// disabled feature is how the gate would get removed by accident.
+const SMS_LIVE = /SMS_FROM\s*=\s*"([^"]*)"/.exec(
+  await readFile(new URL("../utils/sms.ts", import.meta.url), "utf8"),
+)?.[1];
 
 const APP = "http://localhost:3001";
 const FIRESTORE = "http://127.0.0.1:8080";
@@ -43,6 +57,20 @@ function expect(what, ok, detail = "") {
     console.log(`  FAIL ${what}${detail ? ` — ${detail}` : ""}`);
     failures.push(what);
   }
+}
+
+function finish() {
+  if (page.thrown.length > 0) {
+    console.log("\npage exceptions:");
+    for (const trace of page.thrown) console.log(`  ${trace.split("\n")[0]}`);
+  }
+  chrome.kill();
+  console.log(
+    failures.length === 0
+      ? `\nall good — screenshots in ${SHOTS}`
+      : `\n${failures.length} failed: ${failures.join(", ")}`,
+  );
+  process.exit(failures.length === 0 ? 0 : 1);
 }
 
 async function write(path, fields) {
@@ -349,6 +377,50 @@ await new Promise((done) => setTimeout(done, 9000));
 
 console.log("\nan account that has never wanted texts is not asked about them");
 expect("a full code submits itself", await addPhone(page, FIRST));
+
+// Everything past here is about a consent kip can act on. With no sender there
+// is none to give, so the run checks the gate instead and stops: the switch is
+// off and refuses the press, adding a number asked nothing, and the row says
+// why rather than sitting greyed out with no reason on it.
+if (!SMS_LIVE) {
+  console.log("\nwith no number to text from, texts cannot be turned on");
+  await showTexts(page);
+  await page.shot("0-texts-unavailable");
+  const gated = await textsRow(page);
+  expect("the switch is off", gated?.on === false, JSON.stringify(gated));
+  expect("and refuses the press", gated?.disabled === true);
+  expect(
+    "the row says kip has no number, rather than nothing",
+    (gated?.text ?? "").includes("no number to text from"),
+    gated?.text?.replace(/\n/g, " ").slice(0, 160),
+  );
+  await page.evaluate(run(`master().click(); await pause(2000);`));
+  const pressed = await prefsOf(uid);
+  expect(
+    "pressing it writes no consent",
+    pressed.smsConsentNumber === undefined || pressed.smsConsentNumber === null,
+    JSON.stringify(pressed.smsConsentNumber),
+  );
+  expect("and turns no kind on", allOff(pressed.notifySms));
+  // Both channels list the same kinds, in the same order: a text column shorter
+  // than the email one above it reads as having forgotten some.
+  const rows = await page.evaluate(
+    run(`
+    const groups = [...document.querySelectorAll("[class*='divide-y']")];
+    const texts = groups.at(-1);
+    return JSON.stringify([...texts.children]
+      .map((held) => held.innerText.split("\\n")[0])
+      .slice(1));
+  `),
+  );
+  const labels = JSON.parse(rows ?? "[]");
+  expect(
+    "every kind is listed under Texts",
+    labels.length === 6,
+    JSON.stringify(labels),
+  );
+  finish();
+}
 await showTexts(page);
 await page.shot("1-first-number-added");
 expect("no dialog when there is no consent to carry", !(await dialogAsked(page)));
@@ -491,15 +563,4 @@ expect(
   afterDecline?.text?.replace(/\n/g, " ").slice(0, 120),
 );
 
-if (page.thrown.length > 0) {
-  console.log("\npage exceptions:");
-  for (const trace of page.thrown) console.log(`  ${trace.split("\n")[0]}`);
-}
-
-chrome.kill();
-console.log(
-  failures.length === 0
-    ? `\nall good — screenshots in ${SHOTS}`
-    : `\n${failures.length} failed: ${failures.join(", ")}`,
-);
-process.exit(failures.length === 0 ? 0 : 1);
+finish();

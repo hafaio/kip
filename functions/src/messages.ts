@@ -335,20 +335,27 @@ export const NOTIFY_DEFAULTS: Record<NotifyKind, boolean> = {
   connectAccepted: true,
 };
 
-// The four worth interrupting someone for. `bookingTaken` and `connectRequest`
-// are news, to people who have an address anyway.
+// What a text can carry — currently every kind. Kept as its own union rather
+// than aliased to `NotifyKind`, because a kind that a text should NOT carry is
+// already queued: a saved-search digest is not caused by a person acting on you
+// and belongs in an inbox. Nothing here can import the web table, so this is the
+// second copy `tests/drift.test.ts` pins.
 export type NotifySmsKind =
   | "bookingRequested"
+  | "bookingTaken"
   | "bookingDecision"
   | "stayCancelled"
+  | "connectRequest"
   | "connectAccepted";
 
 // Every one off: a verified number proves possession, never consent, so a text
 // is sent only where a switch carrying the disclosures turned one on.
 export const NOTIFY_SMS_DEFAULTS: Record<NotifySmsKind, boolean> = {
   bookingRequested: false,
+  bookingTaken: false,
   bookingDecision: false,
   stayCancelled: false,
+  connectRequest: false,
   connectAccepted: false,
 };
 

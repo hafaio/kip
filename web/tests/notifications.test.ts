@@ -562,19 +562,19 @@ describe("what a text can carry", () => {
     );
   });
 
-  // Eligibility is this function's answer rather than a third table to drift.
-  it("has nothing to say about news", () => {
-    const taken = noticeForNewBooking(
-      { ...booking, status: "CONFIRMED" },
-      BOOKING_ID,
-    );
-    expect(renderSms(taken, ORIGIN)).toBeNull();
-    expect(
-      renderSms(noticeForConnectRequest({ fromName: "Priya" }), ORIGIN),
-    ).toBeNull();
+  // Eligibility is this function's answer rather than a third table to drift, so
+  // it must still refuse a kind the table has not marked — which no kind is
+  // today, hence the invented one. Left untested, the two tables could diverge
+  // and the sender would text about something nobody was offered a switch for.
+  it("has nothing to say about a kind the table doesn't carry", () => {
+    const invented = {
+      ...noticeForNewBooking(booking, BOOKING_ID),
+      kind: "savedSearchDigest" as NotifyKind,
+    };
+    expect(renderSms(invented, ORIGIN)).toBeNull();
   });
 
-  it("texts exactly the four kinds the table marks", () => {
+  it("texts exactly the kinds the table marks", () => {
     const texted = new Set(
       everyNotice("Sam Okafor")
         .filter((notice) => renderSms(notice, ORIGIN) !== null)
@@ -674,7 +674,7 @@ describe("which preferences the sender reads", () => {
 
   it("refuses a kind it doesn't know, however the map reads", () => {
     expect(wantsEmail({ bookingAsked: true }, "bookingAsked")).toBe(false);
-    expect(wantsSms({ bookingTaken: true }, "bookingTaken")).toBe(false);
+    expect(wantsSms({ bookingRenamed: true }, "bookingRenamed")).toBe(false);
     expect(wantsEmail(undefined, "toString")).toBe(false);
   });
 

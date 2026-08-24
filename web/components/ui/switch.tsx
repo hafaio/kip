@@ -12,6 +12,7 @@ export default function Switch({
   description,
   srSuffix,
   disabled = false,
+  unavailable,
 }: {
   checked: boolean;
   onChange: (next: boolean) => void;
@@ -21,7 +22,24 @@ export default function Switch({
   // per channel and the heading that tells them apart is not part of any name.
   srSuffix?: string;
   disabled?: boolean;
+  // Words in place of the toggle, for a row this channel cannot carry at all.
+  // A row rather than an omission, so two channels' lists line up label for
+  // label — a missing row reads as an oversight, and the footnote that used to
+  // explain the gap sat several rows away from the gap it was about. Not a
+  // button: there is nothing here to press.
+  unavailable?: string;
 }): ReactElement {
+  if (unavailable) {
+    return (
+      <div className="flex w-full items-center gap-3 px-4 py-3 text-left">
+        <span className="min-w-0 flex-1 text-[0.9375rem] font-semibold text-muted">
+          {label}
+        </span>
+        <span className="shrink-0 text-sm text-muted">{unavailable}</span>
+      </div>
+    );
+  }
+
   return (
     <button
       type="button"

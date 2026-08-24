@@ -1682,6 +1682,13 @@ accepting writing a fresh record naming it and keeping the superseded one, decli
 operative. It reads the DOCUMENT rather than the screen for each, since a switch drawn from state
 nobody has read back proves the render and not the write.
 
+**While `SMS_FROM` is empty it checks the GATE instead and stops.** None of those five states is
+reachable with no sender, and a check that quietly skips a disabled feature is how the gate gets
+removed by accident — so the run asserts that the switch is off, refuses the press, writes no
+consent when pressed anyway, says why on the row rather than sitting greyed out saying nothing, and
+still lists the kinds a text cannot carry. Provision a number and the five states run as written.
+It reads the constant out of `utils/sms.ts` rather than being told, so the two cannot disagree.
+
 It also pins that **a full code submits itself** — `check:consent` is the only check that types
 one. The code goes in and nothing is clicked; the assertion is that the sheet has gone anyway.
 Setting the whole value in one event is what a paste looks like too, so that covers both.
@@ -2095,14 +2102,20 @@ expect when it does.
   one dependency and makes a future swap a ~30-line file. What does not transfer on a swap is the
   paperwork, since campaigns are provider-scoped in practice.
 
-  **Four events would justify one**, not all six: `bookingRequested` (a decision is wanted),
-  `bookingDecision` (answers your dates), `connectAccepted` (the share-link visitor's first ask,
-  and they are exactly the no-address population), `stayCancelled` (the one you would regret
-  missing). Out: `bookingTaken` and `connectRequest`, which are news, to people who have an
-  address anyway. The `connectRequest`/`connectAccepted` split looks backwards until you name the
-  POPULATION: a request reaches the person whose link was opened, an established user who almost
-  certainly has an address; an acceptance reaches the visitor who just arrived through it, who is
-  exactly the phone-only account.
+  **All six can be texted, and every one is off until someone turns it on.** Four were marked at
+  first — `bookingRequested`, `bookingDecision`, `stayCancelled`, `connectAccepted` — with
+  `bookingTaken` and `connectRequest` left out as news, to people who have an address anyway. Both
+  halves of that turned out to be cost judgements at a volume where a text costs about a cent, and
+  they bought a Settings screen where one channel listed six kinds and the other four, which reads
+  as the short one having forgotten some rather than as a considered exclusion. The switch is what
+  decides whether a text arrives; the table's job is only to say what a text CAN carry.
+
+  The `sms` flag survives with nothing switched off, rather than collapsing `NotifySmsKind` into
+  `NotifyKind`. The distinction is real and a kind that wants it is already queued: a saved-search
+  digest is not caused by a person acting on you and belongs in an inbox, not on a lock screen.
+  `renderSms` still answers null for a kind the table does not carry, and `notifications.test.ts`
+  pins that against an INVENTED kind now that no real one is excluded — untested, the two packages'
+  tables could diverge and the sender would text about something nobody was offered a switch for.
 
   **Preferences are event × channel**, derived from the single `NOTIFY_EVENTS` table (add an
   `sms: true` flag to each entry and derive the subset as a mapped type, so the compiler checks it).
@@ -2117,10 +2130,10 @@ expect when it does.
   column means bare checkboxes, a lost label→channel binding, and a screen reader saying "Someone
   asks to stay, switch, switch". Splitting by CHANNEL pays none of that: Settings → Notifications is
   a **SectionHeading "Email"** over the six events, then a **SectionHeading "Texts"** over one Group
-  holding the consent switch and the four `sms: true` events. Every control is still a full-width
+  holding the consent switch and the same six events again. Every control is still a full-width
   row with one meaning.
 
-  What that costs is a name collision — the same four labels appear in both groups, and a heading is
+  What that costs is a name collision — the same labels appear in both groups, and a heading is
   not part of any accessible name — so `Switch` takes an `srSuffix`, rendered `sr-only` after the
   label: "by email" upstairs, "by text" down here. Without it the two halves are announced
   identically.
@@ -2135,9 +2148,31 @@ expect when it does.
   greyed-out row rendered ON would be claiming kip texts about this.
 
   The per-event rows carry **no descriptions**: each is the same event as a row forty pixels up whose
-  note already says what it is. The two `sms: false` kinds get **no rows at all**, and one muted line
-  derived from the table's own `!sms` entries says why — that is how the two impossible cells read as
-  "not applicable" rather than as an omission.
+  note already says what it is.
+
+  **Both channels walk the SAME list.** `EVENTS` is the single `Object.entries(NOTIFY_EVENTS)` both
+  groups map over, so neither the membership nor the ORDER can drift. This reverses an earlier
+  decision recorded here — the text side used to carry only the four marked kinds, with one muted
+  line underneath naming the two it left out, on the reasoning that an absent row reads as "not
+  applicable". Driven in a browser it read as the opposite: six beside four looks like the short one
+  forgot some, and the sentence explaining the gap sat several rows below the gap. Marking all six
+  textable settled it (above); what survives of that pass is `Switch`'s `unavailable` prop — words
+  in place of the toggle, a `div` rather than a `button`, since there is nothing to press — which
+  nothing takes today and which is what an email-only kind will render as when one arrives.
+
+  **The whole text section is gated on `SMS_LIVE`**, which is `Boolean(SMS_FROM)` — the same
+  ships-able-to-be-off shape as `smsConfigured()` on the sender and `firebaseConfigured()` on the
+  client. kip has no number, so nothing can be sent, and a switch that records a TCPA consent for
+  texts that cannot be delivered is a promise the product cannot keep. It gates three things, not
+  one: the master switch (`disabled`, with copy naming the reason rather than sitting greyed out
+  saying nothing), `texting` itself (or an account that agreed BEFORE kip lost its number renders
+  every row ON while nothing sends), and `offerTexts` in the phone sheet — the other way a consent
+  gets written, which would otherwise re-present the disclosures on a change of number. The STOP
+  note goes too: a carrier block is meaningless when there is no sender.
+
+  Note what this costs, and it is worth knowing before flipping it: **Twilio's campaign registration
+  wants a screenshot of a working opt-in flow**, so filing one means provisioning the number first —
+  which is the same edit that lifts the gate.
 
   **TCPA consent is collected on that switch, NOT on the sheet's number field** — the reverse of what this
   note used to say, and the reason matters: consent to marketing-adjacent automated texts must be
