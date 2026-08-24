@@ -16,6 +16,7 @@ import { onRequest } from "firebase-functions/v2/https";
 import { onSchedule } from "firebase-functions/v2/scheduler";
 import { logger } from "firebase-functions/v2";
 import { reapTickets } from "./reap";
+import { tearDownAccount } from "./teardown";
 import nodemailer from "nodemailer";
 import {
   ALL_OFF,
@@ -710,6 +711,70 @@ export const unsubscribe = onRequest(
         );
       }
     }
+  },
+);
+
+// How many attempts a teardown gets before it stops asking. Retries are the
+// entire reason this is a function, so the budget is generous — but an endless
+// one means a person watching a bar that will never move, and Cloud Functions
+// would keep re-running a failure for a week either way.
+const MAX_TEARDOWN_ATTEMPTS = 5;
+
+// Kept in the same shape as a client-written diagnostic even though admin
+// bypasses the rule that pins it, so a stalled teardown lands where every other
+// incident does. Fourteen days is the rule's ceiling and the TTL is the only
+// thing that removes one.
+const INCIDENT_KEEP_DAYS = 14;
+
+// Leaving. The client writes `deletions/{uid}` and this dismantles the account
+// with the Admin SDK — `retry: true` because the whole point is that it finishes
+// without the person's participation. A browser doing this walked away mid-chain
+// and left an account that still had a profile, friends and places, which the
+// reaper then skipped forever: it collects only accounts with nothing attached.
+//
+// It reports its phase back into the document, which is both the progress bar
+// the app draws and the only way a stuck teardown is visible at all.
+export const onAccountDeletionRequested = onDocumentCreated(
+  {
+    document: "deletions/{uid}",
+    region: REGION,
+    retry: true,
+    timeoutSeconds: 540,
+  },
+  async (event) => {
+    const uid = event.params.uid;
+    const ref = db.doc(`deletions/${uid}`);
+    // Re-read rather than trusting the event: it carries the document as
+    // CREATED, so it says nothing about what earlier attempts got through, and a
+    // duplicate delivery after a finished teardown finds nothing here at all.
+    const snap = await ref.get();
+    if (!snap.exists) return;
+
+    const attempts = (snap.data()?.attempts ?? 0) + 1;
+    if (attempts > MAX_TEARDOWN_ATTEMPTS) {
+      // Returning rather than throwing: more retries would repeat the same
+      // failure, and the document has to survive to say so — it is what the app
+      // is watching, and deleting it would report the account as gone.
+      const detail = { attempts, phase: snap.data()?.phase ?? null };
+      await ref.set({ error: "gave-up" }, { merge: true });
+      logger.error("teardown: giving up", { uid, ...detail });
+      await db.collection("debug").add({
+        uid,
+        kind: "teardown-stalled",
+        detail: JSON.stringify(detail),
+        at: Timestamp.now(),
+        expires: Timestamp.fromMillis(
+          Date.now() + INCIDENT_KEEP_DAYS * 86_400_000,
+        ),
+      });
+      return;
+    }
+
+    // Before the work, so a run that dies without returning still spends from
+    // the budget — the failures worth capping are the ones that take the
+    // process with them.
+    await ref.set({ attempts }, { merge: true });
+    await tearDownAccount(uid);
   },
 );
 

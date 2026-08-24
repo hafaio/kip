@@ -35,6 +35,10 @@ portals/{uuid}                     { scope: "USER"|"LISTING"|"SLOT", ownerId, ow
                                      listings: [{ listingId, title, ... windowIds }]?,  # SLOT only
                                      createdAt }   # public get-by-id; rooms+dates otherwise read live
 portals/{uuid}/grants/{uid}        { expires }   # visitor's proof they hold the token; unlocks live dates
+deletions/{uid}                    { requestedAt,                     # the client's whole part in leaving
+                                     phase, attempts, error? }        # written by the trigger; create-and-read-own
+                                     # only, no list, no client update; delete ONLY once `error` is set.
+                                     # Its ABSENCE means finished — or cleared, if it had failed
 debug/{autoId}                     { uid, kind, detail (JSON string), at, expires }  # write-only diagnostics;
                                      # create by any signed-in caller, NO read by anyone, TTL on expires
 ```
@@ -782,17 +786,105 @@ Rules: [firebase/firestore.rules](./firebase/firestore.rules), [firebase/storage
   collected by the identity sheet (`components/name-gate.tsx`, and the portal page's own copy) at
   the first action that puts your name in front of someone, so nothing blocks. `AuthMenu` renders
   once there is a name, minus the exit — see the sign-out note in the anonymous bullet.
-- **Leaving is possible, and it dismantles rather than departs.** `utils/leave.ts` cancels every
-  live stay in both directions, unfriends from your side, deletes requests both ways, removes
-  listing photos and the avatar (Storage objects outlive their documents, and afterwards nobody is
-  permitted to delete them), then the profile portal, then the profile, then the Auth account. The
-  order is load-bearing: the notification triggers read the profile, so it must survive the writes
-  that fire them. Client + rules throughout — an Admin-SDK callable that dismantled an account on
-  request would be the client-triggerable destructive server path this schema keeps refusing. It
-  needed one new rule: `users` had no `delete`, and the `write` rule can never pass for one because
-  it names `request.resource.data`, which a delete has none of — so leaving was impossible rather
-  than forbidden. Every step is a no-op on what is already gone, so an interrupted teardown is
-  finished by running it again, which is what `auth/requires-recent-login` asks for.
+- **Leaving is possible, it dismantles rather than departs, and the SERVER finishes it.** The client
+  writes one document — `deletions/{uid}`, `utils/leave.ts` — and `onAccountDeletionRequested`
+  (`functions/src/index.ts`, `functions/src/teardown.ts`) tears the account down with the Admin SDK
+  in five named phases: cancel every live stay in both directions, delete the places (photos,
+  slots, guest pointers), unfriend both sides and delete requests both ways, then prefs, saved
+  searches, share links, the avatar and the profile, then the Auth account. The document is deleted
+  last, and its absence is the only completion signal there is.
+
+  **This used to be a serial chain of writes in the browser, and that was a bug rather than a
+  style.** The profile went near the END of that chain, so a tab closed during the slow early
+  phases — one round trip per stay, per photo, per listing — left an account that still had a
+  profile, friends and places while its owner's stays were already cancelled and their friends had
+  watched them vanish. The reaper collects only accounts with NOTHING attached, deliberately, so it
+  skipped exactly that account forever; the one thing that finished it was the person coming back
+  and pressing the button again. **Cloud Functions retry without their participation**, which is the
+  whole argument and the only one this function needs — it is not in a request path, it reacts to a
+  write that already happened, same shape as the notification triggers.
+
+  **A stay plants pointers in other people's data, and leaving takes those too.** `knownBy` under
+  the other party and the guest marker under the listing are keyed BY the leaver's uid rather than
+  referring to one — so there is nothing to rewrite and no sentinel to invent, and every path is
+  named by a booking `cancelStays` has already read. `dropPointers` sweeps EVERY booking, not the
+  ones just cancelled: a stay that has already been, or was called off years ago, planted its
+  pointers identically and the cancel loop deliberately skips both. Retry-safe by construction, since
+  bookings are terminal and nothing deletes one, so a second attempt re-derives the same set and
+  deleting a missing document is a no-op. The mirror case is `removeProfile`: deleting a portal does
+  not delete the grants hanging off it, so leaving used to strand other people's uids inside the
+  leaver's own data — the same trap `removePlaces` already avoids for a listing's windows.
+
+  The one case with no back-pointer is a grant under SOMEONE ELSE'S link: a collection-group query
+  can't match a bare document id, and adding a `uid` field to make it sweepable would be a schema and
+  rules change plus a backfill, to delete what the TTL removes within about thirty days anyway. Left
+  to the TTL, and the privacy page says so rather than pretending otherwise.
+
+  **The order is the client's order, because the reason for it is unchanged**: the writes in `stays`
+  and `friends` fire the notification triggers, and those read the leaver's profile to build their
+  messages, so the profile must outlive them. Admin removes the RULES constraints, not the ordering
+  one. It does add a race the browser never had — a server walks the same path in under a second,
+  while those triggers run concurrently — so there is a deliberate settle pause before the profile
+  phase. Best-effort: the worst case if it is still too short is an email that says "Someone".
+  Friend edges go before requests for the same family of reason: `onConnectAnswered` tells a yes
+  from a no by whether the edge exists, so an edge still standing would report a withdrawal as an
+  acceptance.
+
+  **Every step is a no-op on what is already gone**, because retries mean it runs again over a
+  partly dismantled account: a cancelled booking is skipped, a missing document deletes cleanly, and
+  a deleted Auth account answers `user-not-found`. Two things it does that the client couldn't:
+  every portal is found by query (`portals` is `allow list: if false`, so the browser could only
+  delete the one id it had stored), and the Auth account goes without `auth/requires-recent-login` —
+  the special case that used to strand people in front of advice they couldn't follow.
+
+  **`users` has no client `delete` verb at all any more.** It existed solely so browser-side leaving
+  could work; leaving one behind would let a client delete its own profile WITHOUT asking for the
+  teardown, which is the half-dismantled account again. `deletions` is create-and-read-your-own,
+  with no list (who is leaving is nobody's business) and no client update — the phase is the
+  function's word — and no client delete WHILE IT IS RUNNING, since clearing it then would abandon a
+  teardown under way.
+  Deliberately NOT gated on a fresh sign-in: an ID token lives an hour so there is no stale one to
+  steal, the same session can already cancel every stay and delete every listing directly, and a
+  recency check would lock out the one population that can never refresh `auth_time` — a participant
+  with no credential, for whom this is the only exit.
+
+  **The phases are a progress bar, and an ETA would have to lie** — how long this takes depends on
+  how many stays, places and photos there are, which nothing knows without counting first. So there
+  is a fixed list (`DELETION_PHASES`, `utils/types.ts`, mirrored in `teardown.ts` and pinned by
+  `tests/drift.test.ts`) and `components/deletion-screen.tsx` draws a determinate bar over it. The
+  bar counts the wait BEFORE the first phase as a step of its own and never fills, since the phase
+  it names is the one still running. That field is also the only way a stuck teardown is visible at
+  all. `app/page.tsx` renders this AHEAD of the profile gate — the teardown deletes the profile
+  partway through, and the other reading of a missing profile is onboarding, which would put someone
+  who asked to leave in front of a form asking their name and write it back. `deletionReady` is what
+  stops the app being drawn in the beat before that document is answered for.
+
+  **Failure is capped and says so.** Five attempts, counted in the document before the work so a run
+  that takes the process with it still spends from the budget; past that the function writes `error`
+  and RETURNS rather than throwing, since more retries would repeat the same failure and the
+  document has to survive to say so. It logs to Cloud Logging and writes a `debug` event, so a
+  stalled teardown lands where every other incident does.
+
+  **And a failure must not be a life sentence, which it was.** The document then stands forever —
+  nothing else removes one: no TTL, and the reaper skips an account that still has a profile — while
+  `app/page.tsx` renders the deletion screen ahead of every other gate, on every device, from a
+  screen that had no controls on it at all. The only recovery was an operator with the Admin SDK.
+
+  So the delete rule passes for the owner **when the document carries an error**, which is a
+  condition rules can express and a running teardown can never meet, and the screen offers both
+  readings of the failure: **Try deleting again** (clear, then re-ask — a create, so the attempt
+  budget starts over) and **Keep my account for now** (clear and stand down), over copy that says
+  what already happened rather than that nothing did, since the phases run stays first. Two things
+  had to move with it. The store treats the document VANISHING as the teardown finishing and signs
+  out — correct, since the Auth account went with it — so it now only arms that reading while the
+  request is live: the function never deletes one it wrote an error on, so a cleared failure is
+  somebody choosing to stay. And `NameGateProvider` opens its sheet for a credentialed account with
+  no display name, which is exactly what an account is once the profile phase lands — so it asked
+  the person who had just left what to call them, over the screen saying they were leaving, and sat
+  on top of these controls. It stands down for a deletion now. Both are driven by
+  `bun run check:leave`. A Storage sweep that fails is logged and does NOT block: every object is named by
+  uid, so a later sweep can always finish it, while a bucket refusing us would otherwise strand
+  someone who asked to leave.
 
   **The handle does not come back**, and that is the one leftover worth saying out loud:
   `usernames/{handle}` has no delete rule by design, so the entry outlives the account it named.
@@ -1298,10 +1390,13 @@ site in `web/out/`.
 `functions/` (Node 22, npm — NOT bun; it targets the Cloud Functions runtime). `cd functions && npm
 install`, `npm run build`, `firebase deploy --only functions`.
 
-It holds exactly one thing: notification email (see Notifications). Everything user-facing — share
-links included — runs on rules alone, and adding a second function should require an argument that
-rules genuinely can't express. This one has one: it needs the Admin SDK to read an address off the
-Auth account, which is what keeps email out of Firestore entirely.
+It holds three things, and each had to argue for itself, because everything user-facing — share
+links included — runs on rules alone. **Notification email** needs the Admin SDK to read an address
+off the Auth account, which is what keeps email out of Firestore entirely. **The reaper** enumerates
+and deletes Auth accounts, which rules categorically cannot do, and runs on a timer in nobody's
+request path. **The teardown** (`teardown.ts`, `onAccountDeletionRequested`) needs something rules
+can't express at all: to RETRY without the person being there. None of the three sits between a user
+and their data — each reacts to a write that already happened, or to a clock.
 
 ## Driving the auth flows locally
 
@@ -1425,6 +1520,61 @@ outright** (`DetailBlock` reads `listing.location.label`). Unreachable in produc
 path sets one — so this is a note about FIXTURES, not a bug: seed the field, or spend the time
 reading a stack trace for a state that cannot exist.
 
+## Driving the teardown
+
+`bun run check:teardown` is the only thing here that watches a TRIGGER run, and the teardown is the
+one path whose whole claim is about what happens when the browser is gone — so reasoning about it
+was never going to be enough. It builds the functions, starts Firestore, Auth and Functions, seeds
+an account with everything a real one has attached (stays on both sides, a place with slots and
+share links, a past visit, friends, requests both ways, a saved search, a `knownBy` pointer), writes
+`deletions/{uid}` exactly as the client does, and then walks away and waits:
+
+```sh
+cd web && bun run check:teardown
+```
+
+It asserts the phases were reported on the way, the document deleted itself, the Auth account is
+gone, and — the half that is about other people — that the host whose slot the leaver held has their
+nights back, both sides of the friendship went, and **a stay that already happened is left alone**.
+Unlike the browser checks it needs no browser and no dev server, so it is the one that could
+gate CI if that is ever wanted.
+
+## Driving the EXIF promise
+
+`bun run check:exif` bundles the real `shrink` and runs it in headless Chrome against a JPEG this
+script builds — Chrome writes the pixels, the script splices in an EXIF APP1 carrying a GPS IFD and
+a findable string, the way a camera does — then asserts the output has no APP1 segment anywhere in
+its structure and neither string anywhere in its bytes. It ends by stubbing `getContext` and
+`toBlob` to fail and checking both refuse rather than return the original. No dev server, no
+emulator, ~10 seconds:
+
+```sh
+cd web && bun run check:exif
+```
+
+**It has to be a browser, and that is not a shortcut.** The promise rests on Chrome's own canvas
+encoder, so a DOM shim under `bun test` would be testing a different encoder than the one people
+actually upload through — it could pass while the shipped path leaked. The scratch entry point it
+bundles lives under `node_modules/.cache` so that `firebase/…` resolves and neither tsc nor biome
+ever sees it.
+
+`bun run check:leave` is the other half: the person watching. It signs someone in through the email
+door, plants the deletion document, and checks the app stands aside for it live, then again on a
+RELOAD with the profile already deleted — the state that used to read as onboarding, which is the
+whole reason the screen sits ahead of the profile gate. Then it removes the document the way a
+finished trigger does and checks the session ends rather than dropping them into a nameless kip. It
+needs the emulated dev server, like the other two browser checks.
+
+One trap it teaches: an inert `Sheet`'s title sits in the DOM on every screen, so asking "is the
+name form up?" by searching `innerText` answers yes when nothing is showing. Assert on the control
+that is actually there.
+
+Two things it teaches. Both emulators namespace under the id `emulators:exec` was STARTED with, and
+so does the function's Admin SDK (`GCLOUD_PROJECT`) — seed `demo-kip`, not the client's project, or
+the trigger fires against an empty database and every assertion fails for the wrong reason. And
+there is no Storage emulator configured, so the photo sweep fails on every run: that is the
+non-blocking path working as designed, and the run passing THROUGH it is itself the assertion.
+
 ## Security-rules tests
 
 `firestore.rules` is the only enforcement, so the security-critical paths are tested against the
@@ -1455,7 +1605,12 @@ time, and a rule touching `resource.data` would refuse it and strand the connect
 but not the booking, sharing off closes it and back on reopens it, absent prefs counts as NOT sharing,
 a request or cancellation is never shared, planting a friend edge on your own side proves nothing,
 and the feed's query is refused without its status filter); and
-the **browse lookup budget** (20 distinct friends passes, 25 fails); and **debug events** (anyone
+the **browse lookup budget** (20 distinct friends passes, 25 fails); **leaving** (you ask for your
+own deletion and nobody else's, signed out asks for nothing, you read yours and not another's, the
+collection can't be enumerated, the phase can't be rewritten, the request can't be called off once
+made, it carries nothing but its own unforgeable timestamp, one that GAVE UP can be cleared by its
+owner — but only while it carries a non-empty error, and asking again is then a create — and NOBODY
+deletes a profile any more, not even its owner); and **debug events** (anyone
 signed in may add one including an anonymous visitor, nobody may add one in another's name, the
 shape and size caps hold, the timestamp can't be chosen, an expiry past the retention window is
 refused, and nobody — the author included — can read, edit or delete one).
