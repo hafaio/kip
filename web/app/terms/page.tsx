@@ -183,14 +183,16 @@ export default function TermsPage(): ReactElement {
 
       <H2>Contact</H2>
       <P>
-        <a className={link} href={`mailto:${CONTACT_EMAIL}`}>
-          {CONTACT_EMAIL}
-        </a>
-        , or{" "}
         <a className={link} href={ISSUES_URL}>
-          an issue on GitHub
-        </a>
-        .
+          Open an issue on GitHub
+        </a>{" "}
+        — public, and the fastest way to get an answer. For anything you'd
+        rather not post publicly, the{" "}
+        <Link className={link} href="/help/">
+          Help page
+        </Link>{" "}
+        has an address. The SMS program has its own contact above, which is the
+        one carriers require.
       </P>
     </DocPage>
   );
