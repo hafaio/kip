@@ -10,6 +10,7 @@ import {
   query,
   where,
 } from "firebase/firestore";
+import { StaleSession } from "./auth";
 import { cancelBookingAsGuest } from "./bookings";
 import { auth, db, errorCode } from "./firebase";
 import { isExpired } from "./format";
@@ -136,14 +137,5 @@ export async function leaveKip(
       throw new StaleSession();
     }
     throw error;
-  }
-}
-
-// Distinguished so the caller can say the one useful thing: sign in again and
-// press it again. The teardown is idempotent, so a second run finishes.
-export class StaleSession extends Error {
-  readonly code = "kip/stale-session";
-  constructor() {
-    super("sign in again to finish leaving");
   }
 }

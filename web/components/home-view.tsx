@@ -322,11 +322,11 @@ export default function HomeView(): ReactElement | null {
 // An unverified account receives nothing at all, and the only explanation would
 // otherwise sit in Settings, which they have no reason to visit.
 function VerifyEmailPrompt(): ReactElement | null {
-  const { user, emailVerified, resendVerification } = useKip();
+  const { user, email, emailVerified, resendVerification } = useKip();
   const [sent, setSent] = useState(false);
   const [failed, setFailed] = useState(false);
 
-  if (!user || emailVerified || !user.email) return null;
+  if (!user || emailVerified || !email) return null;
 
   async function resend(): Promise<void> {
     setFailed(false);
@@ -343,8 +343,8 @@ function VerifyEmailPrompt(): ReactElement | null {
     <div className="flex flex-col gap-3 rounded-3xl bg-surface p-4 shadow-card sm:flex-row sm:items-center">
       <p className="min-w-0 flex-1 text-sm text-muted">
         {sent
-          ? `Confirmation sent to ${user.email}. Open it, then reload kip.`
-          : `Confirm ${user.email} to get notified about bookings — until you do, kip can't email you.`}
+          ? `Confirmation sent to ${email}. Open it, then reload kip.`
+          : `Confirm ${email} to get notified about bookings — until you do, kip can't email you.`}
       </p>
       {sent ? null : (
         <Button variant="secondary" onClick={resend} className="shrink-0">

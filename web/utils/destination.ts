@@ -19,7 +19,10 @@ export type Destination =
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 
 // US only, which is the SMS region allowlist. Everything else is offered the
-// email door rather than a refusal from the server after a code was billed.
+// email door rather than a refusal from the server after a code was billed. One
+// of three places that must move together to reach further: this, Firebase
+// Auth's region allowlist, and the `+1` check the notification sender makes
+// before spending on a text.
 const US_DIGITS = /^1?(\d{10})$/;
 
 export function parseDestination(raw: string): Destination {

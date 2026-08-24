@@ -14,6 +14,7 @@ import {
   signInWithPhoneNumber,
   signInWithPopup,
   type User,
+  unlink,
 } from "firebase/auth";
 import { auth, errorCode } from "./firebase";
 
@@ -82,6 +83,88 @@ export async function googleSignIn(): Promise<{ sameAccount: boolean }> {
 // one-time link as any other — `signInWithEmailLink` lands on the existing
 // account — so nothing is stranded and the reset flow, with its own screen and
 // its own careful non-enumeration notice, left the product with it.
+
+// The doors an account actually has, as Settings lists them. Email-link sign-in
+// rides on the Email/Password provider, so its id is `password` however little
+// of one kip asks for.
+export const EMAIL_DOOR = "password";
+export const GOOGLE_DOOR = "google.com";
+export const PHONE_DOOR = "phone";
+
+export type Door = { providerId: string; value: string | null };
+
+export function doorsOf(user: User | null): readonly Door[] {
+  return (user?.providerData ?? []).map((entry) => ({
+    providerId: entry.providerId,
+    value: entry.email ?? entry.phoneNumber,
+  }));
+}
+
+export function sameDoors(
+  left: readonly Door[],
+  right: readonly Door[],
+): boolean {
+  return (
+    left.length === right.length &&
+    left.every(
+      (door, index) =>
+        door.providerId === right[index].providerId &&
+        door.value === right[index].value,
+    )
+  );
+}
+
+// Never the last one. An account with no credential still looks like an account
+// and behaves like a ticket: nothing left to sign back in with, and
+// `hasCredential()` in the rules starts refusing handle claims and new places.
+//
+// Firebase itself will unlink the last provider without complaint, so this is
+// the whole of the guard — and it reads THIS tab's copy of the user, so two tabs
+// each removing a different door still strand the account between them. What it
+// catches is one tab acting on a stale surface, or the control being reached
+// some other way. Rules can't see Auth providers, so there is nowhere better.
+export async function removeDoor(providerId: string): Promise<void> {
+  const current = auth().currentUser;
+  if (!current) throw new Error("not signed in");
+  if (current.providerData.length < 2) {
+    throw new Error("removing the last way in would strand the account");
+  }
+  try {
+    await unlink(current, providerId);
+  } catch (error) {
+    const code = authErrorCode(error);
+    if (code === "auth/requires-recent-login") {
+      throw new StaleSession();
+    }
+    // The door is already gone, which is what was asked for. This is what a
+    // retry hits after a first attempt unlinked it and then failed below.
+    if (code !== "auth/no-such-provider") throw error;
+  }
+  // `unlink` persists the shortened `providerData` and tells NOBODY — unlike
+  // every linking call, it never reaches `_notifyListenersIfCurrent`. So the row
+  // that had just been removed sat there until a reload, which is the failure
+  // the store's snapshot exists to prevent, arriving one layer lower down.
+  // `reload` is the cheap call that both re-reads the server's answer and fires
+  // the listener.
+  try {
+    await current.reload();
+  } catch (error) {
+    // The unlink has already landed, so this costs the row's freshness until
+    // the next reload and nothing more. Raised, it told someone their door was
+    // still there and sent them back to press a button that now no-ops.
+    console.error(error);
+  }
+}
+
+// Firebase refuses to change what an account signs in with — removing a door,
+// deleting the account — on a session that isn't recent. Distinguished so the
+// caller can say the one useful thing: come back in and press it again.
+export class StaleSession extends Error {
+  readonly code = "kip/stale-session";
+  constructor() {
+    super("sign in again to finish");
+  }
+}
 
 export function authErrorCode(error: unknown): string {
   return errorCode(error);
@@ -258,8 +341,11 @@ export async function sendPhoneCode(
   }
 }
 
-// A number cannot be swapped in place — Firebase has no "replace the phone on
-// this account" — so the honest answer is to say so rather than move them.
+// Refusing to swap is a product choice, not a limit: `updatePhoneNumber` exists,
+// and unlink-then-relink works. Someone who already has a number already has a
+// way back in, so a second one typed into the field that ADDS one reads as a
+// mistake — and the fallback that would otherwise catch it signs them into a
+// different account.
 export class PhoneAlreadySet extends Error {
   readonly code = "kip/phone-already-set";
   constructor() {
