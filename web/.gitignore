@@ -8,3 +8,7 @@ out/
 # meant a permanently dirty file that a bare commit could sweep up. `tsc` passes
 # without it entirely, so it is regenerated locally and needed by nothing.
 next-env.d.ts
+
+# Written by `next dev`, and re-added if deleted.
+AGENTS.md
+CLAUDE.md
