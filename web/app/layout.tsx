@@ -1,10 +1,12 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Plus_Jakarta_Sans } from "next/font/google";
 import { ThemeProvider } from "next-themes";
 import type { ReactElement, ReactNode } from "react";
 import DialogProvider from "../components/dialog";
 import EmulatorBadge from "../components/emulator-badge";
 import NameGateProvider from "../components/name-gate";
+import Pwa from "../components/pwa";
+import ThemeColor from "../components/theme-color";
 import { KipProvider } from "../utils/store";
 import "./globals.css";
 
@@ -21,6 +23,23 @@ const jakarta = Plus_Jakarta_Sans({
 export const metadata: Metadata = {
   title: "kip",
   description: "Share a spare room or your whole place with friends, for free.",
+  // Safari reads none of the manifest for Add to Home Screen; it wants these.
+  appleWebApp: { capable: true, title: "kip", statusBarStyle: "default" },
+  // Named rather than left to convention: Safari looks for /apple-touch-icon.png
+  // at the ROOT, and Pages serves kip from /<repo>.
+  icons: {
+    apple: `${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/apple-touch-icon.png`,
+  },
+};
+
+// The first paint only, and keyed on the SYSTEM preference because static HTML
+// has nothing else to key on — `ThemeColor` corrects both to the theme actually
+// resolved as soon as it runs. Values are `--color-bg` from globals.css.
+export const viewport: Viewport = {
+  themeColor: [
+    { media: "(prefers-color-scheme: light)", color: "#f6f1ea" },
+    { media: "(prefers-color-scheme: dark)", color: "#161009" },
+  ],
 };
 
 export default function RootLayout({
@@ -73,6 +92,8 @@ export default function RootLayout({
             <KipProvider>
               <NameGateProvider>{children}</NameGateProvider>
               <EmulatorBadge />
+              <Pwa />
+              <ThemeColor />
             </KipProvider>
           </DialogProvider>
         </ThemeProvider>

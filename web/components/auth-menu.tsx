@@ -1,18 +1,29 @@
 "use client";
 
 import { type ReactElement, useState } from "react";
-import { LuChevronDown, LuLogOut, LuSettings, LuUser } from "react-icons/lu";
+import {
+  LuChevronDown,
+  LuDownload,
+  LuLogOut,
+  LuSettings,
+  LuUser,
+} from "react-icons/lu";
+import { useInstall } from "../utils/install";
 import { useKip } from "../utils/store";
 import Avatar from "./avatar";
+import { useDialog } from "./dialog";
 import { useLeave } from "./use-leave";
 
 // Only shown once signed in (the app gates on auth). Sign-in itself lives on
 // the WelcomeScreen, so this is the profile menu: your profile, Settings (the
-// dock has no room for it), and sign-out.
+// dock has no room for it), installing kip where that is possible, and
+// sign-out.
 export default function AuthMenu(): ReactElement | null {
   const { user, anonymous, email, profile, signOut, setView, navigate } =
     useKip();
   const { leave, leaving } = useLeave();
+  const { ready, byHand, install } = useInstall();
+  const { alert } = useDialog();
   const [open, setOpen] = useState(false);
 
   const displayName = profile?.displayName ?? user?.displayName ?? email;
@@ -105,6 +116,29 @@ export default function AuthMenu(): ReactElement | null {
               <LuSettings className="text-muted" />
               <span>Settings</span>
             </button>
+            {/* Only where it can do something. Chrome hands over a prompt and
+                this opens it; Safari has no such event, so on an iPhone the row
+                says where the control actually is rather than offering a button
+                that cannot work. Installed already, neither shows. */}
+            {ready || byHand ? (
+              <button
+                type="button"
+                onClick={async () => {
+                  setOpen(false);
+                  if (ready) await install();
+                  else {
+                    await alert({
+                      title: "Add kip to your Home Screen",
+                      body: "Tap the Share button in Safari, then Add to Home Screen. kip opens like an app after that, and keeps working when you have no signal.",
+                    });
+                  }
+                }}
+                className="flex h-11 w-full items-center gap-3 rounded-xl px-3 text-[0.9375rem] font-medium text-text hover:bg-surface-hover"
+              >
+                <LuDownload className="text-muted" />
+                <span>Install kip</span>
+              </button>
+            ) : null}
             {/* Everyone gets an exit, and it is the one thing in this menu
                 that reads as an action rather than a destination. What differs
                 is what it MEANS: with a credential it is an ordinary sign-out;

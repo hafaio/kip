@@ -12,3 +12,6 @@ next-env.d.ts
 # Written by `next dev`, and re-added if deleted.
 AGENTS.md
 CLAUDE.md
+
+# Compiled from sw/sw.ts (see next.config.js).
+public/sw.js

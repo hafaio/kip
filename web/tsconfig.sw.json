@@ -1,0 +1,21 @@
+{
+  // The service worker's own config, because it cannot share the app's: a worker
+  // has no DOM, and `lib: ["dom"]` would type `self` as a Window and accept code
+  // that throws the moment it runs. The source has no imports or exports, so the
+  // output is a CLASSIC script whatever `module` says — which is what is wanted:
+  // a module worker needs `{ type: "module" }` at registration, and support for
+  // that is still uneven.
+  "compilerOptions": {
+    "target": "es2022",
+    "lib": ["es2022", "webworker"],
+    "module": "es2022",
+    "types": [],
+    "strict": true,
+    "skipLibCheck": true,
+    // The rationale belongs in the source, not in what every visitor downloads.
+    "removeComments": true,
+    "rootDir": "sw",
+    "outDir": "public"
+  },
+  "include": ["sw/sw.ts"]
+}

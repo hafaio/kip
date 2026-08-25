@@ -1468,11 +1468,71 @@ owner and friends saw anything. Two consequences worth keeping in mind:
 This also retired `listings/{id}/viewers/{uid}`. It existed solely so a photo check starting from a
 listing could name a slot's token; nothing starts from there any more.
 
+## Installing it
+
+**The worker is TypeScript**, compiled from `sw/sw.ts` to a gitignored `public/sw.js` — the source
+sits outside `public/` so none of it is served. `tsconfig.sw.json` is its own because a worker has no
+DOM, and `lib: ["dom"]` would type `self` as a Window and accept code that throws the moment it runs.
+**`next.config.js` runs that compile**, because it is the one file every Next command loads: wired
+into `dev`/`export` instead, a bare `next build` shipped a site whose `sw.js` 404s with nothing
+saying so. It resolves `tsc` from its own directory, not the working one, which Next does not set —
+`next build web` from the repo root died with ENOENT before Next printed anything. `build:sw` is the
+same compile by hand, for when only the worker has changed.
+
+**Nothing with a query or a fragment on it is ever stored.** A navigation's `request.url` carries
+both — measured, not assumed, and two reviews of this disagreed about it — so caching the request as
+it arrives writes a portal capability and a one-time sign-in code into Cache Storage, which has no
+expiry, is readable by any same-origin script, and outlives the revocation meant to kill them. The
+key is the PATH alone, forced to a trailing slash to match `trailingSlash: true`. `check:pwa` opens
+`/portal/#token` and `/continue/?oobCode=…` and asserts neither reaches a cache key.
+
+**The entry point is pre-cached and everything else is bounded.** Registration is deferred to `load`,
+so the visit that INSTALLS the worker is never seen by it — without pre-caching the scope root,
+installing kip and then losing signal gives the browser's offline page from the new icon. And Cache
+Storage shares one origin quota with Firestore's IndexedDB, so an unbounded shell cache can cost the
+user the offline data this design leans on: `MAX_ENTRIES` trims oldest-first, since every deploy
+mints new hashed names and nothing invalidates the old ones.
+
+**The kill switch is a deploy.** Pages cannot send `Clear-Site-Data`, so replacing `sw.js` with one
+that deletes its caches — or unregisters itself — is the only remote lever there will ever be. Worth
+knowing before it is needed.
+
+`app/manifest.ts` plus the compiled worker make kip installable, and `Pwa` (mounted in the layout)
+registers the worker after load. Nothing is prefixed for us, so `start_url`, `scope` and every icon
+path read `NEXT_PUBLIC_BASE_PATH` themselves; `scope` covers the whole app so a share link opens
+inside an installed kip rather than bouncing to a tab. Icons are rendered from `app/icon.svg`, with
+a separate full-bleed maskable one because Android crops the disc otherwise.
+
+**The worker caches the SHELL and nothing else.** Firestore already persists to IndexedDB and
+queues writes until it can reach the server, so the only thing between kip and working offline was
+the HTML and JS needed to start it. Content-hashed `/_next/static/**` is cache-first; documents are
+network-first so a deploy lands immediately and a cache miss only matters with no signal.
+Cross-origin requests are never touched — a worker in front of the SDK's own offline machinery
+could only get in its way. It does not register in dev, where `next dev` serves modules a stale
+cache would hand back.
+
+**Installing is only ever a deliberate tap.** `utils/install.ts` holds Chrome's `beforeinstallprompt`
+rather than letting it through, so Chrome never puts up its own banner and the only way in is the
+menu row. That row lives in `AuthMenu`, which `/portal/` and `/continue/` do not render — so a
+share-link visitor is never offered an install, which is right: they have not joined anything yet.
+Safari fires no such event at all, so on an iPhone the row explains Share → Add to Home Screen
+instead of offering a button that cannot work, and iPads are found by their Macintosh user agent
+plus a touchscreen. Installed already, neither shows.
+
+`bun run check:pwa` builds with the base path and serves it under one, since manifest scope, the
+registration path and the offline key are all built from it and nothing else exercises that. It
+asserts Chrome's own verdict — that it fires `beforeinstallprompt` at all — that no capability
+reaches a cache key, and then **kills the server** and checks kip still renders. That last part
+matters: the first version emulated offline through CDP, which does not apply to the fetches a
+service worker makes, so it watched the shell render over the live network and credited the cache.
+It passed with the entire offline fallback deleted. It does not cover a signed-in kip offline: that
+is Firestore's persistence, which needs a real session.
+
 ## Web build
 
 `cd web && bun install`, and `cd functions && npm install` once (a separate package on the Node
-runtime). `bun lint` is the gate and covers BOTH: `tsc && biome check` for the site, then
-`tsc --noEmit -p ../functions`. `bun dev` for local dev. `bun export` runs `next build` → static
+runtime). `bun lint` is the gate and covers all THREE: `tsc` for the site, `tsc -p tsconfig.sw.json`
+for the service worker, `biome check`, then `tsc --noEmit -p ../functions`. `bun dev` for local dev. `bun export` runs `next build` → static
 site in `web/out/`.
 
 ## Cloud Functions
@@ -1859,7 +1919,7 @@ check that pins the vocabulary the two packages share but can't import across
 and a key the web side never writes is `undefined`, which `=== false` treats as "not disabled", so a
 rename silently starts emailing people who opted out. The test makes it break CI instead.
 
-CI (`ci.yml`) is one job, because `bun lint` covers BOTH packages — it ends with
+CI (`ci.yml`) is one job, because `bun lint` covers both packages and the service worker — it ends with
 `tsc --noEmit -p ../functions`, so breaking a trigger fails the same command you already run. It
 does mean `functions/` must have its deps installed (`npm ci` there, which CI does before linting);
 without that, tsc can't resolve the firebase-functions types.
