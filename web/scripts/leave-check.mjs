@@ -11,8 +11,8 @@
 // read as onboarding. Then it removes the document the way a finished trigger
 // does, and checks the session ends. Exits non-zero on the first failure.
 
-import { spawn } from "node:child_process";
-import { mkdir, writeFile } from "node:fs/promises";
+import { spawn, spawnSync } from "node:child_process";
+import { mkdir, rm, writeFile } from "node:fs/promises";
 
 const APP = "http://localhost:3001";
 const FIRESTORE = "http://127.0.0.1:8080";
@@ -49,11 +49,20 @@ async function exists(path) {
   return r.ok;
 }
 
+const PROFILE = "/tmp/kip-leave-check";
+
 let chrome;
 async function browser() {
+  // A browser left behind holds the SIGNED-IN session, so the next run opens on
+  // the app rather than the door and fails at step one saying nothing about why.
+  // No leading dashes in the pkill pattern: it reads one as an option of its own
+  // and matches nothing, which looks just like there being nothing to kill.
+  spawnSync("pkill", ["-f", `user-data-dir=${PROFILE}`]);
+  await new Promise((done) => setTimeout(done, 1500));
+  await rm(PROFILE, { recursive: true, force: true });
   chrome = spawn("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", [
     "--headless=new", "--remote-debugging-port=9336",
-    "--user-data-dir=/tmp/kip-leave-check", "--disable-gpu", "--no-first-run",
+    `--user-data-dir=${PROFILE}`, "--disable-gpu", "--no-first-run",
     "--window-size=430,932", "about:blank",
   ], { stdio: "ignore" });
   await new Promise((r) => setTimeout(r, 6000));
