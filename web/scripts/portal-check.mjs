@@ -14,7 +14,8 @@
 //
 // Exits non-zero with the first failed expectation, so it reads like a test.
 
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { rm } from "node:fs/promises";
 
 // 3001, not Next's default — Erik's own dev server lives on 3000, and an
 // emulated server there would quietly answer for it. `dev:emulated` pins the
@@ -104,14 +105,23 @@ async function seed() {
   });
 }
 
+const PROFILE = "/tmp/kip-portal-check";
+
 let chrome;
 async function browser() {
+  // A browser left behind holds the SIGNED-IN session, so the next run opens on
+  // the app rather than the door and fails at step one saying nothing about why.
+  // No leading dashes in the pkill pattern: it reads one as an option of its own
+  // and matches nothing, which looks just like there being nothing to kill.
+  spawnSync("pkill", ["-f", `user-data-dir=${PROFILE}`]);
+  await new Promise((done) => setTimeout(done, 1500));
+  await rm(PROFILE, { recursive: true, force: true });
   chrome = spawn(
     "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
     [
       "--headless=new",
       "--remote-debugging-port=9333",
-      "--user-data-dir=/tmp/kip-portal-check",
+      `--user-data-dir=${PROFILE}`,
       "--disable-gpu",
       "--no-first-run",
       "--window-size=430,932",
