@@ -106,11 +106,11 @@ export default function PrivacyPage(): ReactElement {
             own.
           </strong>{" "}
           What kip keeps in your browser's own storage is for you, not about
-          you: your signed-in session, your light/dark choice, and a copy of
-          what you've been shown — your profile, friends, places and stays, and
-          the places and people kip drew for you — so the app opens without
-          waiting for the network. Clearing your browser's data for kip removes
-          all of it.
+          you: your signed-in session, your light/dark choice, a copy of what
+          you've been shown — your profile, friends, places and stays, and the
+          places and people kip drew for you — and a copy of the app itself, so
+          it opens without waiting for the network and keeps working when you
+          have none. Clearing your browser's data for kip removes all of it.
         </li>
         <li>
           <strong>Photo location data is removed.</strong> Photos you upload are

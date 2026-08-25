@@ -12,14 +12,16 @@
     "check:portal": "node scripts/portal-check.mjs",
     "export": "next build",
     "fmt": "biome format --write",
-    "lint": "tsc && biome check && tsc --noEmit -p ../functions",
+    "lint": "tsc && tsc --noEmit -p tsconfig.sw.json && biome check && tsc --noEmit -p ../functions",
     "test": "bun test --path-ignore-patterns '**/rules.test.ts'",
     "test:rules": "firebase emulators:exec --config ../firebase.json --only firestore,auth --project demo-kip-rules 'bun test tests/rules.test.ts'",
     "check:host": "node scripts/host-check.mjs",
     "check:leave": "node scripts/leave-check.mjs",
     "check:consent": "node scripts/consent-check.mjs",
     "check:exif": "node scripts/exif-check.mjs",
-    "check:teardown": "npm --prefix ../functions run build && firebase emulators:exec --config ../firebase.json --only auth,firestore,functions --project demo-kip 'node scripts/teardown-check.mjs'"
+    "check:teardown": "npm --prefix ../functions run build && firebase emulators:exec --config ../firebase.json --only auth,firestore,functions --project demo-kip 'node scripts/teardown-check.mjs'",
+    "check:pwa": "node scripts/pwa-check.mjs",
+    "build:sw": "tsc -p tsconfig.sw.json"
   },
   "dependencies": {
     "firebase": "^12.18.0",
