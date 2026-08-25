@@ -54,7 +54,23 @@ import type {
 } from "../../utils/types";
 import { validateDisplayName } from "../../utils/username";
 
-type LoadState = "loading" | "ready" | "missing";
+type LoadState = "loading" | "ready" | "missing" | "unreachable";
+
+// A read that never reached the server is not an answer about the link. Offline
+// the two are indistinguishable to the code and opposite to the reader: one says
+// their friend revoked it, the other that they are in a tunnel. Same distinction
+// the profile gate draws, for the same reason — a cached absence proves nothing.
+function unreachable(error: unknown): boolean {
+  if (typeof navigator !== "undefined" && navigator.onLine === false) {
+    return true;
+  }
+  const code = (error as { code?: string })?.code ?? "";
+  return (
+    code === "unavailable" ||
+    code === "auth/network-request-failed" ||
+    code === "deadline-exceeded"
+  );
+}
 
 // Stands in for a window id when the ask carries no dates.
 const FRIEND_ONLY = "__friend__";
@@ -191,7 +207,7 @@ export default function PortalPage(): ReactElement {
         // replacing the page with "this link isn't active" would be a lie about
         // what went wrong — and a jarring one, since they can already see it did.
         if (painted) setRoomsFailed(true);
-        else setState("missing");
+        else setState(unreachable(error) ? "unreachable" : "missing");
       });
     return () => {
       live = false;
@@ -367,6 +383,16 @@ export default function PortalPage(): ReactElement {
           // The same mark the app boots behind.
           <div className="flex min-h-[60vh] items-center justify-center">
             <Mark />
+          </div>
+        ) : state === "unreachable" ? (
+          <div className="mx-auto max-w-md pt-12 text-center">
+            <h1 className="text-xl font-bold tracking-[-0.02em]">
+              Can't reach kip right now
+            </h1>
+            <p className="mt-2 text-sm text-muted">
+              The link is probably fine — kip just can't check it from here. Try
+              again once you're back online.
+            </p>
           </div>
         ) : state === "missing" ? (
           <div className="mx-auto max-w-md pt-12 text-center">
