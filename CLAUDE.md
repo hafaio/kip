@@ -811,23 +811,26 @@ Rules: [firebase/firestore.rules](./firebase/firestore.rules), [firebase/storage
   real sign-in on this device. The two take different calls for a reason the comments there spell
   out: returning needs a SESSION, which only the SDK can persist, while attaching wants none.
 
-  **That token is a live credential and does not stay in the address bar.** An ID token is an hour
-  of the asking account, and a URL holding one goes into the static host's access log, this
-  browser's history, and whatever that history syncs to. It cannot be kept out of the FIRST request
-  — that request is how the page loads — so `readLink` takes it once and wipes the query with
-  `replaceState`. It is mirrored into `sessionStorage` first, because wiping breaks two things
-  otherwise: the retry button re-reads the link, and a RELOAD would find an attach link with no
-  token and fall through to the RETURNING branch, which signs in rather than links — minting a
-  second account for the address whose whole point was to join the first. Per tab, gone when it
-  closes, sent nowhere. The wipe happens only if that mirror SUCCEEDED: it is worth doing because the
-  token is held somewhere better, so with nowhere to hold it the wipe would destroy the only copy and
-  a reload could no longer finish — and a browser refusing storage is a private window, which keeps
-  no history to leak into, so it buys least exactly where it costs most. `forgetLink` drops it on every outcome but `failed`, which keeps it because a
-  RELOAD is the only retry that outcome has — the screen offers no button, since a call that
-  ANSWERED has spent the code, though a request that never reached the server lands there too.
-  `stalled` is the one with a button, and it never reaches that line: the timeout sets it, not the
-  work. `Referer` needed nothing: the only cross-origin calls go to Google, and the default
-  `strict-origin-when-cross-origin` already sends the origin alone.
+  **Everything kip adds to the link rides in the FRAGMENT** — `idToken`, `email`, `host`. A URL
+  holding an ID token goes into the static host's access log, on the very request that opens the
+  page, which nothing client-side can reach afterwards; browsers never send a fragment to a server.
+  Firebase appends its own `mode`/`oobCode`/`apiKey` to the QUERY, verified against the Auth
+  emulator, whose 303 keeps the fragment intact. Same trick as the portal token.
+
+  `oobCode` cannot follow, because Firebase decides where it goes — and it is the STRONGER of the
+  two anyway: whoever reads the mail can sign in with it, which is what email-link auth is. It is
+  single-use and the open spends it, where an ID token is neither. Nothing is stashed or wiped, so
+  what is left is one browser's own history, on the device whose owner just opened their own mail.
+
+  **`email` rides across so a lost fragment fails loudly:** the page refuses a link with no address.
+  Left in the query, an ATTACH link would look exactly like a RETURNING one and sign someone into a
+  second account instead of joining the first. `routable()` skips `/continue/` for the same family
+  of reason it skips `/portal/` — a route written over either fragment destroys it.
+
+  **One attempt owns the outcome, and cancelling is a newer attempt rather than a teardown.**
+  StrictMode remounts, the second run is correctly refused by `spent`, and a teardown that muted the
+  first threw away the only answer and its timer, leaving the page on "working" for ever. Dev-only,
+  so only `check:host` — which waits for the redirect instead of navigating itself — ever sees it.
 
   **The code step is six boxes over ONE input, and the count is the point.** `components/ui/code-input.tsx`
   draws six boxes wearing `Input`'s own shell and lays a single transparent `one-time-code` field
@@ -1106,7 +1109,8 @@ Rules: [firebase/firestore.rules](./firebase/firestore.rules), [firebase/storage
   unparseable fragment resolves to Home and is rewritten, so a bad link never renders nothing.
   Ids in the URL are fine: every one is enforced by `firestore.rules`, and the only capability-
   bearing ids are portal tokens — which live on `/portal/`, whose fragment means something else
-  entirely and which every history write skips by pathname.
+  entirely and which every history write skips by pathname — as does `/continue/`, whose fragment
+  carries the half of a sign-in link that kip adds.
 - **Object-model navigation (client SPA).** The domain is four entities — Person, Room (listing),
   Slot (window), Booking — and the app is a client-side nav stack in the store (`Screen` =
   `tab | person | room | booking | listing-form`, with `navigate()`/`replace()`/`back()`; the

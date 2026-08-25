@@ -465,10 +465,11 @@ export function rememberScroll(offset: number): void {
   );
 }
 
-// /portal/'s fragment is a capability token, not a route, and it mounts this
-// same provider — so every history write asks first.
+// Both routes mean something else by their fragment — a capability token on
+// /portal/, a sign-in link on /continue/ — and a route written over either one
+// destroys it, within a second of load.
 function routable(): boolean {
-  return !/\/portal\/?$/.test(window.location.pathname);
+  return !/\/(portal|continue)\/?$/.test(window.location.pathname);
 }
 
 function pushEntry(stack: readonly Screen[]): void {
