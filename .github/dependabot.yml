@@ -17,6 +17,8 @@ updates:
       functions:
         patterns: ["*"]
 
+  # The workflows pin major tags, which follow patches and minors themselves, so
+  # only a major is news here.
   - package-ecosystem: github-actions
     directory: /
     schedule:
@@ -24,3 +26,8 @@ updates:
     groups:
       actions:
         patterns: ["*"]
+    ignore:
+      - dependency-name: "*"
+        update-types:
+          - version-update:semver-patch
+          - version-update:semver-minor
