@@ -6,6 +6,7 @@ import AuthMenu from "../components/auth-menu";
 import BookingPage from "../components/booking-page";
 import BrowseView from "../components/browse-view";
 import DeletionScreen from "../components/deletion-screen";
+import FeedbackView from "../components/feedback-view";
 import FriendsPanel from "../components/friends-panel";
 import HomeView from "../components/home-view";
 import ListingFormScreen from "../components/listing-form-screen";
@@ -30,6 +31,7 @@ const TITLES: Record<View, string> = {
   friends: "Friends",
   trips: "Trips",
   settings: "Settings",
+  feedback: "Feedback inbox",
 };
 
 function CurrentScreen({ screen }: { screen: Screen }): ReactElement {
@@ -56,6 +58,10 @@ function CurrentScreen({ screen }: { screen: Screen }): ReactElement {
           return <TripsView />;
         case "settings":
           return <SettingsView />;
+        // Guessing the fragment renders an empty list rather than a leak: every
+        // read behind it is refused by the rules for anyone but the operator.
+        case "feedback":
+          return <FeedbackView />;
       }
   }
 }

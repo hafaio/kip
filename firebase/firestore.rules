@@ -28,6 +28,18 @@ service cloud.firestore {
             || 'google.com' in request.auth.token.firebase.identities);
     }
 
+    // Whoever operates kip, as a custom claim on the ACCOUNT — so it costs no
+    // lookup at all, there is no collection to secure, and nobody can enumerate
+    // who runs kip because it isn't stored anywhere they could look. Set with
+    // `bun run admin <email>`, which needs GCP credentials rather than a kip
+    // session: a compromised account cannot appoint itself.
+    //
+    // `.get` rather than a bare field read, since the key is absent for
+    // everybody else and a missing one must answer false rather than error.
+    function isAdmin() {
+      return isSignedIn() && request.auth.token.get('admin', false) == true;
+    }
+
     // Friendship is bijective — both edges are written — so one exists() answers it.
     function isFriendOf(ownerId) {
       return isSignedIn()
@@ -554,6 +566,40 @@ service cloud.firestore {
       allow delete: if isSignedIn()
         && request.auth.uid == userId
         && resource.data.get('error', '') != '';
+    }
+
+    // Feedback, and it stays here. Nothing forwards it, nothing notifies on it
+    // and no function touches it, which is what lets the whole feature be rules
+    // plus a form — read with the Admin SDK (`bun run scripts/feedback.ts`), the
+    // same way `debug` is.
+    //
+    // Gated on hasCredential() where `debug` takes any signature, and the
+    // difference is who each one is for: a diagnostic is written BY the failure
+    // and is worth having from the anonymous visitor it happened to, while this
+    // is prose somebody sits down and reads, so an identity a page load mints is
+    // the writer to refuse.
+    //
+    // Auto-id rather than one document per person, so writing again never
+    // overwrites what you said the first time. One free-text field and nothing
+    // else: a kind selector made the sender sort their own report before they
+    // could write it, and sorting them is the reader's job.
+    match /feedback/{reportId} {
+      // The operator reads and clears them in the app; nobody else can, the
+      // author included. Nothing edits one — what was said is the record, and
+      // the only thing to do with a report that has been dealt with is remove
+      // it.
+      allow get, list: if isAdmin();
+      allow update: if false;
+      allow delete: if isAdmin();
+      allow create: if hasCredential()
+        && request.resource.data.keys().hasOnly(['uid', 'text', 'at'])
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.text is string
+        && request.resource.data.text.size() > 0
+        && request.resource.data.text.size() <= 2000
+        // Unforgeable, so a report can't be lodged as having been written
+        // earlier — the only ordering a reader has.
+        && request.resource.data.at == request.time;
     }
 
     // Write-only diagnostics. Nothing can read one back, which is what separates

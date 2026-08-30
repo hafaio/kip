@@ -39,6 +39,11 @@ export default function HelpPage(): ReactElement {
       <H2>Something's broken, or you have a question</H2>
       <List>
         <li>
+          <strong>The quickest route:</strong> tap your picture in kip, then{" "}
+          <strong>Send feedback</strong>. It goes straight to us, needs no
+          account anywhere else, and isn't posted publicly.
+        </li>
+        <li>
           <strong>Bugs and questions:</strong>{" "}
           <a className={link} href={ISSUES_URL}>
             open an issue on GitHub

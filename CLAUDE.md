@@ -39,6 +39,9 @@ deletions/{uid}                    { requestedAt,                     # the clie
                                      phase, attempts, error? }        # written by the trigger; create-and-read-own
                                      # only, no list, no client update; delete ONLY once `error` is set.
                                      # Its ABSENCE means finished — or cleared, if it had failed
+feedback/{autoId}                  { uid, text, at }  # one free-text field; create by a CREDENTIALED caller;
+                                     # read/delete by an ADMIN only, never by its author. Nothing
+                                     # edits one. Not deleted on leaving.
 debug/{autoId}                     { uid, kind, detail (JSON string), at, expires }  # write-only diagnostics;
                                      # create by any signed-in caller, NO read by anyone, TTL on expires
 ```
@@ -1045,7 +1048,15 @@ Rules: [firebase/firestore.rules](./firebase/firestore.rules), [firebase/storage
   `text-base` (≥16px so iOS Safari doesn't zoom on focus) on a **white surface with the only
   visible border + an accent focus ring**. `Sheet` is the shared modal surface (bottom sheet on
   mobile with a drag-handle bar + `rounded-t-3xl`, centered `rounded-3xl` card on ≥sm; backdrop +
-  Escape dismiss, scroll-lock); the dialog renders through it. `Segmented` (tonal pill track, active
+  Escape dismiss, scroll-lock); the dialog renders through it. **It renders through a PORTAL onto
+  `<body>`, and that is load-bearing rather than tidy:** `fixed` resolves against the viewport only
+  while no ancestor is a containing block, and `backdrop-filter` makes one — so the desktop `TopBar`,
+  which is blurred, trapped a sheet opened from `AuthMenu` inside itself and collapsed it to a
+  zero-height strip across the top. Any transform, filter or `will-change` would do the same, so it
+  belongs in the primitive rather than at each caller: a modal must not be positioned by whatever
+  happens to contain the button that opened it. **Only ≥md could show it** — the mobile header carries
+  no blur — which is exactly why phone-width screenshots of the feedback sheet looked right while it
+  was broken, and why `check:feedback` measures the backdrop against the viewport at 1280 wide. `Segmented` (tonal pill track, active
   = white thumb) and `Switch` (labeled track/thumb, ON = gradient) round out the set. Lists use
   `Group` (a `rounded-3xl bg-surface shadow-card` with near-invisible `divide-y` — the **shadow is
   the separator**, no outer border) + `Row` (`min-h-14`) + `Section`/`SectionHeading` — flat grouped
@@ -1132,6 +1143,102 @@ Rules: [firebase/firestore.rules](./firebase/firestore.rules), [firebase/storage
   `RoomCard`/`ListingCard` are retired. Browse's filters live in the store's `criteria` (so they
   survive navigation) behind a filter `Sheet`. Listings have **no tags** (a marketplace pattern that
   doesn't fit a friends app); the free-text `description` carries any detail.
+- **Feedback is a form, a rule and a script — and the interesting part is what it ISN'T.** The first
+  design filed each report as an issue on the public `hafaio/kip` tracker, which meant a Cloud
+  Function (a browser must never hold a GitHub credential), a PAT in Secret Manager, a fenced issue
+  body so a report couldn't `@`-mention strangers under the operator's name, a re-ask interval the
+  rules could express, and a privacy page saying your words become permanently public. Keeping the
+  reports PRIVATE deletes all of it at once: no third party, so no credential, so no function, so
+  nothing to deploy, fail, retry or report the failure of. It is the "treat any OTHER proposed
+  function as a claim to disprove" rule paying out — the claim was real while the destination was
+  GitHub, and evaporated the moment the destination was Firestore.
+
+  **Auto-id, not one document per person.** Keying on the uid would have bounded the pile for free,
+  but a second report then overwrites the first, and losing what somebody already took the trouble
+  to write is the one outcome this feature cannot have.
+
+  **One free-text field and nothing else.** A bug/idea selector went in first and came straight back
+  out: it makes the sender sort their own report before they can write it, and sorting them is the
+  reader's job — on a tracker that runs single digits a month, a taxonomy buys nothing the reader
+  can't do by reading.
+
+  **Gated on `hasCredential()` where `debug` takes any signature**, and the difference is who each
+  is for: a diagnostic is written BY a failure and is worth having from the anonymous visitor it
+  happened to, while this is prose somebody sits down and reads. What that costs is the visitor best
+  placed to report a broken share link, which is the trade the credential gate makes everywhere.
+  `credentialed` (`utils/feedback.ts`) mirrors the rule so the menu row can hide rather than be
+  offered and then denied; `tests/feedback.test.ts` pins the copy, since the two disagreeing shows
+  up as a missing control or an unexplained refusal and neither says which half is wrong.
+
+  **Its author never reads it back** — a report is written, not held — and the operator reads them
+  in the app, on a `feedback` screen reached from the menu (`components/feedback-view.tsx`, one more
+  `View`, so it gets `#/feedback` for free). Fetched rather than watched: nothing writes while it is
+  open except the operator's own deletes, which are applied locally. Nothing edits one; the only
+  thing to do with a report that has been dealt with is remove it — with no confirm, deliberately,
+  since clearing one is the ordinary end of reading it and an "are you sure?" on every report taxes
+  the common case to guard a rare mis-tap. It is the one destructive action in kip that skips the
+  dialog, and it can afford to: what it destroys is a copy of something already read, not somebody
+  else's stay or their place.
+
+  **The role is a claim on the ACCOUNT, not a row in a table.** `bun run admin <email>` sets a
+  custom claim through the Admin SDK, which is the only thing that can — so the role cannot be
+  granted from inside the app by anyone, its holder included, and a compromised session cannot
+  appoint itself. Being an account property rather than data pays three ways: `isAdmin()` costs no
+  lookup at all where a collection would spend one per query; there is no collection to secure, list
+  or enumerate, so who runs kip isn't stored anywhere anyone could look; and the client reads the
+  same claim off the token it already holds, so the app and the rules cannot disagree about who is
+  one. `.get('admin', false)` rather than a bare field read, since the key is absent for everybody
+  else and a missing one must answer false rather than error — pinned by a test that a credentialed
+  account without it reads nothing.
+
+  **The cost is that a claim reaches a live session only on its next token**, which Firebase
+  refreshes hourly — so granting the role and seeing it are separated by a sign-out and back in.
+  The script says so, and `check:feedback` does exactly that rather than pretending a reload is
+  enough.
+
+  **The fragment is guessable and that is fine.** `#/feedback` renders for anybody; every read
+  behind it is refused, so what a stranger gets is an empty list, which `check:feedback` asserts
+  rather than assumes.
+
+  **The menu is `w-56` and every row is `whitespace-nowrap`, and both are load-bearing.** At `w-48`
+  "Feedback inbox" had exactly ZERO pixels of slack — it fit only while font metrics agreed to the
+  pixel, and in a real browser it wrapped, growing that one row a head taller than its neighbours
+  and centring its label among left-aligned ones. Headless renders the same text a shade narrower,
+  so the wrap itself cannot be reproduced there; `check:feedback` measures the SLACK instead and
+  requires 16px, which is 0 at the old width and 27 at the new one. Pinning the margin rather than
+  the symptom is what makes it catch the next label somebody adds.
+
+  **Unread is one timestamp, not a flag per report.** `prefs.feedbackSeenAt` is the same
+  `lastSeenAt` move saved searches make, and it needs no rules change — the prefs rule is owner-only
+  and pins no keys. A dot rather than a count, on the avatar as well as the menu row, since a dot
+  inside a shut menu says nothing until you have already gone looking; and answering it reads ONE
+  document (`orderBy at desc, limit 1`), where a count would read the collection to draw a pixel.
+  Written with `serverTimestamp()` because it is compared against `at`, which is also the server's —
+  a client clock would drift against it, marking reports unread for ever on a slow one.
+
+  **The mark is written when the reports were SHOWN, not on mount.** On mount it fired for anyone
+  who guessed `#/feedback` and was refused every report — clearing a dot for reports they had never
+  been shown, which for the operator meant arriving at a full inbox with nothing marked new. It is
+  now inside the load's success path and gated on `admin`, so a refused or failed load leaves the
+  mark alone: nothing was read. Found by `check:feedback`, which walks exactly that order.
+
+  **The screen names nobody, and shows no identifier either.** A report carries a uid, but the
+  `users` read rule is self, friend or searchable — widening it for this would hand one session read
+  access to every profile in kip, a far larger power than reading feedback and one an account
+  compromise would inherit. A uid PREFIX stood there first, on the reasoning that it at least tells
+  two reports from the same person apart; it went because that is not a question the reader was
+  asking, and eight characters of hex earn no room on screen for it. The gate is the point — you
+  need an account to send one — not who sent it, so the inbox reads anonymously.
+
+  The uid is still STORED, which is what keeps a spammer identifiable and lets `bun run feedback`
+  name them by asking Auth (GCP credentials, not a session). So this is anonymous on screen, not in
+  the database, and the privacy page says the account id is kept.
+
+  **Leaving does NOT take it**, deliberately, unlike every other trace of an account: a bug report
+  is still worth fixing after the person who sent it has gone. Both the privacy page and the
+  Leaving section say so outright, since it is the one exception to a promise the rest of that page
+  makes.
+
 - **Failures that throw nothing report themselves, to a collection nobody can read.** The failures
   worth diagnosing here are silences — a wait that ended, a listener that went quiet — so there is no
   exception and a stack trace would be empty. What matters is the STATE that made the decision, which
@@ -1690,6 +1797,35 @@ gone, and — the half that is about other people — that the host whose slot t
 nights back, both sides of the friendship went, and **a stay that already happened is left alone**.
 Unlike the browser checks it needs no browser and no dev server, so it is the one that could
 gate CI if that is ever wanted.
+
+## Driving feedback
+
+`bun run check:feedback` is the only thing that can see either half of feedback working: somebody
+sending one, and the operator reading and clearing them.
+
+```sh
+cd web && bun run dev:emulated      # one shell, serves on 3001
+bun run check:feedback              # another
+```
+
+It signs someone in through the email door, opens the menu and asserts they are offered **Send
+feedback** and NOT the inbox, types a report and checks it reaches Firestore carrying the right uid
+and kind. Then it opens `#/feedback` WITHOUT the role and asserts an empty list — the fragment is
+guessable, so the refusal has to be demonstrated rather than reasoned about. Then it grants the
+role, signs OUT and back in — a claim rides in the token, so a reload alone reuses the cached one
+and would show nothing — and checks the inbox row appears, both reports are listed newest-first with
+their kinds, and deleting one removes it from the screen AND the database without taking the other.
+
+Two traps it teaches. Navigating to a FRAGMENT does not reload the page, so a menu opened to read
+its rows stays open over every screen after it — and its own rows then land in every `innerText`
+the check reads. And the emulator keeps its data for as long as it is up, so a report left behind
+by a failed run matches a generic assertion: each one here matches a per-run nonce, which is what
+caught this check passing once while nothing had been sent.
+
+Every one of those passes lint, the unit suite and the rules suite while broken. The rules suite
+proves who MAY read the collection; only a browser proves the menu row appears for the right person,
+that the list query the screen actually issues is the one the rules allow, and that a report typed
+into the sheet lands at all.
 
 ## Driving the EXIF promise
 
