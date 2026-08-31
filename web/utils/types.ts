@@ -196,6 +196,10 @@ export const DEFAULT_NOTIFY_SMS: NotifySmsPrefs = Object.fromEntries(
 
 export type Prefs = {
   readonly shareStaysWithFriends: boolean;
+  // When the operator last opened the feedback inbox, so a report written since
+  // reads as unread. Only ever set on an admin's own prefs; harmless on anyone
+  // else's, since nothing but the inbox reads it.
+  readonly feedbackSeenAt: number | null;
   readonly profilePortalId: string | null;
   readonly notify: NotifyPrefs;
   // A sibling map, not a channel inside `notify`: that shape is already stored
@@ -225,6 +229,8 @@ export type Prefs = {
 export const DEFAULT_PREFS: Prefs = {
   // Off until asked for; `guestSharesStays` reads an absent doc the same way.
   shareStaysWithFriends: false,
+  // Never opened it, so everything is unread.
+  feedbackSeenAt: null,
   profilePortalId: null,
   notify: DEFAULT_NOTIFY,
   notifySms: DEFAULT_NOTIFY_SMS,
@@ -287,7 +293,10 @@ export type View =
   | "places"
   | "friends"
   | "trips"
-  | "settings";
+  | "settings"
+  // Only the operator can reach it, and only the rules enforce that — the
+  // fragment is guessable and deliberately not a secret.
+  | "feedback";
 
 export type PortalScope = "USER" | "LISTING" | "SLOT";
 

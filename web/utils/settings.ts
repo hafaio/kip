@@ -45,6 +45,7 @@ export function watchPrefs(
           ? {
               // A doc written before this field existed carries no consent.
               shareStaysWithFriends: data.shareStaysWithFriends ?? false,
+              feedbackSeenAt: millis(data.feedbackSeenAt) || null,
               profilePortalId: data.profilePortalId ?? null,
               notify: { ...DEFAULT_NOTIFY, ...(data.notify ?? {}) },
               notifySms: { ...DEFAULT_NOTIFY_SMS, ...(data.notifySms ?? {}) },

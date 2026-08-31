@@ -58,3 +58,18 @@ export default function Input({
     </div>
   );
 }
+
+// The same shell for prose. Not a variant of the input above: a textarea has no
+// adornments, and its height is the caller's business rather than the shared
+// 44px every control otherwise stands at.
+export function Textarea({
+  className = "",
+  ...props
+}: ComponentPropsWithRef<"textarea">): ReactElement {
+  return (
+    <textarea
+      className={`w-full rounded-xl border border-border bg-surface p-3.5 text-base outline-none transition focus:border-accent focus:ring-2 focus:ring-accent/20 ${className}`}
+      {...props}
+    />
+  );
+}

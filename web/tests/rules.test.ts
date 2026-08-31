@@ -57,6 +57,17 @@ function unverified(uid: string): Firestore {
     } as never)
     .firestore() as unknown as Firestore;
 }
+// Whoever operates kip: a claim on the account, so it rides in the token rather
+// than being looked up. Credentialed too, since a real operator signed in.
+function operator(uid: string): Firestore {
+  return testEnv
+    .authenticatedContext(uid, {
+      admin: true,
+      email_verified: true,
+      firebase: { identities: { email: [`${uid}@example.com`] } },
+    } as never)
+    .firestore() as unknown as Firestore;
+}
 // The other two doors prove themselves, so neither carries `email_verified`.
 function phoned(uid: string): Firestore {
   return testEnv
@@ -3329,3 +3340,111 @@ describe("debug events", () => {
     await assertFails(deleteDoc(doc(authed(STRANGER), "debug", "d2")));
   });
 });
+
+// Prose somebody sits down and read, so the population `debug` accepts is
+// exactly the population this refuses.
+describe("feedback", () => {
+  const report = (uid: string) => ({
+    uid,
+    text: "the room page is blank",
+    at: serverTimestamp(),
+  });
+
+  it("a credentialed account files a report", async () => {
+    await assertSucceeds(
+      addDoc(collection(credentialed(STRANGER), "feedback"), report(STRANGER)),
+    );
+  });
+
+  // The doors must agree with the handle-claim gate: all three prove themselves.
+  it("a phone credential files one too", async () => {
+    await assertSucceeds(
+      addDoc(collection(phoned(STRANGER), "feedback"), report(STRANGER)),
+    );
+  });
+
+  // A ticket costs one page load.
+  it("an anonymous participant cannot", async () => {
+    await assertFails(
+      addDoc(collection(authed(STRANGER), "feedback"), report(STRANGER)),
+    );
+  });
+
+  // Firebase verifies no password signup, and the web API key is public.
+  it("an unverified address cannot, nor can a signed-out caller", async () => {
+    await assertFails(
+      addDoc(collection(unverified(STRANGER), "feedback"), report(STRANGER)),
+    );
+    await assertFails(
+      addDoc(collection(anon(), "feedback"), report(STRANGER)),
+    );
+  });
+
+  it("nobody files under someone else's name", async () => {
+    await assertFails(
+      addDoc(collection(credentialed(STRANGER), "feedback"), report(OWNER)),
+    );
+  });
+
+  it("the shape is pinned", async () => {
+    const from = (extra: object) =>
+      addDoc(collection(credentialed(STRANGER), "feedback"), {
+        ...report(STRANGER),
+        ...extra,
+      });
+    await assertFails(from({ text: "" }));
+    await assertFails(from({ text: "x".repeat(2001) }));
+    await assertFails(from({ extra: "smuggled" }));
+    await assertFails(from({ at: Timestamp.fromMillis(Date.now() - 60_000) }));
+  });
+
+  // Not even its author: a report is written, not held. Reading is the
+  // operator's, and the author gets no copy back.
+  it("nobody reads, edits or deletes one, its author included", async () => {
+    await seed(async (db) => {
+      await setDoc(doc(db, "feedback", "f1"), {
+        uid: STRANGER,
+        text: "already filed",
+        at: serverTimestamp(),
+      });
+    });
+    await assertFails(getDoc(doc(credentialed(STRANGER), "feedback", "f1")));
+    await assertFails(getDocs(collection(credentialed(STRANGER), "feedback")));
+    await assertFails(
+      updateDoc(doc(credentialed(STRANGER), "feedback", "f1"), { text: "no" }),
+    );
+    await assertFails(deleteDoc(doc(credentialed(STRANGER), "feedback", "f1")));
+  });
+
+  it("the operator reads them all and clears them", async () => {
+    await seed(async (db) => {
+      await setDoc(doc(db, "feedback", "f1"), {
+        uid: STRANGER,
+        text: "already filed",
+        at: serverTimestamp(),
+      });
+    });
+    await assertSucceeds(getDocs(collection(operator(OWNER), "feedback")));
+    await assertSucceeds(getDoc(doc(operator(OWNER), "feedback", "f1")));
+    // Still nothing edits one, the operator included.
+    await assertFails(
+      updateDoc(doc(operator(OWNER), "feedback", "f1"), { text: "no" }),
+    );
+    await assertSucceeds(deleteDoc(doc(operator(OWNER), "feedback", "f1")));
+  });
+
+  // The claim is the whole test: an account without it is refused however
+  // credentialed it is, and a missing claim must answer rather than error.
+  it("a credentialed account without the claim reads nothing", async () => {
+    await seed(async (db) => {
+      await setDoc(doc(db, "feedback", "f1"), {
+        uid: STRANGER,
+        text: "already filed",
+        at: serverTimestamp(),
+      });
+    });
+    await assertFails(getDocs(collection(credentialed(OWNER), "feedback")));
+    await assertFails(deleteDoc(doc(credentialed(OWNER), "feedback", "f1")));
+  });
+});
+

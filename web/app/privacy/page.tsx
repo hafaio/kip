@@ -255,6 +255,17 @@ export default function PrivacyPage(): ReactElement {
         address or number it went to, and Google keeps them about a month before
         deleting them. Both exist to keep kip working, nothing else.
       </P>
+      <P>
+        Separately, if you <strong>send feedback</strong> from the menu, what
+        you write is stored so it can be read and acted on. It goes to the
+        people who make kip and nowhere else — it isn't published, forwarded, or
+        posted anywhere public. Only the operator can read it, and it's kept
+        alongside your account ID so we can follow it up. Nobody else can,
+        including you: once a report is sent you have no copy of it here. Unlike
+        the diagnostics above it isn't deleted on a timer, and it isn't deleted
+        when you leave — a bug report is still worth fixing after the person who
+        sent it has gone. Write to us if you'd like one removed.
+      </P>
 
       <H2>Leaving, and what remains</H2>
       <P>
@@ -276,6 +287,11 @@ export default function PrivacyPage(): ReactElement {
           two people, and a record of it remains in the other person's history —
           dates and place, but not your name or photo, which are deleted with
           your account.
+        </li>
+        <li>
+          <strong>Feedback you sent stays.</strong> A report about something
+          broken is still worth fixing afterwards, so it isn't deleted with your
+          account — see above, and write to us if you'd like one removed.
         </li>
       </List>
 

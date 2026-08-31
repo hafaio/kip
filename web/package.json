@@ -21,6 +21,9 @@
     "check:exif": "node scripts/exif-check.mjs",
     "check:teardown": "npm --prefix ../functions run build && firebase emulators:exec --config ../firebase.json --only auth,firestore,functions --project demo-kip 'node scripts/teardown-check.mjs'",
     "check:pwa": "node scripts/pwa-check.mjs",
+    "check:feedback": "node scripts/feedback-check.mjs",
+    "feedback": "bun run scripts/feedback.ts",
+    "admin": "bun run scripts/admin.ts",
     "build:sw": "tsc -p tsconfig.sw.json"
   },
   "dependencies": {

@@ -39,6 +39,7 @@ import {
   watchMyTrips,
 } from "./bookings";
 import { clientState, recordDebugEvent } from "./debug";
+import { hasUnreadFeedback, readAdmin } from "./feedback";
 import {
   auth,
   errorCode,
@@ -154,6 +155,13 @@ type ContextShape = {
   // everywhere in the app.
   anonymous: boolean;
   emailVerified: boolean;
+  // Whether this account operates kip, which draws exactly one menu row. False
+  // until asked, so the row appears a beat late rather than flashing for
+  // everyone — and the rules refuse the reads behind it either way.
+  admin: boolean;
+  // Anything in the inbox written since the operator last opened it. One
+  // document at most is read to answer it, since it draws a dot and not a count.
+  unreadFeedback: boolean;
   email: string | null;
   // E.164, and the only address a text can go to: kip never stores a number, so
   // the Auth account is the whole record of one.
@@ -335,6 +343,7 @@ const TAB_ROUTES: Readonly<Record<View, true>> = {
   friends: true,
   trips: true,
   settings: true,
+  feedback: true,
 };
 
 function isTab(name: string): name is View {
@@ -504,6 +513,8 @@ export function KipProvider({ children }: { children: ReactNode }) {
   // leaves the same reference holding new values with nothing for React to
   // re-render on.
   const [anonymous, setAnonymous] = useState(false);
+  const [admin, setAdmin] = useState(false);
+  const [unreadFeedback, setUnreadFeedback] = useState(false);
   const [emailVerified, setEmailVerified] = useState(false);
   const [email, setEmail] = useState<string | null>(null);
   const [phone, setPhone] = useState<string | null>(null);
@@ -719,6 +730,41 @@ export function KipProvider({ children }: { children: ReactNode }) {
       setAuthReady(true);
     });
   }, [configured]);
+
+  // Off the token, so it costs nothing and needs no rule to authorise. It runs
+  // on `user` rather than inside the auth listener because reading the claims
+  // is async: `settled` is what stops a sign-out being overtaken by the
+  // previous account's answer landing late.
+  useEffect(() => {
+    if (!configured || !user) {
+      setAdmin(false);
+      return;
+    }
+    let settled = false;
+    void readAdmin(user).then((yes) => {
+      if (!settled) setAdmin(yes);
+    });
+    return () => {
+      settled = true;
+    };
+  }, [configured, user]);
+
+  // Re-asked whenever the seen mark moves, which is what clears the dot: opening
+  // the inbox writes the mark, the prefs listener carries it back, and this runs
+  // again. Only for the operator — nobody else may read the collection.
+  useEffect(() => {
+    if (!configured || !admin) {
+      setUnreadFeedback(false);
+      return;
+    }
+    let settled = false;
+    void hasUnreadFeedback(prefs.feedbackSeenAt).then((any) => {
+      if (!settled) setUnreadFeedback(any);
+    });
+    return () => {
+      settled = true;
+    };
+  }, [configured, admin, prefs.feedbackSeenAt]);
 
   // Feeds `gateStep` and mirrors the result into state. The listener is the
   // only source: with metadata events it either answers or raises the SDK's
@@ -1505,6 +1551,8 @@ export function KipProvider({ children }: { children: ReactNode }) {
     user,
     anonymous,
     emailVerified,
+    admin,
+    unreadFeedback,
     email,
     phone,
     doors,
